@@ -412,11 +412,16 @@ bool ApplyKhuUnstake(const CTransaction& tx, KhuGlobalState& state,
     const SpendDescription& spend = tx.sapData->vShieldedSpend[0];
 
     // 3. Verify nullifier not already spent
-    if (zkhuNullifierSet.count(spend.nullifier))
+    // NOTE: ZKHU uses STANDARD Sapling nullifier set (shared with zPIV)
+    // TxType differentiation prevents confusion between ZKHU and zPIV spends
+    if (view.GetNullifier(spend.nullifier, SAPLING))
         return validationState.Invalid("khu-unstake-double-spend");
 
-    // 4. Verify anchor matches ZKHU tree (not zPIV tree)
-    if (spend.anchor != zkhuTree.root())
+    // 4. Verify anchor matches Sapling tree
+    // NOTE: ZKHU uses STANDARD SaplingMerkleTree (shared with zPIV)
+    // Same tree for all Sapling shielded outputs (ZKHU and zPIV)
+    SaplingMerkleTree tree;
+    if (!view.GetSaplingAnchorAt(spend.anchor, tree))
         return validationState.Invalid("khu-unstake-invalid-anchor");
 
     // 5. Extract note data from witness
@@ -487,7 +492,8 @@ bool ApplyKhuUnstake(const CTransaction& tx, KhuGlobalState& state,
     view.AddKHUCoin(tx.GetHash(), 0, newCoin);
 
     // 14. Mark nullifier as spent (prevent double-spend)
-    zkhuNullifierSet.insert(spend.nullifier);
+    // NOTE: Add to STANDARD Sapling nullifier set (shared with zPIV)
+    view.SetNullifier(spend.nullifier, SAPLING);
 
     // 15. Log successful UNSTAKE
     LogPrint(BCLog::KHU, "UNSTAKE: principal=%d bonus=%d total=%d height=%d\n",
@@ -1710,154 +1716,198 @@ bool CheckKHURedeem(const CTransaction& tx, CValidationState& state, const KhuGl
 
 ---
 
-## 18. SAPLING POOL SEPARATION
+## 18. ZKHU SAPLING INTEGRATION (PRIMITIVES STANDARD + STORAGE SÉPARÉ)
 
-**File:** `src/sapling/sapling_state.h`
+**File:** `src/khu/khu_sapling.cpp`
 
-**Issue:** How to separate ZKHU from zPIV Sapling notes?
+**Architecture:** ZKHU utilise les **primitives cryptographiques Sapling standard** de PIVX, MAIS stocke ses données dans un **namespace LevelDB séparé**.
 
-**Solution:** Separate Merkle trees (anchors).
+**IMPORTANT — ZKHU = Primitives Sapling + Storage Séparé:**
+
+ZKHU **RÉUTILISE** la cryptographie Sapling existante (circuits, format note, proofs) MAIS **CRÉE** ses propres structures de stockage (zkhuTree, zkhuNullifierSet, clés LevelDB avec préfixe 'K').
 
 **Implementation:**
 
 ```cpp
-class SaplingState {
-public:
-    // zPIV Sapling pool
-    SaplingMerkleTree saplingTree;
-    std::set<uint256> nullifierSet;
+// ZKHU uses STANDARD Sapling cryptographic primitives
+// BUT stores data in SEPARATE LevelDB namespace
 
-    // ZKHU pool (separate)
-    SaplingMerkleTree zkhuTree;
-    std::set<uint256> zkhuNullifierSet;
+// STAKE: Create ZKHU shielded output
+bool ProcessKHUStake(const CTransaction& tx, CCoinsViewCache& view) {
+    // CRITICAL: tx.nType MUST be TxType::KHU_STAKE
+    if (tx.nType != TxType::KHU_STAKE)
+        return false;
 
-    SERIALIZE_METHODS(SaplingState, obj) {
-        READWRITE(obj.saplingTree, obj.nullifierSet);
-        READWRITE(obj.zkhuTree, obj.zkhuNullifierSet);
-    }
-};
-
-// STAKE: Add to ZKHU tree
-bool ProcessKHUStake(const CTransaction& tx, SaplingState& saplingState) {
     const OutputDescription& output = tx.sapData->vShieldedOutput[0];
 
-    // Add commitment to ZKHU tree (not zPIV tree)
-    saplingState.zkhuTree.append(output.cmu);
+    // Commitment uses STANDARD Sapling algorithm
+    uint256 commitment = output.cmu;
+
+    // BUT store in ZKHU-specific LevelDB namespace (NOT Shield namespace)
+    // Use 'K' + 'A' prefix (NOT 'S' prefix)
+    SaplingMerkleTree zkhuTree;
+    if (!view.GetKHUAnchor(zkhuTree))
+        return false;
+
+    // Add commitment to ZKHU tree (separate from Shield tree)
+    zkhuTree.append(commitment);
+    view.PushKHUAnchor(zkhuTree);  // Writes to 'K' + 'A' + anchor
 
     return true;
 }
 
-// UNSTAKE: Verify against ZKHU tree
-bool ProcessKHUUnstake(const CTransaction& tx, SaplingState& saplingState) {
+// UNSTAKE: Spend ZKHU shielded output
+bool ProcessKHUUnstake(const CTransaction& tx, CCoinsViewCache& view) {
+    // CRITICAL: tx.nType MUST be TxType::KHU_UNSTAKE
+    if (tx.nType != TxType::KHU_UNSTAKE)
+        return false;
+
     const SpendDescription& spend = tx.sapData->vShieldedSpend[0];
 
-    // Check nullifier in ZKHU set (not zPIV set)
-    if (saplingState.zkhuNullifierSet.count(spend.nullifier))
-        return false;  // Double-spend
+    // Check nullifier in ZKHU-specific set (NOT Shield set)
+    // Use 'K' + 'N' prefix (NOT 's' prefix)
+    if (view.GetKHUNullifier(spend.nullifier))
+        return false;  // Double-spend in ZKHU pool
 
-    // Verify anchor matches ZKHU tree root (not zPIV tree)
-    if (spend.anchor != saplingState.zkhuTree.root())
-        return false;  // Invalid anchor
+    // Verify anchor matches ZKHU tree (NOT Shield tree)
+    SaplingMerkleTree zkhuTree;
+    if (!view.GetKHUAnchorAt(spend.anchor, zkhuTree))
+        return false;  // Invalid anchor in ZKHU pool
 
-    saplingState.zkhuNullifierSet.insert(spend.nullifier);
+    // Mark nullifier as spent in ZKHU set
+    view.SetKHUNullifier(spend.nullifier);  // Writes to 'K' + 'N' + nullifier
 
     return true;
 }
 ```
 
 **Consequences:**
-- ZKHU and zPIV completely isolated
-- No conversion between pools possible
-- Independent anonymity sets
-- Separate audit trails
+- ZKHU et Shield utilisent MÊME cryptographie Sapling (réutilisation circuits)
+- MAIS stockages complètement SÉPARÉS (pas de pool mixing)
+- Pas d'anonymity set commun (isolation complète)
+- Pas de fork Sapling, pas de nouveaux circuits
+- Différenciation via TxType ET namespace LevelDB
 
-> ⚠️ **ANTI-DÉRIVE: ENFORCED POOL SEPARATION**
+> ⚠️ **ANTI-DÉRIVE: ZKHU STORAGE SEPARATION (MANDATORY)**
 >
-> **COMPILE-TIME VERIFICATION (MANDATORY):**
+> **RÈGLE ABSOLUE:**
+>
+> **✅ PARTAGÉ (Cryptographie):**
+> - Circuits zk-SNARK Sapling (pas de modification)
+> - Format OutputDescription (512-byte memo)
+> - Algorithmes de commitment/nullifier
+> - Format de proof
+>
+> **❌ SÉPARÉ (Stockage):**
+> - `zkhuTree` distinct de `saplingTree`
+> - `zkhuNullifierSet` distinct de `nullifierSet`
+> - Clés LevelDB avec préfixe 'K' (pas 'S'/'s')
+> - Anonymity sets séparés
+> - Pools complètement isolés
+>
+> **INTERDICTIONS ABSOLUES:**
 >
 > ```cpp
-> // File: src/sapling/sapling_state.h
+> // ❌ JAMAIS utiliser clés Shield pour ZKHU
+> view.PushSaplingAnchor(output.cmu);  // ❌ INTERDIT - écrit dans 'S' + anchor
+> // ✅ CORRECT:
+> view.PushKHUAnchor(zkhuTree);        // ✅ Écrit dans 'K' + 'A' + anchor
 >
-> // Static assertion to prevent accidental pool merging
-> static_assert(offsetof(SaplingState, zkhuTree) != offsetof(SaplingState, saplingTree),
->               "ZKHU and zPIV trees MUST be separate members");
+> // ❌ JAMAIS vérifier nullifier dans set Shield
+> if (view.GetNullifier(spend.nullifier, SAPLING))  // ❌ INTERDIT - check 's' + nullifier
+> // ✅ CORRECT:
+> if (view.GetKHUNullifier(spend.nullifier))        // ✅ Check 'K' + 'N' + nullifier
 >
-> static_assert(sizeof(SaplingState::zkhuTree) == sizeof(SaplingState::saplingTree),
->               "Tree types must match (but be separate instances)");
+> // ❌ JAMAIS partager saplingTree avec ZKHU
+> saplingTree.append(zkhu_commitment);  // ❌ INTERDIT - pollution pool
 >
-> // Runtime check in debug builds
-> #ifdef DEBUG
-> inline void VerifyPoolSeparation() {
->     assert(&saplingTree != &zkhuTree);
->     assert(&nullifierSet != &zkhuNullifierSet);
-> }
-> #endif
+> // ❌ JAMAIS permettre Z→Z transactions
+> // Pas de ZKHU→ZKHU, pas de ZKHU→Shield, pas de Shield→ZKHU
+>
+> // ❌ JAMAIS utiliser quoi que ce soit de Zerocoin/zPIV (RÈGLE #1)
 > ```
 >
-> **FORBIDDEN PATTERNS:**
+> **PATTERNS CORRECTS:**
 >
 > ```cpp
-> // ❌ NEVER do this - using same tree for both pools
-> saplingTree.append(zkhu_commitment);  // WRONG - ZKHU must use zkhuTree
+> // ✅ STAKE: Utiliser zkhuTree SÉPARÉ
+> SaplingMerkleTree zkhuTree;
+> view.GetKHUAnchor(zkhuTree);
+> zkhuTree.append(commitment);
+> view.PushKHUAnchor(zkhuTree);  // 'K' + 'A' + anchor
 >
-> // ❌ NEVER do this - checking ZKHU nullifier in zPIV set
-> if (nullifierSet.count(zkhu_nullifier))  // WRONG - use zkhuNullifierSet
->
-> // ❌ NEVER do this - merging pools
-> zkhuTree = saplingTree;  // FORBIDDEN - pools are separate by design
->
-> // ❌ NEVER do this - cross-pool anchor validation
-> if (spend.anchor == saplingTree.root())  // WRONG if spending ZKHU
-> ```
->
-> **CORRECT PATTERNS:**
->
-> ```cpp
-> // ✅ STAKE: Add to ZKHU tree (not zPIV tree)
-> zkhuTree.append(khu_commitment);
-> LogPrint(BCLog::KHU, "Added commitment to ZKHU tree (NOT zPIV)\n");
->
-> // ✅ UNSTAKE: Check ZKHU nullifier set (not zPIV set)
-> if (zkhuNullifierSet.count(spend.nullifier))
+> // ✅ UNSTAKE: Vérifier nullifier dans zkhuNullifierSet SÉPARÉ
+> if (view.GetKHUNullifier(spend.nullifier))  // 'K' + 'N' + nullifier
 >     return error("ZKHU double-spend");
 >
-> // ✅ UNSTAKE: Verify anchor against ZKHU tree (not zPIV tree)
-> if (spend.anchor != zkhuTree.root())
->     return error("Invalid ZKHU anchor");
+> // ✅ Différenciation via TxType ET namespace
+> if (tx.nType == TxType::KHU_STAKE) {
+>     // Use KHU-specific storage ('K' prefix)
+> } else if (tx.nType == TxType::SAPLING_SHIELD) {
+>     // Use Shield-specific storage ('S'/'s' prefix)
+> }
 > ```
 >
-> **IMPLEMENTATION CHECKLIST:**
+> **CHECKLIST IMPLÉMENTATION:**
 >
-> Before implementing Sapling integration:
+> Avant Phase 4 (Sapling):
 >
-> 1. ✅ Verify `SaplingState` has TWO separate `SaplingMerkleTree` members
-> 2. ✅ Verify `SaplingState` has TWO separate nullifier sets
-> 3. ✅ Add static_assert checks to prevent accidental merging
-> 4. ✅ All STAKE operations use `zkhuTree` (never `saplingTree`)
-> 5. ✅ All UNSTAKE operations validate against `zkhuTree.root()`
-> 6. ✅ ZKHU nullifiers go to `zkhuNullifierSet` (never `nullifierSet`)
-> 7. ✅ Separate LevelDB keys for ZKHU anchors (`'K' + 'A'` vs `'S'`)
-> 8. ✅ Wallet tracks ZKHU and zPIV notes in separate collections
-> 9. ✅ RPC commands clearly distinguish ZKHU vs zPIV operations
-> 10. ✅ No code path allows conversion between ZKHU and zPIV
+> 1. ✅ zkhuTree existe et est distinct de saplingTree
+> 2. ✅ zkhuNullifierSet existe et est distinct de nullifierSet
+> 3. ✅ Toutes clés ZKHU utilisent préfixe 'K'
+> 4. ✅ AUCUNE clé Shield ('S', 's') utilisée pour ZKHU
+> 5. ✅ STAKE utilise view.PushKHUAnchor() (pas PushSaplingAnchor)
+> 6. ✅ UNSTAKE utilise view.GetKHUNullifier() (pas GetNullifier)
+> 7. ✅ Memo encode metadata: "ZKHU" + height + amount + Ur
+> 8. ✅ AUCUNE modification circuits zk-SNARK
+> 9. ✅ AUCUNE Z→Z transaction possible
+> 10. ✅ Isolation complète ZKHU/Shield vérifiée
 >
-> **AUDIT COMMAND:**
+> **AUDIT COMMANDS:**
 >
 > ```bash
-> # Search for incorrect pool usage
-> grep -r "saplingTree.append.*KHU" src/  # Should return NOTHING
-> grep -r "nullifierSet.*zkhu" src/       # Should return NOTHING
-> grep -r "zkhuTree.append.*zPIV" src/    # Should return NOTHING
+> # Ces commandes DOIVENT retourner RÉSULTATS pour ZKHU
+> grep -r "zkhuTree" src/khu/          # DOIT avoir occurrences
+> grep -r "zkhuNullifierSet" src/khu/  # DOIT avoir occurrences
+> grep -r "'K' + 'A'" src/khu/         # DOIT avoir occurrences
+> grep -r "'K' + 'N'" src/khu/         # DOIT avoir occurrences
+>
+> # Ces commandes DOIVENT retourner ZÉRO résultat
+> grep -r "'S' + anchor" src/khu/      # DOIT être vide (pas de clés Shield)
+> grep -r "'s' + nullifier" src/khu/   # DOIT être vide (pas de clés Shield)
+> grep -r "PushSaplingAnchor.*KHU" src/ # DOIT être vide (pas de mixing)
 > ```
 >
-> **If ANY of these searches return results → POOL CONTAMINATION → FIX IMMEDIATELY.**
+> **Si clés Shield trouvées dans code ZKHU → DÉRIVE MAJEURE → CORRIGER IMMÉDIATEMENT.**
 
-**Storage:**
+**Storage (LevelDB):**
 
 ```
-LevelDB keys:
-'S' + height → zPIV Sapling anchor
-'K' + 'A' + height → ZKHU anchor (new)
+// ZKHU utilise son PROPRE namespace avec préfixe 'K'
+'K' + 'A' + anchor_khu     → ZKHU SaplingMerkleTree
+'K' + 'N' + nullifier_khu  → ZKHU nullifier spent flag
+'K' + 'T' + note_id        → ZKHUNoteData
+
+// Shield utilise namespace 'S'/'s'
+'S' + anchor      → Shield SaplingMerkleTree
+'s' + nullifier   → Shield nullifier spent flag
+
+// ⚠️ CRITICAL: Aucun chevauchement de clés
+// ZKHU et Shield sont COMPLÈTEMENT isolés
+```
+
+**Memo Format (512 bytes):**
+
+```cpp
+// Encode ZKHU-specific metadata in STANDARD 512-byte Sapling memo
+std::array<unsigned char, 512> memo;
+memo.fill(0);
+memcpy(memo.data(), "ZKHU", 4);               // Magic (bytes 0-3)
+WriteLE32(memo.data() + 4, 1);                // Version (bytes 4-7)
+WriteLE32(memo.data() + 8, stakeStartHeight);  // Height (bytes 8-11)
+WriteLE64(memo.data() + 12, amount);          // Amount (bytes 12-19)
+WriteLE64(memo.data() + 20, Ur_accumulated);  // Yield (bytes 20-27)
+// Bytes 28-511: reserved (zeros)
 ```
 
 ---

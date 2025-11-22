@@ -925,26 +925,61 @@ Quorum type: LLMQ_400_60 (400 MN, 60% threshold)
 - Ajouter métadonnées dans memo field
 - Pas de nouveau circuit zk-SNARK
 
-**IMPORTANT — Separation des pools Sapling:**
+**IMPORTANT — ZKHU = Primitives Sapling + Storage Séparé:**
 
-ZKHU utilise un **pool Sapling séparé** distinct du pool zPIV existant.
+ZKHU utilise les **primitives cryptographiques Sapling standard** de PIVX, MAIS stocke ses données dans un **namespace LevelDB séparé**.
 
-**Raison:**
-- Évite collision entre ZKHU et zPIV
-- Permet tracking indépendant des commitment trees
-- Simplifie l'audit de l'état KHU (C, U, Cr, Ur)
-- Garantit que ZKHU ne peut pas être confondu avec zPIV
+**Architecture canonique:**
 
-**Implementation:**
-- Flag interne `fIsKHU` dans `OutputDescription`
-- Commitment tree séparé : `zkhu_tree` vs `sapling_tree`
-- Nullifier set séparé pour éviter double-spend entre pools
-- Wallet tracking séparé
+**✅ PARTAGÉ (Cryptographie):**
+- Même format OutputDescription (512-byte memo standard)
+- Même circuits zk-SNARK (AUCUNE modification)
+- Même algorithmes de commitment/nullifier
+- Même format de proof zk-SNARK
+
+**❌ SÉPARÉ (Stockage):**
+- `zkhuTree` et `saplingTree` sont DISTINCTS
+- `zkhuNullifierSet` et `nullifierSet` sont DISTINCTS
+- Clés LevelDB différentes (namespace 'K' pour ZKHU)
+- Pas d'anonymity set partagé
+- Pas de pool commun
+
+**Clés LevelDB canoniques:**
+
+**ZKHU (namespace 'K'):**
+```
+'K' + 'A' + anchor_khu     → ZKHU SaplingMerkleTree
+'K' + 'N' + nullifier_khu  → ZKHU nullifier spent flag
+'K' + 'T' + note_id        → ZKHUNoteData (amount, Ur, height)
+```
+
+**Shield (PIVX Sapling public):**
+```
+'S' + anchor      → Shield SaplingMerkleTree
+'s' + nullifier   → Shield nullifier spent flag
+```
+
+**⚠️ CRITICAL: Aucun chevauchement de clés entre ZKHU et Shield**
+
+**Différenciation via consensus:**
+- `tx.nType = TxType::KHU_STAKE` (vs TxType::SAPLING_SHIELD)
+- Memo encode metadata: magic "ZKHU" + stakeStartHeight + amount + Ur
+- Validation consensus vérifie TxType pour appliquer règles KHU
 
 **Conséquence:**
-- ZKHU et zPIV ne partagent AUCUNE structure on-chain
-- Pas de conversion ZKHU ↔ zPIV possible
-- Anonymity set ZKHU indépendant de anonymity set zPIV
+- ZKHU et Shield utilisent même cryptographie Sapling (réutilisation circuits)
+- MAIS stockages complètement séparés (pas de pool mixing)
+- Pas de conversion ZKHU ↔ Shield (pas de Z→Z transactions)
+- Pas d'anonymity set commun (isolation complète)
+- Pas de modification circuits / pas de fork Sapling
+
+**INTERDIT ABSOLU:**
+- ❌ JAMAIS utiliser clés Shield ('S', 's') pour ZKHU
+- ❌ JAMAIS partager saplingTree avec Shield
+- ❌ JAMAIS partager nullifierSet avec Shield
+- ❌ JAMAIS modifier circuits Sapling
+- ❌ JAMAIS permettre Z→Z transactions
+- ❌ JAMAIS utiliser quoi que ce soit de Zerocoin/zPIV (RÈGLE #1)
 
 ### 7.2 STAKE Transaction
 

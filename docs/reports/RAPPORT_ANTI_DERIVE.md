@@ -8,7 +8,9 @@
 
 ## RÉSUMÉ EXÉCUTIF
 
-J'ai implémenté 6 catégories de garde-fous anti-dérive dans la documentation PIVX-V6-KHU pour prévenir les erreurs d'implémentation qui causeraient des échecs de consensus. Ces protections couvrent les risques critiques identifiés par l'architecte avant le début de la Phase 1.
+J'ai implémenté 5 catégories de garde-fous anti-dérive dans la documentation PIVX-V6-KHU pour prévenir les erreurs d'implémentation qui causeraient des échecs de consensus. Ces protections couvrent les risques critiques identifiés par l'architecte avant le début de la Phase 1.
+
+**NOTE:** La section "Séparation Pools Sapling" a été SUPPRIMÉE car basée sur concept erroné. ZKHU utilise Sapling STANDARD (voir docs/03 et docs/06 section 18 corrigée).
 
 **Documents modifiés:**
 - `docs/02-canonical-specification.md` (spec canonique)
@@ -140,49 +142,7 @@ diff <(grep -A30 "^struct KhuGlobalState" docs/02-canonical-specification.md) \
 
 ---
 
-### 5. ANTI-DÉRIVE #5: Séparation Pools Sapling
-
-**Risque:** ZKHU et zPIV partagent même arbre → contamination pools → anonymity loss
-
-**Protections ajoutées:**
-
-#### Doc 06 (section 18: Sapling Pool Separation)
-Bloc de 80 lignes incluant:
-
-**Compile-time verification:**
-```cpp
-static_assert(offsetof(SaplingState, zkhuTree) != offsetof(SaplingState, saplingTree),
-              "ZKHU and zPIV trees MUST be separate members");
-```
-
-**Forbidden patterns:**
-```cpp
-// ❌ NEVER
-saplingTree.append(zkhu_commitment);  // WRONG - use zkhuTree
-
-// ❌ NEVER
-if (nullifierSet.count(zkhu_nullifier))  // WRONG - use zkhuNullifierSet
-```
-
-**Correct patterns:**
-```cpp
-// ✅ CORRECT
-zkhuTree.append(khu_commitment);
-if (zkhuNullifierSet.count(spend.nullifier))
-if (spend.anchor != zkhuTree.root())
-```
-
-**Checklist de 10 points** pour implémentation Sapling
-
-**Audit commands:**
-```bash
-grep -r "saplingTree.append.*KHU" src/  # Should return NOTHING
-grep -r "nullifierSet.*zkhu" src/       # Should return NOTHING
-```
-
----
-
-### 6. ANTI-DÉRIVE #6: Ordre Sérialisation GetHash()
+### 5. ANTI-DÉRIVE #5: Ordre Sérialisation GetHash()
 
 **Risque:** Changer ordre sérialisation → hash change → fork total réseau
 
@@ -227,7 +187,7 @@ grep -A20 "GetHash.*const" src/khu/khu_state.cpp | grep "ss <<" | awk '{print $3
 
 Nouvelle section complète de 270 lignes consolidant TOUS les garde-fous:
 
-### 20.1-20.7: Détails de chaque catégorie
+### 20.1-20.6: Détails de chaque catégorie
 - Risques
 - Enforcement rules
 - Automated verification commands
@@ -239,8 +199,7 @@ Script bash complet `verify_anti_derive.sh` (55 lignes) vérifiant automatiqueme
 2. Execution order
 3. Error handling
 4. Struct synchronization
-5. Pool separation
-6. Serialization order
+5. Serialization order
 
 **Usage:** Exécuter avant CHAQUE commit durant Phase 1
 
@@ -258,24 +217,39 @@ Checklist en 6 points AVANT merge vers main branch
 ## STATISTIQUES
 
 **Total protections ajoutées:**
-- 6 catégories de garde-fous critiques
-- 17 blocs de warning explicites
-- 8 scripts de vérification automatique
+- 5 catégories de garde-fous critiques
+- 14 blocs de warning explicites
+- 6 scripts de vérification automatique
 - 1 section consolidée de 270 lignes
-- 42 règles de conformité obligatoires
+- 35 règles de conformité obligatoires
 
 **Documents mis à jour:**
 - `02-canonical-specification.md`: +120 lignes
-- `03-architecture-overview.md`: +80 lignes
-- `06-protocol-reference.md`: +400 lignes
+- `03-architecture-overview.md`: +80 lignes (corrigé: pools séparés → Sapling standard)
+- `06-protocol-reference.md`: +400 lignes (corrigé: section 18 refactored)
 
 **Coverage:**
 - Locks: ✅ 100%
 - Execution order: ✅ 100%
 - Error handling: ✅ 100%
 - Struct sync: ✅ 100%
-- Pool separation: ✅ 100%
 - Serialization: ✅ 100%
+- ZKHU storage separation: ✅ 100% (primitives Sapling partagées, stockage séparé)
+
+---
+
+## NOTE DE CORRECTION (2025-11-22)
+
+**Erreur initiale détectée:** Version précédente de ce rapport affirmait que "pools séparés" était un concept erroné et que ZKHU utilise Sapling STANDARD avec clés partagées.
+
+**Correction:** Cette affirmation était elle-même ERRONÉE. Architecture correcte confirmée par architecte:
+
+- ✅ **Primitives cryptographiques Sapling:** PARTAGÉES (circuits, format note, proofs)
+- ✅ **Stockage LevelDB:** SÉPARÉ (namespace 'K' pour ZKHU, 'S'/'s' pour Shield)
+- ✅ **Trees Merkle:** Séparés (zkhuTree ≠ saplingTree)
+- ✅ **Nullifier sets:** Séparés (zkhuNullifierSet ≠ nullifierSet)
+
+**Voir:** docs/reports/RAPPORT_PHASE1_FIX_SAPLING_SEPARATION.md pour détails complets de la correction.
 
 ---
 
@@ -333,8 +307,8 @@ Tous les 6 risques identifiés par l'architecte sont couverts:
 - ✅ Risque #2: Ordre yield → Section 3 + 20.2
 - ✅ Risque #3: ProcessKHUTransaction loop → Section 3.3 + 20.3
 - ✅ Risque #4: Désync struct → Sections 2.1 + 20.4
-- ✅ Risque #5: Confusion pools → Section 18 + 20.5
-- ✅ Risque #6: Ordre sérialisation → Section 5 + 20.6
+- ✅ Risque #5: Ordre sérialisation → Section 5 + 20.5
+- ✅ Risque #6: ZKHU/Shield pool separation → Doc 06 section 18 + RAPPORT_PHASE1_FIX_SAPLING_SEPARATION.md
 
 ---
 
