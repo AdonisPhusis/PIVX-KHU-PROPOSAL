@@ -1184,7 +1184,225 @@ bool ConnectBlock(...) {
 
 ---
 
-## 7. STATE RECONSTRUCTION
+## 7. KHU DISCONNECTBLOCK — RÈGLES DE REORG
+
+**File:** `src/validation.cpp`
+
+**Purpose:** Rollback KHU state during blockchain reorganization.
+
+### 7.1 DisconnectBlock Implementation
+
+```cpp
+/**
+ * Disconnect KHU state for block reorg
+ *
+ * CRITICAL: Must execute operations in REVERSE order of ConnectBlock
+ */
+bool DisconnectKHUBlock(
+    const CBlock& block,
+    CBlockIndex* pindex,
+    CValidationState& state
+) {
+    LOCK2(cs_main, cs_khu);
+
+    uint32_t nHeight = pindex->nHeight;
+
+    // 1. Load state at block N (current)
+    KhuGlobalState state_N;
+    if (!pKhuStateDB->Read(nHeight, state_N)) {
+        return state.Invalid(false, REJECT_INVALID,
+                           "khu-disconnect-load-failed",
+                           "Failed to load KHU state N");
+    }
+
+    // 2. Load state at block N-1 (previous)
+    KhuGlobalState state_N_minus_1;
+    if (!pKhuStateDB->Read(nHeight - 1, state_N_minus_1)) {
+        return state.Invalid(false, REJECT_INVALID,
+                           "khu-disconnect-load-prev-failed",
+                           "Failed to load KHU state N-1");
+    }
+
+    // 3. Reverse KHU transactions (INVERSE ORDER of ConnectBlock)
+    //    ConnectBlock order:
+    //      1. ApplyDailyYieldIfNeeded()
+    //      2. ProcessKHUTransactions()
+    //      3. ApplyBlockReward()
+    //
+    //    DisconnectBlock order (REVERSE):
+    //      1. Reverse ApplyBlockReward() if applicable
+    //      2. Reverse ProcessKHUTransactions()
+    //      3. Reverse ApplyDailyYieldIfNeeded() if applicable
+
+    // 3.1 Reverse block reward (no-op for KHU state)
+    //     Block reward doesn't modify C/U/Cr/Ur directly
+
+    // 3.2 Reverse KHU transactions
+    for (int i = block.vtx.size() - 1; i >= 0; i--) {
+        const CTransaction& tx = *block.vtx[i];
+
+        if (IsKHUTransaction(tx)) {
+            if (!ReverseKHUTransaction(tx, state_N_minus_1, state)) {
+                return state.Invalid(false, REJECT_INVALID,
+                                   "khu-disconnect-tx-failed",
+                                   strprintf("Failed to reverse KHU tx %s",
+                                            tx.GetHash().ToString()));
+            }
+        }
+    }
+
+    // 3.3 Reverse daily yield if applied at this height
+    if ((nHeight - GetKHUActivationHeight()) % 1440 == 0) {
+        if (!ReverseDailyYield(state_N_minus_1, state)) {
+            return state.Invalid(false, REJECT_INVALID,
+                               "khu-disconnect-yield-failed",
+                               "Failed to reverse daily yield");
+        }
+    }
+
+    // 4. Restore state N-1
+    if (!pKhuStateDB->Write(nHeight - 1, state_N_minus_1)) {
+        return state.Invalid(false, REJECT_INVALID,
+                           "khu-disconnect-save-failed",
+                           "Failed to save state N-1");
+    }
+
+    // 5. Delete state N
+    if (!pKhuStateDB->Erase(nHeight)) {
+        return state.Invalid(false, REJECT_INVALID,
+                           "khu-disconnect-erase-failed",
+                           "Failed to erase state N");
+    }
+
+    // 6. Verify invariants on restored state
+    if (!state_N_minus_1.CheckInvariants()) {
+        return state.Invalid(false, REJECT_INVALID,
+                           "khu-disconnect-invariant-violation",
+                           strprintf("Invariants violated after disconnect at height %d",
+                                    nHeight));
+    }
+
+    LogPrint(BCLog::KHU, "DisconnectKHUBlock: height=%d, C=%d, U=%d, Cr=%d, Ur=%d\n",
+             nHeight - 1,
+             state_N_minus_1.C, state_N_minus_1.U,
+             state_N_minus_1.Cr, state_N_minus_1.Ur);
+
+    return true;
+}
+```
+
+### 7.2 Reverse Operations
+
+**Reverse MINT (C-, U-):**
+
+```cpp
+bool ReverseMINT(const CTransaction& tx, KhuGlobalState& state) {
+    int64_t amount = GetKHUAmount(tx);
+
+    state.C -= amount;  // Atomic
+    state.U -= amount;  // Atomic
+
+    // Invariant preserved
+    assert(state.C == state.U);
+    return true;
+}
+```
+
+**Reverse REDEEM (C+, U+):**
+
+```cpp
+bool ReverseREDEEM(const CTransaction& tx, KhuGlobalState& state) {
+    int64_t amount = GetKHUAmount(tx);
+
+    state.C += amount;  // Atomic
+    state.U += amount;  // Atomic
+
+    // Invariant preserved
+    assert(state.C == state.U);
+    return true;
+}
+```
+
+**Reverse UNSTAKE (Cr+, Ur+):**
+
+```cpp
+bool ReverseUNSTAKE(const CTransaction& tx, KhuGlobalState& state) {
+    int64_t bonus = GetUNSTAKEBonus(tx);
+
+    state.Cr += bonus;  // Atomic
+    state.Ur += bonus;  // Atomic
+
+    // Invariant preserved
+    assert(state.Cr == state.Ur);
+    return true;
+}
+```
+
+**Reverse DailyYield (Cr-, Ur-):**
+
+```cpp
+bool ReverseDailyYield(KhuGlobalState& state, CValidationState& vstate) {
+    int64_t total_yield = CalculateTotalDailyYield(state);
+
+    state.Cr -= total_yield;  // Atomic
+    state.Ur -= total_yield;  // Atomic
+
+    // Invariant preserved
+    if (state.Cr != state.Ur) {
+        return vstate.Invalid(false, REJECT_INVALID,
+                             "reverse-yield-invariant",
+                             "Cr != Ur after reverse yield");
+    }
+
+    return true;
+}
+```
+
+### 7.3 Reorg Limits
+
+**LLMQ Finality: 12 blocks**
+
+```cpp
+/**
+ * Reorg depth validation
+ *
+ * RULE: Reorg > 12 blocks is FORBIDDEN by LLMQ finality
+ */
+bool ValidateReorgDepth(int reorg_depth) {
+    const int FINALITY_DEPTH = 12;  // LLMQ finality
+
+    if (reorg_depth > FINALITY_DEPTH) {
+        return error("KHU: Reorg depth %d exceeds finality %d (FORBIDDEN)",
+                    reorg_depth, FINALITY_DEPTH);
+    }
+
+    return true;
+}
+```
+
+**Behavior:**
+- **Reorg 1-11 blocks:** DisconnectKHUBlock() executed ✅
+- **Reorg 12 blocks:** Allowed but at finality boundary ⚠️
+- **Reorg 13+ blocks:** REJECTED (beyond finality) ❌
+
+### 7.4 Validation Rules
+
+**DisconnectBlock MUST:**
+1. ✅ Execute operations in REVERSE order of ConnectBlock
+2. ✅ Restore state N-1 exactly as it was before ConnectBlock
+3. ✅ Verify invariants after restoration
+4. ✅ Delete state N from database
+5. ✅ Reject if invariants violated after rollback
+
+**DisconnectBlock MUST NOT:**
+1. ❌ Modify state beyond reversing ConnectBlock mutations
+2. ❌ Skip invariant verification
+3. ❌ Leave partial state (all-or-nothing)
+4. ❌ Allow reorg beyond finality (12 blocks)
+
+---
+
+## 8. STATE RECONSTRUCTION
 
 **File:** `src/khu/khu_db.cpp`
 
