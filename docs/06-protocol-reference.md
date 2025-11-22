@@ -344,7 +344,744 @@ Secret protection is handled **off-chain** by Gateway watchers, NOT by PIVX Core
 
 ---
 
-(Due to length constraints, I need to truncate the response here, but the document continues with sections 5-16 covering all implementation details...)
+## 5. STATE HASH AND CHAINING
+
+**File:** `src/khu/khu_state.cpp`
+
+**Purpose:**
+- Chain KHU states via `hashPrevState`
+- Support finality signatures
+- Enable audit and verification
+
+**Implementation:**
+
+```cpp
+uint256 KhuGlobalState::GetHash() const {
+    CHashWriter ss(SER_GETHASH, 0);
+
+    // Serialize all consensus fields
+    ss << C;
+    ss << U;
+    ss << Cr;
+    ss << Ur;
+    ss << R_annual;
+    ss << R_MAX_dynamic;
+    ss << last_domc_height;
+    ss << domc_cycle_start;
+    ss << domc_cycle_length;
+    ss << domc_phase_length;
+    ss << last_yield_update_height;
+    ss << nHeight;
+    ss << hashBlock;
+    ss << hashPrevState;
+
+    return ss.GetHash();  // SHA256d (double SHA256)
+}
+```
+
+**Rules:**
+- All consensus fields MUST be included
+- Deterministic order (struct declaration order)
+- SHA256d (Bitcoin/PIVX standard)
+- Used in finality signatures and state verification
+
+---
+
+## 6. NETWORK ACTIVATION
+
+**File:** `src/chainparams.cpp`
+
+**Per-network activation heights:**
+
+```cpp
+// Mainnet
+class CMainParams : public CChainParams {
+    consensus.vUpgrades[Consensus::UPGRADE_KHU].nActivationHeight = 9999999;  // TBD
+    consensus.vUpgrades[Consensus::UPGRADE_KHU].nProtocolVersion = 70023;
+};
+
+// Testnet
+class CTestNetParams : public CChainParams {
+    consensus.vUpgrades[Consensus::UPGRADE_KHU].nActivationHeight = 500000;  // TBD
+};
+
+// Regtest (immediate activation for testing)
+class CRegTestParams : public CChainParams {
+    consensus.vUpgrades[Consensus::UPGRADE_KHU].nActivationHeight = 1;
+};
+```
+
+**Activation check:**
+
+```cpp
+// src/validation.cpp
+bool ConnectBlock(...) {
+    if (NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_KHU)) {
+        // KHU consensus rules active
+    }
+}
+```
+
+---
+
+## 7. STATE RECONSTRUCTION
+
+**File:** `src/khu/khu_db.cpp`
+
+**Purpose:** Rebuild KHU state after DB corruption or resync.
+
+**Implementation:**
+
+```cpp
+bool CKHUStateDB::ReconstructState(uint32_t fromHeight, uint32_t toHeight) {
+    // 1. Genesis state
+    KhuGlobalState state;
+    state.C = 0;
+    state.U = 0;
+    state.Cr = 0;
+    state.Ur = 0;
+    state.R_annual = 500;  // 5% initial
+    state.R_MAX_dynamic = 3000;
+    state.last_yield_update_height = fromHeight;
+    state.domc_cycle_start = fromHeight + 525600;  // 1 year
+    state.domc_cycle_length = 43200;
+    state.domc_phase_length = 4320;
+    state.nHeight = fromHeight;
+    state.hashPrevState.SetNull();
+
+    // 2. Replay blocks
+    for (uint32_t h = fromHeight + 1; h <= toHeight; h++) {
+        CBlockIndex* pindex = chainActive[h];
+        CBlock block;
+        ReadBlockFromDisk(block, pindex, consensusParams);
+
+        // Apply KHU transactions
+        for (const auto& tx : block.vtx) {
+            ApplyKHUTransaction(*tx, state, view, validationState);
+        }
+
+        // Apply daily yield
+        if ((h - state.last_yield_update_height) >= 1440) {
+            UpdateDailyYield(state, h, view);
+            state.last_yield_update_height = h;
+        }
+
+        // Update state metadata
+        uint256 prevHash = state.GetHash();
+        state.nHeight = h;
+        state.hashBlock = pindex->GetBlockHash();
+        state.hashPrevState = prevHash;
+
+        // Checkpoint every 1000 blocks
+        if (h % 1000 == 0) {
+            WriteKHUState(state);
+        }
+    }
+
+    // Final write
+    return WriteKHUState(state);
+}
+```
+
+---
+
+## 8. ATOMIC DATABASE WRITES
+
+**File:** `src/khu/khu_db.cpp`
+
+**Purpose:** Guarantee all-or-nothing state persistence.
+
+**Implementation:**
+
+```cpp
+bool CKHUStateDB::WriteKHUState(const KhuGlobalState& state) {
+    CDBBatch batch(*this);
+
+    // Write state at height
+    batch.Write(std::make_pair('K', std::make_pair('S', state.nHeight)), state);
+
+    // Write state by hash
+    batch.Write(std::make_pair('K', std::make_pair('H', state.GetHash())), state);
+
+    // Write best state hash
+    batch.Write(std::make_pair('K', 'B'), state.GetHash());
+
+    // Atomic commit with fsync
+    return WriteBatch(batch, true);  // fSync=true
+}
+```
+
+**Rules:**
+- Use `CDBBatch` for multiple writes
+- `fSync=true` forces disk synchronization
+- All writes succeed or all fail (atomicity)
+- No partial state corruption possible
+
+---
+
+## 9. GENESIS STATE INITIALIZATION
+
+**File:** `src/validation.cpp`
+
+**Purpose:** Initialize KHU state at activation height.
+
+**Implementation:**
+
+```cpp
+bool ConnectBlock(...) {
+    uint32_t activationHeight = consensusParams.vUpgrades[Consensus::UPGRADE_KHU].nActivationHeight;
+
+    if (pindex->nHeight == activationHeight) {
+        // Initialize genesis KHU state
+        KhuGlobalState genesisState;
+        genesisState.C = 0;
+        genesisState.U = 0;
+        genesisState.Cr = 0;
+        genesisState.Ur = 0;
+
+        // DOMC parameters
+        genesisState.R_annual = 500;  // 5% initial
+        genesisState.R_MAX_dynamic = 3000;  // 30% year 0
+        genesisState.last_domc_height = activationHeight;
+        genesisState.domc_cycle_start = activationHeight + 525600;  // 1 year delay
+        genesisState.domc_cycle_length = 43200;  // 30 days
+        genesisState.domc_phase_length = 4320;   // 3 days
+
+        // Yield scheduler
+        genesisState.last_yield_update_height = activationHeight;  // Critical
+
+        // Chain tracking
+        genesisState.nHeight = activationHeight;
+        genesisState.hashBlock = pindex->GetBlockHash();
+        genesisState.hashPrevState.SetNull();
+
+        // Persist
+        if (!pKHUStateDB->WriteKHUState(genesisState))
+            return state.Invalid("khu-genesis-write-failed");
+    }
+
+    return true;
+}
+```
+
+**Critical:** `last_yield_update_height = activationHeight` ensures first yield at height `activationHeight + 1440`.
+
+---
+
+## 10. LEVELDB KEY AUDIT
+
+**File:** `src/txdb.h`
+
+**Existing PIVX prefixes:**
+
+```
+'c' → Coins (UTXO)
+'B' → Best block hash
+'f' → Flags (tx index, etc.)
+'l' → Last block file
+'R' → Reindex flag
+'t' → Transaction index
+'b' → Block index
+'S' → Sapling anchors
+'N' → Sapling nullifiers
+'s' → Shield stake data
+'z' → Zerocoin (legacy)
+```
+
+**New KHU prefixes (no collision):**
+
+```
+'K' + 'S' + height      → KhuGlobalState at height
+'K' + 'B'               → Best KHU state hash
+'K' + 'H' + hash        → KhuGlobalState by hash
+'K' + 'C' + height      → KHU finality commitment
+'K' + 'U' + outpoint    → CKHUUTXO
+'K' + 'N' + nullifier   → ZKHU note data
+'K' + 'D' + cycle       → DOMC vote data
+'K' + 'T' + outpoint    → HTLC data
+```
+
+**Verified:** No collision with existing PIVX keys.
+
+---
+
+## 11. INVARIANT VIOLATION HANDLING
+
+**File:** `src/validation.cpp`
+
+**Policy:** Immediate block rejection, no tolerance, no correction.
+
+**Implementation:**
+
+```cpp
+bool ConnectBlock(...) {
+    // ... process KHU transactions ...
+
+    // Check invariants
+    if (!newState.CheckInvariants()) {
+        return state.Invalid(false, REJECT_INVALID, "khu-invariant-violation",
+                           strprintf("Invariant violation: C=%d U=%d Cr=%d Ur=%d at height %d",
+                                   newState.C, newState.U, newState.Cr, newState.Ur,
+                                   pindex->nHeight));
+    }
+
+    // ... persist state ...
+}
+```
+
+**CheckInvariants implementation:**
+
+```cpp
+// src/khu/khu_state.h
+bool KhuGlobalState::CheckInvariants() const {
+    // INVARIANT_1: C == U (allow U=0 case)
+    bool cd_ok = (U == 0 || C == U);
+
+    // INVARIANT_2: Cr == Ur (allow Ur=0 case)
+    bool cdr_ok = (Ur == 0 || Cr == Ur);
+
+    return cd_ok && cdr_ok;
+}
+```
+
+**Behavior on violation:**
+- Block rejected
+- Peer banned (score -100)
+- Detailed logging (C, U, Cr, Ur, height)
+- No automatic correction attempted
+
+---
+
+## 12. LOCK ORDERING
+
+**File:** `src/khu/khu_state.cpp`
+
+**Rule:** Always `LOCK2(cs_main, cs_khu)` (never reversed).
+
+**Declaration:**
+
+```cpp
+// Global lock for KHU state
+CCriticalSection cs_khu;
+```
+
+**Usage:**
+
+```cpp
+// src/khu/khu_state.cpp
+bool UpdateKHUState(...) {
+    LOCK2(cs_main, cs_khu);  // Correct order
+
+    // Modify khuGlobalState
+
+    return true;
+}
+
+// src/rpc/khu.cpp
+UniValue getkhuglobalstate(...) {
+    LOCK2(cs_main, cs_khu);  // Same order in RPC
+
+    KhuGlobalState state = khuGlobalState;
+
+    return JSONFromState(state);
+}
+```
+
+**Rationale:**
+- `cs_main` = global blockchain lock (highest priority)
+- `cs_khu` = KHU-specific lock (lower priority)
+- Consistent order prevents deadlocks
+
+**Detection:** Compile with `-DDEBUG_LOCKORDER` to detect violations.
+
+---
+
+## 13. EMISSION OVERFLOW PROTECTION
+
+**File:** `src/init.cpp`
+
+**Purpose:** Verify emission constants cannot overflow int64_t.
+
+**Implementation:**
+
+```cpp
+bool AppInitMain() {
+    // ... initialization ...
+
+    // Compile-time check
+    static_assert(6 * COIN < std::numeric_limits<int64_t>::max() / 3,
+                  "Emission overflow: max reward exceeds int64_t");
+
+    // Runtime verification
+    int64_t total_emission = 0;
+    for (int year = 0; year < 6; year++) {
+        int64_t reward_year = (6 - year) * COIN;
+        int64_t year_emission = reward_year * 3 * 525600;
+
+        assert(total_emission + year_emission > total_emission);  // No overflow
+        total_emission += year_emission;
+    }
+
+    LogPrintf("KHU: Total emission cap = %d PIV\n", total_emission / COIN);
+    // Expected: 33,112,800 PIV
+
+    return true;
+}
+```
+
+**Verification:**
+- Max reward per block = 18 PIV = 1,800,000,000 satoshis
+- `int64_t::max` = 9,223,372,036,854,775,807
+- 1,800,000,000 << int64_t::max ✓ (safe)
+
+---
+
+## 14. DAO REWARD DISTRIBUTION
+
+**File:** `src/validation.cpp`
+
+**Purpose:** Route DAO share to PIVX budget system treasury.
+
+**Implementation:**
+
+```cpp
+void CreateCoinStake(CBlock& block, const CChainParams& params) {
+    CAmount blockReward = GetBlockSubsidy(block.nHeight, params.GetConsensus());
+
+    // Three equal outputs
+
+    // 1. Staker
+    CTxOut stakerOut(blockReward, GetScriptForStaker());
+    block.vtx[1]->vout.push_back(stakerOut);
+
+    // 2. Masternode
+    CTxOut mnOut(blockReward, GetScriptForMasternode());
+    block.vtx[1]->vout.push_back(mnOut);
+
+    // 3. DAO → Treasury address
+    CScript treasuryScript = GetScriptForDestination(params.GetTreasuryAddress());
+    CTxOut daoOut(blockReward, treasuryScript);
+    block.vtx[1]->vout.push_back(daoOut);
+}
+```
+
+**Treasury address definition:**
+
+```cpp
+// src/chainparams.cpp
+class CMainParams : public CChainParams {
+    // Treasury multisig address (controlled by governance)
+    strTreasuryAddress = "DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn";  // Example
+};
+```
+
+**Rules:**
+- Three equal shares (staker == masternode == DAO)
+- DAO funds go to existing treasury system
+- No new payout mechanism needed
+
+---
+
+## 15. YIELD PRECISION (INT64)
+
+**File:** `src/khu/khu_yield.cpp`
+
+**Issue:** Integer division may lose fractional satoshis.
+
+**Analysis:**
+
+```cpp
+// Example: 1000 KHU staked at R=500 (5%)
+int64_t amount = 1000 * COIN;          // 100,000,000,000 satoshis
+uint16_t R_annual = 500;               // 5%
+
+// Annual yield
+int64_t annual = (amount * R_annual) / 10000;
+// = (100,000,000,000 * 500) / 10,000
+// = 500,000,000 satoshis (5 KHU)
+
+// Daily yield
+int64_t daily = annual / 365;
+// = 500,000,000 / 365
+// = 1,369,863 satoshis/day
+
+// Loss per division
+double exact = 500000000.0 / 365.0;   // 1,369,863.0136986...
+int64_t integer = 500000000 / 365;    // 1,369,863
+double loss = exact - integer;        // ~0.014 satoshis/day
+```
+
+**Conclusion:**
+- Loss: ~0.014 satoshis/day per 1000 KHU
+- Over 1 year: ~5 satoshis lost (0.00000005 KHU)
+- **Negligible and acceptable**
+- Integer division = deterministic (required for consensus)
+- Rounding down = conservative (no accidental inflation)
+
+**Implementation:**
+
+```cpp
+int64_t CalculateDailyYield(int64_t amount, uint16_t R_annual) {
+    // All integer arithmetic (deterministic)
+    int64_t annual = (amount * R_annual) / 10000;
+    int64_t daily = annual / 365;
+
+    // Rounds down (conservative)
+    return daily;
+}
+```
+
+**Prohibition:** Floating point arithmetic forbidden (non-deterministic).
+
+---
+
+## 16. HTLC PREIMAGE VISIBILITY
+
+**File:** `src/khu/khu_htlc.cpp`
+
+**Issue:** Is HTLC preimage visible in mempool?
+
+**Answer:** Yes, and this is expected behavior.
+
+**Implementation:**
+
+```cpp
+bool CheckHTLCClaim(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& view) {
+    // 1. Load HTLC
+    HTLCState htlc;
+    if (!view.GetHTLC(tx.vin[0].prevout, htlc))
+        return state.Invalid("htlc-not-found");
+
+    // 2. Extract preimage (visible on-chain and in mempool)
+    std::vector<unsigned char> preimage;
+    if (!tx.GetHTLCPreimage(preimage))
+        return state.Invalid("htlc-missing-preimage");
+
+    // 3. Verify hashlock
+    uint256 hash = Hash(preimage.begin(), preimage.end());
+    if (hash != htlc.hashlock)
+        return state.Invalid("htlc-invalid-preimage");
+
+    // 4. Verify timelock not expired
+    if (chainActive.Height() > htlc.timelock)
+        return state.Invalid("htlc-timelock-expired");
+
+    // 5. Transfer KHU_T to recipient
+    return true;
+}
+```
+
+**Cross-chain atomic swap flow:**
+
+```
+1. Alice: HTLC_CREATE on PIVX (hashlock=H, timelock=T1)
+2. Bob:   HTLC_CREATE on Monero (hashlock=H, timelock=T2, T2 < T1)
+3. Alice: HTLC_CLAIM on Monero (reveals preimage P)
+4. Bob:   Sees P in Monero blockchain
+5. Bob:   HTLC_CLAIM on PIVX (uses P)
+```
+
+**Mempool visibility:**
+- Preimage visible in mempool when HTLC_CLAIM broadcast
+- Gateway watchers monitor both chains
+- No special mempool isolation needed
+- Standard RBF (Replace-By-Fee) rules apply
+
+**Security:**
+- HTLC security relies on timelock enforcement (consensus)
+- Not on mempool privacy (impossible to achieve)
+- Gateway watchers handle race conditions
+
+**Mempool rules:** No special handling (see section 4).
+
+---
+
+## 17. REDEEM TRANSACTION EXEMPTION
+
+**File:** `src/consensus/tx_verify.cpp`
+
+**Issue:** REDEEM creates PIV without PIV inputs. How?
+
+**Solution:** Transaction type exemption from standard validation.
+
+**Implementation:**
+
+```cpp
+bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& view) {
+    // Exempt special transaction types
+    if (tx.nType == CTransaction::TX_KHU_REDEEM) {
+        // Validation done in CheckKHURedeem() instead
+        return true;
+    }
+
+    // Standard input validation for normal transactions
+    CAmount nValueIn = 0;
+    for (const auto& txin : tx.vin) {
+        const Coin& coin = view.AccessCoin(txin.prevout);
+        if (coin.IsSpent())
+            return state.Invalid("bad-txns-inputs-spent");
+
+        nValueIn += coin.out.nValue;
+    }
+
+    // Standard checks
+    if (nValueIn < tx.GetValueOut())
+        return state.Invalid("bad-txns-in-belowout");
+
+    return true;
+}
+
+// KHU-specific validation
+bool CheckKHURedeem(const CTransaction& tx, CValidationState& state, const KhuGlobalState& khuState) {
+    CKHURedeemPayload payload;
+    GetTxPayload(tx, payload);
+
+    // Verify sufficient collateral
+    if (khuState.C < payload.khuAmount)
+        return state.Invalid("khu-insufficient-collateral");
+
+    // Verify KHU_T inputs are spent
+    for (const auto& txin : tx.vin) {
+        CKHUUTXO khuCoin;
+        if (!view.GetKHUCoin(txin.prevout, khuCoin))
+            return state.Invalid("khu-redeem-missing-input");
+    }
+
+    // PIV output creation is authorized
+    return true;
+}
+```
+
+**Pattern:** Same as ProRegTx, shield stake, etc. in PIVX.
+
+---
+
+## 18. SAPLING POOL SEPARATION
+
+**File:** `src/sapling/sapling_state.h`
+
+**Issue:** How to separate ZKHU from zPIV Sapling notes?
+
+**Solution:** Separate Merkle trees (anchors).
+
+**Implementation:**
+
+```cpp
+class SaplingState {
+public:
+    // zPIV Sapling pool
+    SaplingMerkleTree saplingTree;
+    std::set<uint256> nullifierSet;
+
+    // ZKHU pool (separate)
+    SaplingMerkleTree zkhuTree;
+    std::set<uint256> zkhuNullifierSet;
+
+    SERIALIZE_METHODS(SaplingState, obj) {
+        READWRITE(obj.saplingTree, obj.nullifierSet);
+        READWRITE(obj.zkhuTree, obj.zkhuNullifierSet);
+    }
+};
+
+// STAKE: Add to ZKHU tree
+bool ProcessKHUStake(const CTransaction& tx, SaplingState& saplingState) {
+    const OutputDescription& output = tx.sapData->vShieldedOutput[0];
+
+    // Add commitment to ZKHU tree (not zPIV tree)
+    saplingState.zkhuTree.append(output.cmu);
+
+    return true;
+}
+
+// UNSTAKE: Verify against ZKHU tree
+bool ProcessKHUUnstake(const CTransaction& tx, SaplingState& saplingState) {
+    const SpendDescription& spend = tx.sapData->vShieldedSpend[0];
+
+    // Check nullifier in ZKHU set (not zPIV set)
+    if (saplingState.zkhuNullifierSet.count(spend.nullifier))
+        return false;  // Double-spend
+
+    // Verify anchor matches ZKHU tree root (not zPIV tree)
+    if (spend.anchor != saplingState.zkhuTree.root())
+        return false;  // Invalid anchor
+
+    saplingState.zkhuNullifierSet.insert(spend.nullifier);
+
+    return true;
+}
+```
+
+**Consequences:**
+- ZKHU and zPIV completely isolated
+- No conversion between pools possible
+- Independent anonymity sets
+- Separate audit trails
+
+**Storage:**
+
+```
+LevelDB keys:
+'S' + height → zPIV Sapling anchor
+'K' + 'A' + height → ZKHU anchor (new)
+```
+
+---
+
+## 19. RPC IMPLEMENTATION REFERENCE
+
+**File:** `src/rpc/khu.cpp`
+
+**Global state query:**
+
+```cpp
+UniValue getkhuglobalstate(const JSONRPCRequest& request) {
+    LOCK2(cs_main, cs_khu);
+
+    KhuGlobalState state;
+    pKHUStateDB->ReadBestKHUState(state);
+
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("height", (int)state.nHeight);
+    result.pushKV("blockhash", state.hashBlock.GetHex());
+    result.pushKV("C", ValueFromAmount(state.C));
+    result.pushKV("U", ValueFromAmount(state.U));
+    result.pushKV("Cr", ValueFromAmount(state.Cr));
+    result.pushKV("Ur", ValueFromAmount(state.Ur));
+    result.pushKV("R_annual", state.R_annual);
+    result.pushKV("R_MAX_dynamic", state.R_MAX_dynamic);
+    result.pushKV("CD", (state.U == 0) ? 0.0 : (double)state.C / state.U);
+    result.pushKV("CDr", (state.Ur == 0) ? 0.0 : (double)state.Cr / state.Ur);
+    result.pushKV("invariants_ok", state.CheckInvariants());
+
+    return result;
+}
+```
+
+**Full RPC interface:**
+
+```cpp
+// State queries
+UniValue getkhuglobalstate(const JSONRPCRequest& request);
+UniValue getkhustateathash(const JSONRPCRequest& request);
+UniValue getkhustatehistory(const JSONRPCRequest& request);
+
+// Wallet operations
+UniValue mintkhu(const JSONRPCRequest& request);         // PIV → KHU_T
+UniValue redeemkhu(const JSONRPCRequest& request);       // KHU_T → PIV
+UniValue stakekhu(const JSONRPCRequest& request);        // KHU_T → ZKHU
+UniValue unstakekhu(const JSONRPCRequest& request);      // ZKHU → KHU_T
+
+// DOMC
+UniValue votedomc(const JSONRPCRequest& request);        // Submit vote
+UniValue getdomcstatus(const JSONRPCRequest& request);   // Cycle info
+UniValue getdomcvotes(const JSONRPCRequest& request);    // List votes
+
+// HTLC
+UniValue createhtlc(const JSONRPCRequest& request);
+UniValue claimhtlc(const JSONRPCRequest& request);
+UniValue refundhtlc(const JSONRPCRequest& request);
+UniValue listhtlcs(const JSONRPCRequest& request);
+```
 
 ---
 
@@ -356,6 +1093,7 @@ All structures defined.
 All algorithms specified.
 All file locations determined.
 All functions prototyped.
+All consensus decisions documented.
 
 Implementation must follow this reference exactly.
 
