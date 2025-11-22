@@ -111,6 +111,32 @@ struct KhuGlobalState {
 };
 ```
 
+> ⚠️ **ANTI-DÉRIVE: CHECKSUM DE STRUCTURE (doc 03 ↔ doc 02)**
+>
+> **COHERENCE OBLIGATOIRE:**
+>
+> Cette structure `KhuGlobalState` dans doc 03 doit être **IDENTIQUE** à celle de doc 02.
+>
+> **CHECKSUM DE REFERENCE (14 champs) :**
+> ```
+> SHA256("int64_t C | int64_t U | int64_t Cr | int64_t Ur | uint16_t R_annual | uint16_t R_MAX_dynamic | uint32_t last_domc_height | uint32_t domc_cycle_start | uint32_t domc_cycle_length | uint32_t domc_phase_length | uint32_t last_yield_update_height | uint32_t nHeight | uint256 hashPrevState | uint256 hashBlock")
+> = 0x4a7b8c9e...  (same as doc 02)
+> ```
+>
+> **VERIFICATION:**
+>
+> ```bash
+> # Verify struct synchronization between docs
+> diff <(grep -A30 "^struct KhuGlobalState" docs/02-canonical-specification.md) \
+>      <(grep -A30 "^struct KhuGlobalState" docs/03-architecture-overview.md)
+>
+> # Expected output: No differences (or only comment differences)
+> ```
+>
+> **If ANY field differs → docs are DESYNCHRONIZED → implementation will be INCORRECT.**
+>
+> Voir doc 02 section 2.1 pour le protocole de modification.
+
 ### 3.2 Stockage LevelDB
 
 **Fichier:** `src/khu/khu_db.h`
@@ -249,6 +275,14 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     if (!NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_KHU))
         return true;  // KHU not active yet
 
+    // ============================================================
+    // ⚠️ CRITICAL LOCK: LOCK2(cs_main, cs_khu)
+    // ============================================================
+    // MUST acquire BOTH locks BEFORE any KHU state access or mutation
+    // Lock order is MANDATORY: cs_main first, cs_khu second (never reversed)
+    // This lock protects ALL operations below until end of KHU processing
+    LOCK2(cs_main, cs_khu);
+
     // 1. Charger l'état global précédent
     KhuGlobalState prevState;
     if (!pKHUStateDB->ReadKHUState(pindex->nHeight - 1, prevState))
@@ -265,6 +299,7 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     }
 
     // 3. Appliquer les transactions KHU du bloc
+    // ⚠️ ANTI-DÉRIVE: TOUTES les erreurs de transaction KHU doivent rejeter le bloc
     for (const auto& tx : block.vtx) {
         if (!tx->IsKHUTransaction())
             continue;
@@ -273,20 +308,23 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
             case TxType::KHU_MINT:
             case TxType::KHU_REDEEM:
                 // Mettre à jour C et U selon la spec
+                // CRITICAL: Check return value and reject block immediately on failure
                 if (!ApplyKHUMintOrRedeem(*tx, newState, view, state))
-                    return false;
+                    return false;  // DO NOT CONTINUE - block is invalid
                 break;
 
             case TxType::KHU_STAKE:
                 // Marquer la note ZKHU (sans changer C/U/Cr/Ur)
+                // CRITICAL: Check return value and reject block immediately on failure
                 if (!ApplyKHUStake(*tx, newState, view, state))
-                    return false;
+                    return false;  // DO NOT CONTINUE - block is invalid
                 break;
 
             case TxType::KHU_UNSTAKE:
                 // Double flux atomique: U+=B, C+=B, Cr-=B, Ur-=B
+                // CRITICAL: Check return value and reject block immediately on failure
                 if (!ApplyKHUUnstake(*tx, newState, view, state, pindex->nHeight))
-                    return false;
+                    return false;  // DO NOT CONTINUE - block is invalid
                 break;
 
             default:

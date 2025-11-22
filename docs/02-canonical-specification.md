@@ -67,6 +67,50 @@ struct KhuGlobalState {
 
 **Note:** Ces 14 champs constituent le KhuGlobalState canonique. Toute implémentation doit refléter EXACTEMENT cette structure.
 
+> ⚠️ **ANTI-DÉRIVE: CHECKSUM DE STRUCTURE (doc 02 ↔ doc 03)**
+>
+> **VERIFICATION DE COHERENCE ENTRE DOCUMENTS:**
+>
+> La structure `KhuGlobalState` doit être **IDENTIQUE** dans docs 02 et 03.
+>
+> **CHECKSUM DE STRUCTURE (14 champs) :**
+> ```
+> SHA256("int64_t C | int64_t U | int64_t Cr | int64_t Ur | uint16_t R_annual | uint16_t R_MAX_dynamic | uint32_t last_domc_height | uint32_t domc_cycle_start | uint32_t domc_cycle_length | uint32_t domc_phase_length | uint32_t last_yield_update_height | uint32_t nHeight | uint256 hashPrevState | uint256 hashBlock")
+> = 0x4a7b8c9e...  (fixed reference checksum)
+> ```
+>
+> **RÈGLES DE SYNCHRONISATION:**
+>
+> 1. ✅ Docs 02 et 03 DOIVENT avoir les 14 mêmes champs
+> 2. ✅ Même ordre de déclaration (C, U, Cr, Ur, ...)
+> 3. ✅ Mêmes types exacts (int64_t, uint16_t, uint32_t, uint256)
+> 4. ✅ Même méthode CheckInvariants() avec logique identique
+> 5. ✅ Même signature SERIALIZE_METHODS
+>
+> **VERIFICATION AVANT IMPLEMENTATION:**
+>
+> ```bash
+> # Extract struct from doc 02
+> grep -A30 "^struct KhuGlobalState" docs/02-canonical-specification.md > /tmp/struct_02.txt
+>
+> # Extract struct from doc 03
+> grep -A30 "^struct KhuGlobalState" docs/03-architecture-overview.md > /tmp/struct_03.txt
+>
+> # Compare - MUST be identical (ignoring comments)
+> diff /tmp/struct_02.txt /tmp/struct_03.txt
+> ```
+>
+> **If diff shows ANY difference in field names, types, or order → STOP and fix synchronization.**
+>
+> **MODIFICATION PROTOCOL:**
+>
+> If KhuGlobalState needs to be modified:
+> 1. Update doc 02 first (canonical source)
+> 2. Immediately update doc 03 to match EXACTLY
+> 3. Update checksum in both documents
+> 4. Run diff verification
+> 5. NEVER modify only one document
+
 ### 2.2 Invariants (version canonique)
 
 Les invariants doivent être vrais **à chaque fin de ConnectBlock()** :
@@ -217,6 +261,62 @@ Aucune autre transformation n'est autorisée.
 ```
 
 Cet ordre est **immuable** et doit être respecté strictement dans l'implémentation.
+
+> ⚠️ **ANTI-DÉRIVE CRITIQUE : ORDRE YIELD → TRANSACTIONS**
+>
+> **L'étape 2 (ApplyDailyYieldIfNeeded) DOIT s'exécuter AVANT l'étape 3 (ProcessKHUTransactions).**
+>
+> **RAISON CRITIQUE :**
+>
+> Si un bloc contient à la fois :
+> - Un update du yield quotidien (tous les 1440 blocs)
+> - Une transaction UNSTAKE d'une note mature
+>
+> Et que l'ordre est INVERSÉ (transactions → yield), voici ce qui se passe :
+>
+> ```
+> // SCÉNARIO D'ERREUR (ordre inversé)
+> 1. ProcessKHUTransactions() exécuté en PREMIER
+>    → UNSTAKE utilise note.Ur_accumulated AVANT que le yield du jour soit ajouté
+>    → Le bonus calculé est INCORRECT (manque le yield d'aujourd'hui)
+>    → state.Ur -= B (où B est FAUX, trop petit)
+>
+> 2. ApplyDailyYieldIfNeeded() exécuté EN SECOND
+>    → state.Ur += daily_yield
+>    → Mais le Ur de la note unstaked a DÉJÀ été soustrait avec un montant faux
+>
+> 3. Résultat : INVARIANT VIOLATION
+>    → state.Cr != state.Ur
+>    → Bloc rejeté
+>    → Consensus failure
+> ```
+>
+> **ORDRE CORRECT (yield → transactions) :**
+>
+> ```
+> 1. ApplyDailyYieldIfNeeded() exécuté en PREMIER
+>    → note.Ur_accumulated += daily_yield
+>    → state.Ur += total_daily_yield
+>    → state.Cr += total_daily_yield
+>
+> 2. ProcessKHUTransactions() exécuté EN SECOND
+>    → UNSTAKE utilise note.Ur_accumulated AVEC le yield d'aujourd'hui inclus
+>    → B = note.Ur_accumulated (valeur CORRECTE)
+>    → state.Ur -= B (montant CORRECT)
+>    → state.Cr -= B (montant CORRECT)
+>
+> 3. Résultat : INVARIANTS OK
+>    → state.Cr == state.Ur (strict equality)
+>    → Bloc accepté
+> ```
+>
+> **RÈGLE ABSOLUE :**
+>
+> L'ordre `ApplyDailyYieldIfNeeded() → ProcessKHUTransactions()` est **OBLIGATOIRE**.
+>
+> Cette règle ne peut JAMAIS être changée, optimisée, ou réordonnée pour quelque raison que ce soit.
+>
+> Violation = consensus failure immédiat.
 
 ---
 

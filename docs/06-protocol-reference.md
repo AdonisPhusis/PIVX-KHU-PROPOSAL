@@ -277,9 +277,15 @@ bool ConnectBlock(const CBlock& block, CBlockIndex* pindex, CCoinsViewCache& vie
         ApplyDailyYieldIfNeeded(newState, pindex->nHeight);
 
         // 2. Process KHU transactions (MINT, REDEEM, STAKE, UNSTAKE, DOMC, HTLC)
+        // ⚠️ ANTI-DÉRIVE: Return value MUST be checked for EVERY transaction
         for (const auto& tx : block.vtx) {
+            // CRITICAL: Check return value and stop immediately on failure
+            // DO NOT use patterns like:
+            //   - ProcessKHUTransaction(tx, ...); (ignoring return value)
+            //   - if (ProcessKHUTransaction(...)) continue; (inverted logic)
+            //   - try { ProcessKHUTransaction(...); } catch(...) {} (silent failures)
             if (!ProcessKHUTransaction(tx, newState, view, state))
-                return false;  // Stop immediately if transaction invalid
+                return false;  // Stop immediately - block is INVALID, do not persist
         }
 
         // 3. Apply block reward (emission)
@@ -303,6 +309,68 @@ bool ConnectBlock(const CBlock& block, CBlockIndex* pindex, CCoinsViewCache& vie
 1. **Yield MUST be applied BEFORE transactions** to avoid mismatch with UNSTAKE operations in the same block
 2. **Invariants checked AFTER all operations** (no partial state allowed)
 3. **State persistence is atomic** (all-or-nothing)
+
+> ⚠️ **ANTI-DÉRIVE CRITIQUE : YIELD BEFORE TRANSACTIONS (IMMUABLE)**
+>
+> **Step 1 (ApplyDailyYieldIfNeeded) MUST execute BEFORE Step 2 (ProcessKHUTransaction).**
+>
+> **WHY THIS ORDER IS ABSOLUTELY MANDATORY:**
+>
+> Consider a block at height N where:
+> - N % 1440 == 0 (daily yield update is triggered)
+> - Block contains an UNSTAKE transaction of a mature ZKHU note
+>
+> **WRONG ORDER (transactions → yield) CAUSES CONSENSUS FAILURE:**
+>
+> ```cpp
+> // ❌ FORBIDDEN ORDER
+> for (const auto& tx : block.vtx) {
+>     ProcessKHUTransaction(tx, newState, view, state);  // UNSTAKE executed FIRST
+> }
+> ApplyDailyYieldIfNeeded(newState, nHeight);  // Yield applied SECOND
+>
+> // WHAT HAPPENS:
+> // 1. UNSTAKE reads note.Ur_accumulated (does NOT include today's yield yet)
+> // 2. UNSTAKE calculates B = note.Ur_accumulated (WRONG, too small)
+> // 3. UNSTAKE executes: state.Ur -= B, state.Cr -= B (WRONG amounts)
+> // 4. ApplyDailyYield executes: state.Ur += daily, state.Cr += daily
+> // 5. Result: state.Cr != state.Ur → INVARIANT VIOLATION → block rejected
+> ```
+>
+> **CORRECT ORDER (yield → transactions) PRESERVES INVARIANTS:**
+>
+> ```cpp
+> // ✅ REQUIRED ORDER
+> ApplyDailyYieldIfNeeded(newState, nHeight);  // Yield applied FIRST
+> for (const auto& tx : block.vtx) {
+>     ProcessKHUTransaction(tx, newState, view, state);  // UNSTAKE executed SECOND
+> }
+>
+> // WHAT HAPPENS:
+> // 1. ApplyDailyYield updates: note.Ur_accumulated += daily, state.Ur += daily, state.Cr += daily
+> // 2. UNSTAKE reads note.Ur_accumulated (INCLUDES today's yield)
+> // 3. UNSTAKE calculates B = note.Ur_accumulated (CORRECT, includes all yield)
+> // 4. UNSTAKE executes: state.Ur -= B, state.Cr -= B (CORRECT amounts)
+> // 5. Result: state.Cr == state.Ur → INVARIANTS OK → block accepted
+> ```
+>
+> **ENFORCEMENT:**
+>
+> This order is **HARDCODED** in the consensus specification and **CANNOT BE CHANGED** for:
+> - Performance optimization
+> - Code refactoring
+> - Parallel execution
+> - Any other reason whatsoever
+>
+> **VERIFICATION:**
+>
+> Before Phase 1 implementation, verify:
+> ```bash
+> # Ensure ApplyDailyYield is called BEFORE transaction processing loop
+> grep -A10 "ApplyDailyYield" src/validation.cpp | grep -B5 "for.*vtx"
+> ```
+>
+> If transaction processing appears BEFORE ApplyDailyYield in the code, **STOP IMMEDIATELY** and fix.
 
 **Implementation phases:**
 - Phase 1: Steps 4-5 only (invariants + persistence)
@@ -721,6 +789,158 @@ For every function that modifies C, U, Cr, or Ur:
 
 ---
 
+## 3.3 LOCK VERIFICATION CHECKLIST
+
+**⚠️ ANTI-DÉRIVE: Lock Requirement Enforcement**
+
+The following functions **MUST** be called under `cs_khu` lock to prevent race conditions and ensure atomic state mutations.
+
+### 3.3.1 Functions Requiring cs_khu Lock
+
+**CRITICAL REQUIREMENT:** Before calling ANY of these functions, verify that `cs_khu` lock is held.
+
+```cpp
+// State mutation functions (MUST hold cs_khu)
+bool ApplyDailyYield(KhuGlobalState& state, ...);
+bool ApplyKhuMint(const CTransaction& tx, KhuGlobalState& state, ...);
+bool ApplyKhuRedeem(const CTransaction& tx, KhuGlobalState& state, ...);
+bool ApplyKhuStake(const CTransaction& tx, KhuGlobalState& state, ...);
+bool ApplyKhuUnstake(const CTransaction& tx, KhuGlobalState& state, ...);
+bool ProcessKHUTransaction(const CTransaction& tx, KhuGlobalState& state, ...);
+
+// State read functions (MUST hold cs_khu for consistency)
+KhuGlobalState LoadKhuState(const CBlockIndex* pindex);
+bool KhuGlobalState::CheckInvariants() const;
+```
+
+### 3.3.2 Lock Order Rule
+
+**MANDATORY ORDER:** `LOCK2(cs_main, cs_khu)`
+
+**Never reverse this order.** Always acquire `cs_main` first, then `cs_khu`.
+
+```cpp
+// ✅ CORRECT
+LOCK2(cs_main, cs_khu);
+ApplyDailyYield(newState, nHeight, view);
+
+// ❌ FORBIDDEN - Wrong lock order (deadlock risk)
+LOCK2(cs_khu, cs_main);
+
+// ❌ FORBIDDEN - cs_khu only without cs_main
+LOCK(cs_khu);
+ApplyDailyYield(newState, nHeight, view);
+```
+
+### 3.3.3 ConnectBlock Lock Pattern
+
+**File:** `src/validation.cpp`
+
+**REQUIRED PATTERN for all KHU processing in ConnectBlock:**
+
+```cpp
+bool ConnectBlock(const CBlock& block, CBlockIndex* pindex, CCoinsViewCache& view) {
+    if (NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_KHU)) {
+        // ============================================================
+        // ⚠️ STEP 1: ACQUIRE LOCKS FIRST (before ANY KHU operations)
+        // ============================================================
+        LOCK2(cs_main, cs_khu);
+
+        // STEP 2: Load state
+        KhuGlobalState prevState = LoadKhuState(pindex->pprev);
+        KhuGlobalState newState = prevState;
+
+        // STEP 3: Apply yield (if needed)
+        ApplyDailyYieldIfNeeded(newState, pindex->nHeight);
+
+        // STEP 4: Process transactions
+        for (const auto& tx : block.vtx) {
+            ProcessKHUTransaction(tx, newState, view, state);
+        }
+
+        // STEP 5: Check invariants
+        newState.CheckInvariants();
+
+        // STEP 6: Persist state
+        pKHUStateDB->WriteKHUState(newState);
+
+        // Lock released automatically at end of scope
+    }
+
+    return true;
+}
+```
+
+### 3.3.4 Implementation Verification Checklist
+
+**BEFORE COMMITTING ANY KHU CODE, VERIFY:**
+
+1. ✅ `ConnectBlock()` acquires `LOCK2(cs_main, cs_khu)` at start of KHU processing
+2. ✅ All calls to `ApplyDailyYield()` are under `cs_khu` lock
+3. ✅ All calls to `ApplyKhuUnstake()` are under `cs_khu` lock
+4. ✅ All calls to `ApplyKhuMint()` are under `cs_khu` lock
+5. ✅ All calls to `ApplyKhuRedeem()` are under `cs_khu` lock
+6. ✅ `ApplyDailyYield()` contains `AssertLockHeld(cs_khu)` at top
+7. ✅ `ApplyKhuUnstake()` contains `AssertLockHeld(cs_khu)` at top
+8. ✅ Lock order is always `cs_main` first, `cs_khu` second
+9. ✅ No lock is released between paired state mutations (C/U, Cr/Ur)
+10. ✅ `DisconnectBlock()` also acquires `LOCK2(cs_main, cs_khu)` for reorgs
+
+### 3.3.5 AssertLockHeld Usage
+
+**All state mutation functions MUST assert lock is held:**
+
+```cpp
+void ApplyDailyYield(KhuGlobalState& state, uint32_t nHeight, CCoinsViewCache& view) {
+    // First line: verify lock is held (will crash in debug if not)
+    AssertLockHeld(cs_khu);
+
+    // ... rest of function
+}
+
+bool ApplyKhuUnstake(const CTransaction& tx, KhuGlobalState& state, ...) {
+    // First line: verify lock is held
+    AssertLockHeld(cs_khu);
+
+    // ... rest of function
+}
+```
+
+**Rationale:** Catches lock violations during development/testing before they cause production bugs.
+
+### 3.3.6 Automated Search for Lock Violations
+
+**Before Phase 1 implementation, run these checks:**
+
+```bash
+# Search for ApplyDailyYield calls without preceding LOCK
+grep -B5 "ApplyDailyYield" src/**/*.cpp | grep -v "LOCK"
+
+# Search for ApplyKhuUnstake calls without preceding LOCK
+grep -B5 "ApplyKhuUnstake" src/**/*.cpp | grep -v "LOCK"
+
+# Search for ProcessKHUTransaction calls without preceding LOCK
+grep -B5 "ProcessKHUTransaction" src/**/*.cpp | grep -v "LOCK"
+
+# Verify all state mutation functions have AssertLockHeld
+grep -A1 "^void ApplyDailyYield\|^bool ApplyKhu" src/khu/*.cpp | grep "AssertLockHeld(cs_khu)"
+```
+
+**If ANY of these searches return results without locks, STOP and fix before proceeding.**
+
+### 3.3.7 Debug Build Verification
+
+**Compile with lock debugging enabled:**
+
+```bash
+./configure --enable-debug CXXFLAGS="-DDEBUG_LOCKORDER"
+make -j$(nproc)
+```
+
+**This enables runtime lock order verification and deadlock detection.**
+
+---
+
 ## 4. HTLC MEMPOOL RULES
 
 **File:** `src/txmempool.cpp`
@@ -798,6 +1018,126 @@ uint256 KhuGlobalState::GetHash() const {
 - Deterministic order (struct declaration order)
 - SHA256d (Bitcoin/PIVX standard)
 - Used in finality signatures and state verification
+
+> ⚠️ **ANTI-DÉRIVE CRITIQUE: SERIALIZATION ORDER IS CONSENSUS (IMMUTABLE)**
+>
+> **THE ORDER OF FIELDS IN GetHash() MUST NEVER CHANGE.**
+>
+> Changing the serialization order changes the hash → **INSTANT CONSENSUS FORK**.
+>
+> **MANDATORY SERIALIZATION ORDER (14 fields in EXACT order):**
+>
+> ```cpp
+> uint256 KhuGlobalState::GetHash() const {
+>     CHashWriter ss(SER_GETHASH, 0);
+>
+>     // ⚠️ CRITICAL: Fields MUST be serialized in THIS EXACT ORDER
+>     // Changing order = changing hash = HARD FORK
+>     // DO NOT REORDER. DO NOT OPTIMIZE. DO NOT REFACTOR.
+>
+>     ss << C;                          // Field 1 - MUST be first
+>     ss << U;                          // Field 2
+>     ss << Cr;                         // Field 3
+>     ss << Ur;                         // Field 4
+>     ss << R_annual;                   // Field 5
+>     ss << R_MAX_dynamic;              // Field 6
+>     ss << last_domc_height;           // Field 7
+>     ss << domc_cycle_start;           // Field 8
+>     ss << domc_cycle_length;          // Field 9
+>     ss << domc_phase_length;          // Field 10
+>     ss << last_yield_update_height;   // Field 11
+>     ss << nHeight;                    // Field 12
+>     ss << hashBlock;                  // Field 13
+>     ss << hashPrevState;              // Field 14 - MUST be last
+>
+>     return ss.GetHash();  // SHA256d
+> }
+> ```
+>
+> **FORBIDDEN MODIFICATIONS:**
+>
+> ```cpp
+> // ❌ NEVER reorder fields (even for "readability")
+> ss << nHeight;  // Field 12
+> ss << C;        // Field 1  ← WRONG ORDER = FORK
+>
+> // ❌ NEVER skip fields (even if "unused")
+> ss << C << U << Cr << Ur;
+> // Missing R_annual, etc. ← WRONG = FORK
+>
+> // ❌ NEVER add new fields in middle
+> ss << C << U << NEW_FIELD << Cr;  ← WRONG = FORK
+>
+> // ❌ NEVER change serialization method
+> ss.write((char*)&C, sizeof(C));  // Different from << operator ← WRONG = FORK
+>
+> // ❌ NEVER use different hash algorithm
+> return SHA256(ss);  // Not SHA256d ← WRONG = FORK
+> ```
+>
+> **ADDING NEW FIELDS (future upgrades):**
+>
+> If a hard fork adds new fields to KhuGlobalState:
+>
+> 1. ✅ New fields MUST be appended at END (before `return`)
+> 2. ✅ Existing field order MUST remain unchanged
+> 3. ✅ Document the fork height and new hash format
+> 4. ✅ Old nodes will reject blocks (expected behavior)
+>
+> ```cpp
+> // Example: Adding new field in version 2 (hypothetical future fork)
+> ss << C;                          // Field 1 - unchanged
+> ss << U;                          // Field 2 - unchanged
+> // ... all 14 original fields in original order ...
+> ss << hashPrevState;              // Field 14 - unchanged
+>
+> // NEW FIELD (only if hard fork at height X)
+> if (nHeight >= HARD_FORK_HEIGHT) {
+>     ss << new_field;              // Field 15 - APPENDED at end
+> }
+>
+> return ss.GetHash();
+> ```
+>
+> **VERIFICATION BEFORE PHASE 1:**
+>
+> ```bash
+> # Verify GetHash() uses all 14 fields in correct order
+> grep -A20 "GetHash.*const" src/khu/khu_state.cpp | \
+>   grep "ss <<" | \
+>   awk '{print $3}' > /tmp/hash_order.txt
+>
+> # Expected order (MUST match exactly):
+> cat > /tmp/expected_order.txt <<EOF
+> C;
+> U;
+> Cr;
+> Ur;
+> R_annual;
+> R_MAX_dynamic;
+> last_domc_height;
+> domc_cycle_start;
+> domc_cycle_length;
+> domc_phase_length;
+> last_yield_update_height;
+> nHeight;
+> hashBlock;
+> hashPrevState;
+> EOF
+>
+> diff /tmp/hash_order.txt /tmp/expected_order.txt
+> # If diff shows ANY difference → SERIALIZATION ORDER VIOLATED → FIX IMMEDIATELY
+> ```
+>
+> **CONSEQUENCE OF VIOLATION:**
+>
+> If serialization order changes after mainnet launch:
+> - Every node calculates different state hashes
+> - Finality signatures fail to verify
+> - Network splits into incompatible chains
+> - **COMPLETE CONSENSUS FAILURE**
+>
+> This is NOT recoverable without coordinated hard fork.
 
 ---
 
@@ -1431,6 +1771,87 @@ bool ProcessKHUUnstake(const CTransaction& tx, SaplingState& saplingState) {
 - Independent anonymity sets
 - Separate audit trails
 
+> ⚠️ **ANTI-DÉRIVE: ENFORCED POOL SEPARATION**
+>
+> **COMPILE-TIME VERIFICATION (MANDATORY):**
+>
+> ```cpp
+> // File: src/sapling/sapling_state.h
+>
+> // Static assertion to prevent accidental pool merging
+> static_assert(offsetof(SaplingState, zkhuTree) != offsetof(SaplingState, saplingTree),
+>               "ZKHU and zPIV trees MUST be separate members");
+>
+> static_assert(sizeof(SaplingState::zkhuTree) == sizeof(SaplingState::saplingTree),
+>               "Tree types must match (but be separate instances)");
+>
+> // Runtime check in debug builds
+> #ifdef DEBUG
+> inline void VerifyPoolSeparation() {
+>     assert(&saplingTree != &zkhuTree);
+>     assert(&nullifierSet != &zkhuNullifierSet);
+> }
+> #endif
+> ```
+>
+> **FORBIDDEN PATTERNS:**
+>
+> ```cpp
+> // ❌ NEVER do this - using same tree for both pools
+> saplingTree.append(zkhu_commitment);  // WRONG - ZKHU must use zkhuTree
+>
+> // ❌ NEVER do this - checking ZKHU nullifier in zPIV set
+> if (nullifierSet.count(zkhu_nullifier))  // WRONG - use zkhuNullifierSet
+>
+> // ❌ NEVER do this - merging pools
+> zkhuTree = saplingTree;  // FORBIDDEN - pools are separate by design
+>
+> // ❌ NEVER do this - cross-pool anchor validation
+> if (spend.anchor == saplingTree.root())  // WRONG if spending ZKHU
+> ```
+>
+> **CORRECT PATTERNS:**
+>
+> ```cpp
+> // ✅ STAKE: Add to ZKHU tree (not zPIV tree)
+> zkhuTree.append(khu_commitment);
+> LogPrint(BCLog::KHU, "Added commitment to ZKHU tree (NOT zPIV)\n");
+>
+> // ✅ UNSTAKE: Check ZKHU nullifier set (not zPIV set)
+> if (zkhuNullifierSet.count(spend.nullifier))
+>     return error("ZKHU double-spend");
+>
+> // ✅ UNSTAKE: Verify anchor against ZKHU tree (not zPIV tree)
+> if (spend.anchor != zkhuTree.root())
+>     return error("Invalid ZKHU anchor");
+> ```
+>
+> **IMPLEMENTATION CHECKLIST:**
+>
+> Before implementing Sapling integration:
+>
+> 1. ✅ Verify `SaplingState` has TWO separate `SaplingMerkleTree` members
+> 2. ✅ Verify `SaplingState` has TWO separate nullifier sets
+> 3. ✅ Add static_assert checks to prevent accidental merging
+> 4. ✅ All STAKE operations use `zkhuTree` (never `saplingTree`)
+> 5. ✅ All UNSTAKE operations validate against `zkhuTree.root()`
+> 6. ✅ ZKHU nullifiers go to `zkhuNullifierSet` (never `nullifierSet`)
+> 7. ✅ Separate LevelDB keys for ZKHU anchors (`'K' + 'A'` vs `'S'`)
+> 8. ✅ Wallet tracks ZKHU and zPIV notes in separate collections
+> 9. ✅ RPC commands clearly distinguish ZKHU vs zPIV operations
+> 10. ✅ No code path allows conversion between ZKHU and zPIV
+>
+> **AUDIT COMMAND:**
+>
+> ```bash
+> # Search for incorrect pool usage
+> grep -r "saplingTree.append.*KHU" src/  # Should return NOTHING
+> grep -r "nullifierSet.*zkhu" src/       # Should return NOTHING
+> grep -r "zkhuTree.append.*zPIV" src/    # Should return NOTHING
+> ```
+>
+> **If ANY of these searches return results → POOL CONTAMINATION → FIX IMMEDIATELY.**
+
 **Storage:**
 
 ```
@@ -1496,6 +1917,272 @@ UniValue claimhtlc(const JSONRPCRequest& request);
 UniValue refundhtlc(const JSONRPCRequest& request);
 UniValue listhtlcs(const JSONRPCRequest& request);
 ```
+
+---
+
+## 20. ANTI-DÉRIVE: CONSOLIDATED SAFEGUARDS
+
+**⚠️ CRITICAL SECTION FOR PHASE 1 IMPLEMENTATION**
+
+This section consolidates all ANTI-DÉRIVE safeguards documented throughout this specification. Before implementing ANY KHU functionality, verify compliance with ALL items in this checklist.
+
+### 20.1 Lock Safeguards (Section 3.3)
+
+**Risk:** Race conditions, invariant violations, undefined behavior
+
+**Enforcement:**
+
+1. ✅ `ConnectBlock()` MUST acquire `LOCK2(cs_main, cs_khu)` before ANY KHU state access
+2. ✅ Lock order is MANDATORY: `cs_main` first, `cs_khu` second (never reversed)
+3. ✅ `ApplyDailyYield()` MUST have `AssertLockHeld(cs_khu)` as first line
+4. ✅ `ApplyKhuUnstake()` MUST have `AssertLockHeld(cs_khu)` as first line
+5. ✅ All state mutation functions MUST be called under `cs_khu` lock
+6. ✅ Compile with `-DDEBUG_LOCKORDER` to detect violations during testing
+
+**Automated verification:**
+```bash
+grep -B5 "ApplyDailyYield\|ApplyKhuUnstake" src/**/*.cpp | grep "LOCK2.*cs_khu"
+grep "AssertLockHeld(cs_khu)" src/khu/*.cpp
+```
+
+**Consequence of violation:** Runtime crash, data corruption, consensus failure
+
+---
+
+### 20.2 Execution Order Safeguards (Section 3)
+
+**Risk:** UNSTAKE with incorrect Ur, invariant violation, consensus failure
+
+**Enforcement:**
+
+1. ✅ `ApplyDailyYieldIfNeeded()` MUST execute BEFORE `ProcessKHUTransactions()` in `ConnectBlock()`
+2. ✅ NEVER reverse this order for performance, refactoring, or any other reason
+3. ✅ Canonical order: Load → Yield → Transactions → Reward → Invariants → Save
+4. ✅ If block N triggers daily yield AND contains UNSTAKE, yield MUST be applied first
+
+**Automated verification:**
+```bash
+grep -A10 "ApplyDailyYield" src/validation.cpp | grep -B5 "for.*vtx"
+# ApplyDailyYield MUST appear BEFORE transaction loop
+```
+
+**Consequence of violation:** UNSTAKE calculates wrong bonus → `state.Cr != state.Ur` → block rejected
+
+---
+
+### 20.3 Transaction Error Handling Safeguards (Section 3.3)
+
+**Risk:** Invalid transactions silently ignored, state corruption, consensus failure
+
+**Enforcement:**
+
+1. ✅ EVERY call to `ProcessKHUTransaction()` MUST check return value
+2. ✅ Pattern: `if (!ProcessKHUTransaction(...)) return false;`
+3. ✅ NEVER ignore return values (no silent failures)
+4. ✅ NEVER use inverted logic (`if (success) continue` instead of `if (!success) return false`)
+5. ✅ Block MUST be rejected immediately on first transaction failure
+
+**Forbidden patterns:**
+```cpp
+ProcessKHUTransaction(tx, ...);  // ❌ Ignoring return value
+try { ProcessKHUTransaction(...); } catch(...) {}  // ❌ Silent catch
+```
+
+**Consequence of violation:** Invalid transactions accepted → corrupted state → consensus divergence
+
+---
+
+### 20.4 Struct Synchronization Safeguards (Section 2.1 in docs 02/03)
+
+**Risk:** Documentation desynchronization, implementation bugs, consensus failure
+
+**Enforcement:**
+
+1. ✅ `KhuGlobalState` in doc 02 MUST be identical to doc 03
+2. ✅ Same 14 fields, same order, same types
+3. ✅ Run diff verification before Phase 1 implementation
+4. ✅ If modifying struct: update doc 02 first, then doc 03, then verify with diff
+
+**Automated verification:**
+```bash
+diff <(grep -A30 "^struct KhuGlobalState" docs/02-canonical-specification.md) \
+     <(grep -A30 "^struct KhuGlobalState" docs/03-architecture-overview.md)
+```
+
+**Consequence of violation:** Implementation uses wrong struct → state hash mismatch → consensus failure
+
+---
+
+### 20.5 Sapling Pool Separation Safeguards (Section 18)
+
+**Risk:** ZKHU/zPIV pool contamination, double-spend, audit failure, privacy leak
+
+**Enforcement:**
+
+1. ✅ `SaplingState` MUST have TWO separate `SaplingMerkleTree` members
+2. ✅ `zkhuTree` and `saplingTree` MUST be distinct objects
+3. ✅ ZKHU nullifiers go to `zkhuNullifierSet` (never `nullifierSet`)
+4. ✅ STAKE operations use `zkhuTree.append()` (never `saplingTree.append()`)
+5. ✅ UNSTAKE validation checks `spend.anchor == zkhuTree.root()` (not `saplingTree.root()`)
+6. ✅ Add `static_assert()` to prevent accidental merging at compile time
+7. ✅ Separate LevelDB keys: ZKHU uses `'K' + 'A'`, zPIV uses `'S'`
+
+**Automated verification:**
+```bash
+grep -r "saplingTree.append.*KHU" src/     # MUST return nothing
+grep -r "nullifierSet.*zkhu" src/          # MUST return nothing
+grep -r "zkhuTree.append.*zPIV" src/       # MUST return nothing
+```
+
+**Consequence of violation:** Pool contamination → anonymity loss → audit failure → security breach
+
+---
+
+### 20.6 Serialization Order Safeguards (Section 5)
+
+**Risk:** Hash mismatch, finality signature failure, network fork
+
+**Enforcement:**
+
+1. ✅ `GetHash()` MUST serialize all 14 fields in EXACT ORDER
+2. ✅ Order: C, U, Cr, Ur, R_annual, R_MAX_dynamic, last_domc_height, domc_cycle_start, domc_cycle_length, domc_phase_length, last_yield_update_height, nHeight, hashBlock, hashPrevState
+3. ✅ NEVER reorder fields (even for "readability")
+4. ✅ NEVER skip fields
+5. ✅ NEVER insert new fields in middle (append at end only, during hard fork)
+6. ✅ Use SHA256d (double SHA256), never change hash algorithm
+
+**Automated verification:**
+```bash
+grep -A20 "GetHash.*const" src/khu/khu_state.cpp | grep "ss <<" | awk '{print $3}'
+# MUST match exact order: C; U; Cr; Ur; ... hashPrevState;
+```
+
+**Consequence of violation:** State hash changes → finality signatures invalid → network splits → TOTAL CONSENSUS FAILURE
+
+---
+
+### 20.7 Atomicity Safeguards (Section 3.2)
+
+**Risk:** Partial state mutations, invariant violations, consensus failure
+
+**Enforcement:**
+
+1. ✅ MINT: `C += amount` and `U += amount` in same function, consecutive lines, no code between
+2. ✅ REDEEM: `C -= amount` and `U -= amount` in same function, consecutive lines, no code between
+3. ✅ Yield: `Cr += delta` and `Ur += delta` in same function, consecutive lines, no code between
+4. ✅ UNSTAKE: `U += B`, `C += B`, `Cr -= B`, `Ur -= B` in same function, consecutive lines, no code between
+5. ✅ NEVER separate paired updates into different functions
+6. ✅ NEVER put conditional logic between paired updates
+7. ✅ NEVER allow early returns between paired updates
+
+**Forbidden patterns:**
+```cpp
+state.C += amount;
+DoSomethingElse();  // ❌ Code between paired updates
+state.U += amount;
+```
+
+**Consequence of violation:** `C != U` or `Cr != Ur` → invariant check fails → block rejected
+
+---
+
+### 20.8 Master Checklist (Run Before Phase 1)
+
+**BEFORE writing ANY KHU implementation code, verify:**
+
+```bash
+#!/bin/bash
+# Save as: scripts/verify_anti_derive.sh
+
+echo "=== ANTI-DÉRIVE VERIFICATION SUITE ==="
+echo ""
+
+# 1. Lock verification
+echo "[1/6] Verifying lock usage..."
+grep -B5 "ApplyDailyYield\|ApplyKhuUnstake" src/**/*.cpp 2>/dev/null | grep -q "LOCK2.*cs_khu"
+if [ $? -eq 0 ]; then echo "✅ Locks present"; else echo "❌ MISSING LOCKS"; exit 1; fi
+
+# 2. Execution order
+echo "[2/6] Verifying execution order..."
+grep -A10 "ApplyDailyYield" src/validation.cpp 2>/dev/null | grep -B5 "for.*vtx" | head -1 | grep -q "ApplyDailyYield"
+if [ $? -eq 0 ]; then echo "✅ Yield before transactions"; else echo "❌ WRONG ORDER"; exit 1; fi
+
+# 3. Transaction error handling
+echo "[3/6] Verifying error handling..."
+grep "ProcessKHUTransaction" src/validation.cpp 2>/dev/null | grep -q "if (!.*return false"
+if [ $? -eq 0 ]; then echo "✅ Error checking present"; else echo "❌ MISSING ERROR CHECK"; exit 1; fi
+
+# 4. Struct synchronization
+echo "[4/6] Verifying struct sync..."
+diff <(grep -A30 "^struct KhuGlobalState" docs/02-canonical-specification.md) \
+     <(grep -A30 "^struct KhuGlobalState" docs/03-architecture-overview.md) > /dev/null 2>&1
+if [ $? -eq 0 ]; then echo "✅ Structs synchronized"; else echo "❌ STRUCT MISMATCH"; exit 1; fi
+
+# 5. Pool separation
+echo "[5/6] Verifying pool separation..."
+grep -r "saplingTree.append.*KHU" src/ 2>/dev/null
+if [ $? -ne 0 ]; then echo "✅ Pools separated"; else echo "❌ POOL CONTAMINATION"; exit 1; fi
+
+# 6. Serialization order
+echo "[6/6] Verifying serialization order..."
+grep -A20 "GetHash.*const" src/khu/khu_state.cpp 2>/dev/null | grep "ss <<" | awk '{print $3}' > /tmp/order.txt
+expected="C;
+U;
+Cr;
+Ur;
+R_annual;
+R_MAX_dynamic;
+last_domc_height;
+domc_cycle_start;
+domc_cycle_length;
+domc_phase_length;
+last_yield_update_height;
+nHeight;
+hashBlock;
+hashPrevState;"
+echo "$expected" > /tmp/expected.txt
+diff /tmp/order.txt /tmp/expected.txt > /dev/null 2>&1
+if [ $? -eq 0 ]; then echo "✅ Serialization order correct"; else echo "❌ WRONG SERIALIZATION"; exit 1; fi
+
+echo ""
+echo "=== ALL ANTI-DÉRIVE CHECKS PASSED ==="
+```
+
+**Run this script before EVERY commit during Phase 1 implementation.**
+
+---
+
+### 20.9 Consequence Table
+
+| Violation | Impact | Recovery |
+|-----------|--------|----------|
+| Missing lock | Runtime crash, data corruption | Restart node, possible reindex |
+| Wrong execution order | Invariant violation, block rejection | Automatic (node rejects bad block) |
+| Ignored transaction error | Invalid state, consensus divergence | Hard fork required |
+| Struct desynchronization | Implementation bug, variable severity | Fix code, possible reindex |
+| Pool contamination | Privacy leak, security breach | Hard fork required |
+| Wrong serialization order | Network split, total consensus failure | Hard fork required |
+| Broken atomicity | Invariant violation, block rejection | Automatic (node rejects bad block) |
+
+**Severity levels:**
+- 🟢 **Low:** Automatic recovery via consensus rejection
+- 🟡 **Medium:** Requires node restart or reindex
+- 🔴 **Critical:** Requires coordinated hard fork
+
+---
+
+### 20.10 Final Implementation Rule
+
+**BEFORE merging ANY KHU code to main branch:**
+
+1. ✅ All unit tests pass
+2. ✅ All functional tests pass
+3. ✅ `verify_anti_derive.sh` passes with exit code 0
+4. ✅ Manual code review confirms compliance with ALL sections above
+5. ✅ Integration test includes all ANTI-DÉRIVE edge cases
+6. ✅ Documentation updated if ANY consensus rule changed
+
+**If ANY check fails → DO NOT MERGE.**
 
 ---
 
