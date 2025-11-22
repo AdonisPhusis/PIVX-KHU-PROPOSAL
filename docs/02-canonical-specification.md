@@ -52,16 +52,32 @@ struct KhuGlobalState {
 
 **Note:** Ces champs constituent le KhuGlobalState canonique. Toute implémentation doit refléter EXACTEMENT cette structure.
 
-### 2.2 Invariants
+### 2.2 Invariants (Version Canonique)
 
-```
-INVARIANT_1: (U == 0 || C == U)
-INVARIANT_2: (Ur == 0 || Cr == Ur)
-```
+Les invariants de base du système sont:
 
-**Note:** Au genesis, U=0 ⇒ C=0 est autorisé. Après premier MINT/REDEEM, égalité stricte C==U doit toujours tenir. De même, après premier yield, égalité stricte Cr==Ur doit tenir.
+**INVARIANT_1 (CD):**
+- Si `U == 0` alors `C == 0`
+- Sinon, `C == U` (égalité stricte)
 
-**Violation → Block rejection.**
+**INVARIANT_2 (CDr):**
+- Si `Ur == 0` alors `Cr == 0`
+- Sinon, `Cr == Ur` (égalité stricte)
+
+**Vérification:**
+
+Ces invariants doivent être vrais **à chaque fin de ConnectBlock()**.
+
+Tout bloc pour lequel l'un de ces invariants est violé doit être rejeté avec code `BLOCK_CONSENSUS`.
+
+**Cas particuliers:**
+- Au genesis: U=0 ⇒ C=0 est autorisé (état initial)
+- Après premier MINT/REDEEM: égalité stricte C==U doit toujours tenir
+- Après premier yield: égalité stricte Cr==Ur doit toujours tenir
+
+**Atomicité:**
+
+Toute opération qui modifie C, U, Cr, ou Ur doit garantir que les invariants restent valides **après l'opération complète**. Les états intermédiaires qui violent les invariants ne doivent jamais être observables (voir section 7.2.3 pour UNSTAKE).
 
 ---
 
@@ -306,6 +322,33 @@ Privacy protection mandatory.
 ```
 
 **Invariants preserved.**
+
+### 7.2.3 Atomicité du double flux (UNSTAKE)
+
+Lors d'un UNSTAKE, le protocole applique un **double flux atomique** sur l'état global.
+
+Soit `B` le montant de bonus (Ur accumulé pour la note stakée):
+
+```
+U'  = U  + B   (création de B unités de KHU_T pour le staker)
+C'  = C  + B   (augmentation de la collatéralisation de B)
+Cr' = Cr - B   (consommation du pool de rendement à hauteur de B)
+Ur' = Ur - B   (suppression des droits de rendement consommés)
+```
+
+**Règle d'atomicité:**
+
+Ces quatre mises à jour doivent être effectuées **dans la même exécution de ConnectBlock**, sous le même verrou (voir doc 06-protocol-reference.md), et sont considérées comme une seule transition atomique.
+
+Toute exécution partielle (par exemple, décrémenter `Cr` sans incrémenter `C` ou `U`) viole les invariants et entraîne le rejet du bloc par `CheckInvariants()`.
+
+**Interdictions absolues:**
+
+- ❌ Décrémenter Cr sans incrémenter C et U dans le même bloc
+- ❌ Décrémenter Ur sans décrémenter Cr
+- ❌ Incrémenter U ou C sans décrémenter Cr/Ur en face
+- ❌ Reporter une partie du flux à un bloc ultérieur
+- ✅ Toutes les mutations doivent être confinées à `ApplyKhuUnstake()` sous `cs_khu`
 
 ### 7.3 Prohibited
 

@@ -231,40 +231,89 @@ bool CheckTransaction(const CTransaction& tx, CValidationState& state) {
 **Fichier:** `src/validation.cpp`
 
 **Ordre d'exécution canonique:**
+
+Pour chaque bloc `B` au height `h`:
+
 ```cpp
 bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pindex, CCoinsViewCache& view) {
-    // 1. Load KhuGlobalState from previous height
+    if (!NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_KHU))
+        return true;  // KHU not active yet
+
+    // 1. Charger l'état global précédent
     KhuGlobalState prevState;
-    pKHUStateDB->ReadKHUState(pindex->nHeight - 1, prevState);
+    if (!pKHUStateDB->ReadKHUState(pindex->nHeight - 1, prevState))
+        return state.Invalid("khu-state-load-failed");
 
     KhuGlobalState newState = prevState;
 
-    // 2. ApplyDailyYieldIfNeeded() — yield BEFORE transactions
-    if ((pindex->nHeight - newState.last_yield_update_height) >= 1440) {
-        UpdateDailyYield(newState, pindex->nHeight, view);
+    // 2. Appliquer le yield quotidien (si applicable)
+    // AVANT transactions pour éviter mismatch avec UNSTAKE
+    if (pindex->nHeight >= newState.last_yield_update_height + BLOCKS_PER_DAY) {
+        ApplyDailyYield(newState, pindex->nHeight, view);
+        // Atomicité: Ur et Cr mis à jour ensemble
         newState.last_yield_update_height = pindex->nHeight;
     }
 
-    // 3. ProcessKHUTransactions() — MINT / REDEEM / STAKE / UNSTAKE
+    // 3. Appliquer les transactions KHU du bloc
     for (const auto& tx : block.vtx) {
-        if (tx->IsKHUTransaction()) {
-            if (!ApplyKHUTransaction(*tx, newState, view, state))
-                return false;
+        if (!tx->IsKHUTransaction())
+            continue;
+
+        switch (tx->nType) {
+            case TxType::KHU_MINT:
+            case TxType::KHU_REDEEM:
+                // Mettre à jour C et U selon la spec
+                if (!ApplyKHUMintOrRedeem(*tx, newState, view, state))
+                    return false;
+                break;
+
+            case TxType::KHU_STAKE:
+                // Marquer la note ZKHU (sans changer C/U/Cr/Ur)
+                if (!ApplyKHUStake(*tx, newState, view, state))
+                    return false;
+                break;
+
+            case TxType::KHU_UNSTAKE:
+                // Double flux atomique: U+=B, C+=B, Cr-=B, Ur-=B
+                if (!ApplyKHUUnstake(*tx, newState, view, state, pindex->nHeight))
+                    return false;
+                break;
+
+            default:
+                break;
         }
     }
 
-    // 4. ApplyBlockReward() — emission AFTER transactions
-    ProcessBlockReward(block, newState);
+    // 4. Appliquer l'émission de bloc
+    // APRÈS transactions pour que C/U soit consistant
+    if (pindex->nHeight >= consensusParams.nKHUActivationHeight) {
+        uint32_t year = (pindex->nHeight - consensusParams.nKHUActivationHeight) / BLOCKS_PER_YEAR;
+        CAmount reward_year = std::max(6 - (int64_t)year, 0LL) * COIN;
 
-    // 5. CheckInvariants() — C==U and Cr==Ur
-    if (!newState.CheckInvariants())
-        return state.Invalid(false, REJECT_INVALID, "khu-invariant-violation");
+        CAmount stakerReward = reward_year;
+        CAmount mnReward = reward_year;
+        CAmount daoReward = reward_year;
 
-    // 6. PersistKhuState() — LevelDB write
+        // Emission ne modifie PAS C/U/Cr/Ur (PIV pur)
+        ProcessBlockReward(block, stakerReward, mnReward, daoReward);
+    }
+
+    // 5. Vérifier les invariants
+    if (!newState.CheckInvariants()) {
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                           "khu-invariant-violation",
+                           strprintf("C=%d U=%d Cr=%d Ur=%d at height %d",
+                                   newState.C, newState.U, newState.Cr, newState.Ur,
+                                   pindex->nHeight));
+    }
+
+    // 6. Persister l'état (atomique via CDBBatch)
     newState.nHeight = pindex->nHeight;
     newState.hashBlock = pindex->GetBlockHash();
     newState.hashPrevState = prevState.GetHash();
-    pKHUStateDB->WriteKHUState(newState);
+
+    if (!pKHUStateDB->WriteKHUState(newState))
+        return state.Invalid("khu-state-persist-failed");
 
     return true;
 }
@@ -272,9 +321,26 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
 
 **Justification de l'ordre:**
 
-Yield doit être appliqué AVANT transactions pour éviter mismatch avec UNSTAKE dans le même bloc. Un UNSTAKE consomme le Ur accumulé, donc le yield quotidien doit être ajouté à Cr/Ur avant que l'UNSTAKE ne soit traité.
+1. **Yield AVANT transactions:** Un UNSTAKE consomme le Ur accumulé. Le yield quotidien doit donc être ajouté à Cr/Ur AVANT que l'UNSTAKE ne soit traité, sinon le calcul du bonus serait incorrect.
 
-Emission (block reward) doit être appliquée APRÈS transactions pour que C/U soit consistant. L'émission PIV ne modifie PAS l'état KHU (C, U, Cr, Ur), elle crée simplement du PIV pur pour staker/masternode/DAO.
+2. **Emission APRÈS transactions:** L'émission PIV ne modifie PAS l'état KHU (C, U, Cr, Ur). Elle crée simplement du PIV pur pour staker/masternode/DAO. L'ordre relatif n'affecte donc pas les invariants KHU.
+
+3. **Invariants en fin:** Les invariants sont vérifiés APRÈS toutes les mutations, garantissant qu'aucun état intermédiaire invalide n'est persisté.
+
+---
+
+> ⚠️ **ATOMICITÉ DU DOUBLE FLUX UNSTAKE**
+>
+> L'implémentation de `ApplyKHUUnstake()` doit appliquer les quatre mises à jour (`C`, `U`, `Cr`, `Ur`) sous un même lock (`cs_khu`) et en une seule séquence, dans `ConnectBlock`.
+>
+> **Il est interdit de:**
+> - Séparer ces mises à jour dans plusieurs fonctions indépendantes non atomiques
+> - Faire `Ur -= B` dans un bloc et `C += B` dans un autre
+> - Laisser un bloc persister un état intermédiaire où `Cr != Ur` ou `C != U`
+>
+> **Toutes les mutations de `C/U/Cr/Ur` liées à l'UNSTAKE doivent être confinées à `ApplyKHUUnstake()` pour garantir l'atomicité.**
+>
+> Voir docs/blueprints/09-DOUBLE-FLUX-ATOME.md pour détails complets.
 
 ### 4.3 ApplyKHUTransaction
 

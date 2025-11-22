@@ -307,6 +307,134 @@ bool ConnectBlock(const CBlock& block, CBlockIndex* pindex, CCoinsViewCache& vie
 
 ---
 
+## 3.1 UNSTAKE TRANSACTION PROCESSING (ATOMIC DOUBLE FLUX)
+
+**File:** `src/khu/khu_validation.cpp`
+
+**Purpose:** Process UNSTAKE transaction with atomic double-flux update.
+
+**Critical requirement:** All four state mutations (U, C, Cr, Ur) MUST execute atomically under `cs_khu` lock.
+
+**Pseudo-code:**
+
+```cpp
+bool ApplyKhuUnstake(const CTransaction& tx, KhuGlobalState& state,
+                     CCoinsViewCache& view, CValidationState& validationState,
+                     uint32_t nHeight) {
+    LOCK(cs_khu);  // Atomicity guarantee for double flux
+
+    // 1. Extract UNSTAKE payload
+    CKHUUnstakePayload payload;
+    if (!GetTxPayload(tx, payload))
+        return validationState.Invalid("khu-unstake-invalid-payload");
+
+    // 2. Extract ZKHU note from shielded spend
+    const SpendDescription& spend = tx.sapData->vShieldedSpend[0];
+
+    // 3. Verify nullifier not already spent
+    if (zkhuNullifierSet.count(spend.nullifier))
+        return validationState.Invalid("khu-unstake-double-spend");
+
+    // 4. Verify anchor matches ZKHU tree (not zPIV tree)
+    if (spend.anchor != zkhuTree.root())
+        return validationState.Invalid("khu-unstake-invalid-anchor");
+
+    // 5. Extract note data from witness
+    ZKHUNoteData noteData;
+    if (!GetZKHUNoteData(spend.nullifier, noteData))
+        return validationState.Invalid("khu-unstake-note-not-found");
+
+    // 6. Verify maturity (minimum 4320 blocks staked)
+    uint32_t stakeAge = nHeight - noteData.stakeStartHeight;
+    if (stakeAge < KHU_MATURITY_BLOCKS)
+        return validationState.Invalid("khu-unstake-immature",
+                                     strprintf("Stake age %d < %d", stakeAge, KHU_MATURITY_BLOCKS));
+
+    // 7. Extract amounts
+    int64_t principal = noteData.amount;           // Original stake
+    int64_t B = noteData.Ur_accumulated;           // Accumulated yield (bonus)
+
+    // 8. Verify consistency with payload
+    if (B != payload.bonus || principal != payload.principal)
+        return validationState.Invalid("khu-unstake-amount-mismatch");
+
+    // 9. Verify sufficient reward pool
+    if (state.Cr < B || state.Ur < B)
+        return validationState.Invalid("khu-unstake-insufficient-rewards",
+                                     strprintf("Cr=%d Ur=%d B=%d", state.Cr, state.Ur, B));
+
+    // ============================================================
+    // 10. ATOMIC DOUBLE FLUX (critical section)
+    // ============================================================
+    // These four updates MUST execute atomically in ConnectBlock
+    // Partial execution violates invariants and MUST reject block
+
+    state.U  += B;   // (1) Create B units of KHU_T for staker
+    state.C  += B;   // (2) Increase collateralization by B
+    state.Cr -= B;   // (3) Consume reward pool
+    state.Ur -= B;   // (4) Consume reward rights
+
+    // ============================================================
+
+    // 11. Verify invariants after atomic mutation
+    if (!state.CheckInvariants()) {
+        // This should NEVER happen if yield calculation is correct
+        // If it happens, block MUST be rejected
+        return validationState.Invalid("khu-unstake-invariant-violation",
+                                     strprintf("After UNSTAKE: C=%d U=%d Cr=%d Ur=%d",
+                                             state.C, state.U, state.Cr, state.Ur));
+    }
+
+    // 12. Create KHU_T UTXO for staker (principal + bonus)
+    CKHUUTXO newCoin;
+    newCoin.amount = principal + B;
+    newCoin.scriptPubKey = tx.vout[0].scriptPubKey;  // Recipient from tx output
+    newCoin.nHeight = nHeight;
+    newCoin.fStaked = false;
+    newCoin.nStakeStartHeight = 0;
+
+    // 13. Add UTXO to coins view
+    view.AddKHUCoin(tx.GetHash(), 0, newCoin);
+
+    // 14. Mark nullifier as spent (prevent double-spend)
+    zkhuNullifierSet.insert(spend.nullifier);
+
+    // 15. Log successful UNSTAKE
+    LogPrint(BCLog::KHU, "UNSTAKE: principal=%d bonus=%d total=%d height=%d\n",
+             principal, B, principal + B, nHeight);
+
+    return true;
+}
+```
+
+**Critical invariants:**
+
+1. **Atomicity**: All four state mutations (steps 10.1-10.4) execute in single ConnectBlock
+2. **No rollback**: If invariant check fails, entire block is rejected (no partial state)
+3. **Lock protection**: `cs_khu` must be held during entire function execution
+4. **Maturity enforcement**: UNSTAKE rejected if `stakeAge < 4320 blocks`
+5. **Pool sufficiency**: `Cr >= B` and `Ur >= B` verified before mutation
+6. **Nullifier uniqueness**: Each ZKHU note can only be unstaked once
+
+**Failure modes:**
+
+- `khu-unstake-immature`: Stake age < 4320 blocks → reject transaction
+- `khu-unstake-insufficient-rewards`: Cr or Ur < B → reject block (yield calculation bug)
+- `khu-unstake-invariant-violation`: Invariants broken after mutation → reject block (logic bug)
+- `khu-unstake-double-spend`: Nullifier already spent → reject transaction
+
+**Testing requirements:**
+
+1. UNSTAKE at exact maturity (4320 blocks)
+2. UNSTAKE before maturity (must reject)
+3. UNSTAKE with zero yield (B=0, first day)
+4. UNSTAKE with maximum yield (after many years)
+5. Multiple UNSTAKEs in same block
+6. UNSTAKE in same block as yield update
+7. Double-spend attempt (same nullifier twice)
+
+---
+
 ## 4. HTLC MEMPOOL RULES
 
 **File:** `src/txmempool.cpp`
