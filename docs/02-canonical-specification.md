@@ -1,0 +1,825 @@
+# 01 — PIVX-V6-KHU CANONICAL SPECIFICATION
+
+Version: 1.0.0
+Status: FINAL
+Style: Core Consensus Rules
+
+---
+
+## 1. ASSETS
+
+```
+PIV     : Native asset (existing)
+KHU_T   : Transparent UTXO (colored coin, internal tracking)
+ZKHU    : Sapling note (staking only)
+```
+
+---
+
+## 2. GLOBAL STATE
+
+### 2.1 State Variables
+
+```cpp
+struct KHUGlobalState {
+    int64_t C;   // PIV collateral
+    int64_t U;   // KHU_T supply
+    int64_t Cr;  // Reward pool
+    int64_t Ur;  // Reward rights
+
+    uint32_t nHeight;
+    uint256 hashBlock;
+    uint256 hashPrevState;
+};
+```
+
+### 2.2 DOMC Variables
+
+```cpp
+uint16_t R_annual;                  // Current yield % (basis points, 0-3000)
+uint16_t R_MAX_dynamic;             // Max votable R (basis points)
+uint32_t last_domc_height;          // Last R change height
+uint32_t domc_cycle_start;          // Cycle start height
+uint32_t domc_cycle_length;         // Full cycle length (blocks)
+uint32_t domc_phase_length;         // Phase length (blocks)
+uint32_t last_yield_update_height;  // Last Cr/Ur update (1440 blocks)
+```
+
+### 2.3 Invariants
+
+```
+INVARIANT_1: C == U               (strict equality)
+INVARIANT_2: Cr == Ur             (strict equality)
+```
+
+**Violation → Block rejection.**
+
+---
+
+## 3. CONSENSUS OPERATIONS
+
+### 3.1 MINT
+
+```
+Input:  amount PIV (burned)
+Effect: C  += amount
+        U  += amount
+Output: amount KHU_T (created)
+```
+
+**Rules:**
+- PIV must be provably burned (unspendable output).
+- KHU_T created in single UTXO to recipient.
+- INVARIANT_1 preserved.
+
+### 3.2 REDEEM
+
+```
+Input:  amount KHU_T (spent)
+Effect: C  -= amount
+        U  -= amount
+Output: amount PIV (created from collateral)
+```
+
+**Rules:**
+- KHU_T UTXOs must exist and be spendable.
+- PIV created to recipient.
+- INVARIANT_1 preserved.
+
+### 3.3 BURN
+
+**Prohibited.** Only REDEEM destroys KHU.
+
+### 3.4 Authorized Pipeline
+
+```
+PIV → MINT → KHU_T → STAKE → ZKHU → UNSTAKE → KHU_T → REDEEM → PIV
+```
+
+**No other path allowed.**
+
+---
+
+## 4. TRANSACTION TYPES
+
+```cpp
+enum TxType {
+    TX_NORMAL          = 0,
+    // ... existing types ...
+    TX_KHU_MINT        = 10,
+    TX_KHU_REDEEM      = 11,
+    TX_KHU_STAKE       = 12,
+    TX_KHU_UNSTAKE     = 13,
+    TX_DOMC_VOTE       = 14,
+    TX_HTLC_CREATE     = 15,
+    TX_HTLC_CLAIM      = 16,
+    TX_HTLC_REFUND     = 17,
+};
+```
+
+---
+
+## 5. BLOCK REWARD
+
+### 5.1 Emission Formula
+
+```cpp
+const uint32_t BLOCKS_PER_YEAR = 525600;
+const uint32_t ACTIVATION_HEIGHT = <TBD>;
+
+uint32_t year = (nHeight - ACTIVATION_HEIGHT) / BLOCKS_PER_YEAR;
+int64_t reward_year = std::max(6 - (int64_t)year, 0LL) * COIN;
+```
+
+### 5.2 Distribution
+
+```
+staker_reward = reward_year
+mn_reward     = reward_year
+dao_reward    = reward_year
+
+Total emission per block = 3 * reward_year
+```
+
+### 5.3 Emission Schedule
+
+| Year | Height Range | reward_year | Per Block | Per Year |
+|------|-------------|-------------|-----------|----------|
+| 0 | 0-525599 | 6 PIV | 18 PIV | 9,460,800 PIV |
+| 1 | 525600-1051199 | 5 PIV | 15 PIV | 7,884,000 PIV |
+| 2 | 1051200-1576799 | 4 PIV | 12 PIV | 6,307,200 PIV |
+| 3 | 1576800-2102399 | 3 PIV | 9 PIV | 4,730,400 PIV |
+| 4 | 2102400-2627999 | 2 PIV | 6 PIV | 3,153,600 PIV |
+| 5 | 2628000-3153599 | 1 PIV | 3 PIV | 1,576,800 PIV |
+| 6+ | 3153600+ | 0 PIV | 0 PIV | 0 PIV |
+
+**Total cap: 33,112,800 PIV (if starting from genesis).**
+
+### 5.4 Fees
+
+```
+All PIV transaction fees: BURNED (not given to block producer).
+KHU transaction fees: NONE (all KHU operations are feeless).
+```
+
+### 5.5 Inviolabilité de l'Émission
+
+**RÈGLE ABSOLUE:**
+
+L'émission PIVX définie ci-dessus est **IMMUABLE** et **NON-GOUVERNABLE**.
+
+- ❌ DOMC ne peut PAS modifier reward_year
+- ❌ Masternodes ne peuvent PAS voter sur l'émission
+- ❌ Aucun paramètre runtime ne peut ajuster la formule
+- ❌ Aucun soft fork ne peut changer le schedule
+- ✅ Seul un hard fork avec consensus communautaire peut modifier cette règle
+
+**SÉPARATION STRICTE:**
+
+```
+Émission PIVX (reward_year) ≠ Yield KHU (R%)
+```
+
+- **reward_year** contrôle l'offre totale PIV (déflationnaire, fixed schedule)
+- **R%** contrôle les rewards de staking KHU (gouverné par DOMC, borné par R_MAX_dynamic)
+
+Ces deux systèmes sont **INDÉPENDANTS** et ne doivent JAMAIS être confondus.
+
+**ANTI-DÉRIVE:**
+
+Interdictions absolues dans l'implémentation:
+- Pas d'interpolation ou transition douce entre années
+- Pas de year_fraction ou calcul proportionnel
+- Pas de table alternative ou cache pré-calculé
+- Pas de modulation selon hashrate/staking/network
+- La formule `max(6 - year, 0)` est sacrée et inchangeable
+
+---
+
+## 6. MASTERNODE FINALITY
+
+### 6.1 Finality Rule
+
+```
+finalized_height = tip_height - 12
+```
+
+**Block at `finalized_height` must have valid BLS quorum signature.**
+
+### 6.2 Quorum Signature
+
+```cpp
+struct KHUStateCommitment {
+    uint32_t nHeight;
+    uint256 hashKHUState;      // Hash(KHUGlobalState)
+    uint256 hashBlock;
+    CBLSSignature sig;         // Aggregated BLS signature
+};
+```
+
+**Validation:**
+- Quorum size: LLMQ_400_60 or equivalent.
+- Signature must verify against quorum public key.
+- `hashKHUState` must match actual state at `nHeight`.
+
+### 6.3 Reorg Protection
+
+```
+if (reorg_depth > 12) → REJECT
+```
+
+### 6.4 Quorum Rotation
+
+```
+rotation_interval = 240 blocks
+```
+
+New quorum selected deterministically every 240 blocks via LLMQ DKG.
+
+---
+
+## 7. SAPLING INTEGRATION
+
+### 7.1 STAKE (KHU_T → ZKHU)
+
+```
+Input:  amount KHU_T (transparent UTXO)
+Effect: KHU_T spent
+        ZKHU note created
+        No change to C, U, Cr, Ur
+Output: 1 ZKHU note
+```
+
+**Rules:**
+- Exactly 1 note per STAKE transaction.
+- Note memo encodes: `stake_start_height`, `stake_amount`.
+- No Z→Z transfers allowed.
+- Rolling Frontier Tree for note commitments.
+
+### 7.2 UNSTAKE (ZKHU → KHU_T)
+
+```
+Input:  ZKHU note (nullifier revealed)
+Effect: ZKHU note spent
+        Yield calculated if mature
+        KHU_T created (original + bonus)
+Output: (stake_amount + bonus) KHU_T
+```
+
+**Maturity:**
+```
+maturity_blocks = 4320  // 3 days
+mature = (current_height - stake_start_height) >= maturity_blocks
+```
+
+**If mature:**
+```
+days_staked = (current_height - stake_start_height) / 1440
+Ur_accumulated = (stake_amount * R_annual / 100 / 365) * days_staked
+
+bonus = Ur_accumulated
+U  += bonus
+C  += bonus
+Cr -= bonus
+Ur -= bonus
+```
+
+**If immature:**
+```
+bonus = 0
+```
+
+**Output address:**
+```
+UNSTAKE must create output to NEW address (never reuse staking address).
+Auto-getnewaddress enforced by wallet.
+Privacy protection mandatory.
+```
+
+**Invariants preserved.**
+
+### 7.3 Prohibited
+
+```
+Z→Z KHU transfers: FORBIDDEN
+Multiple notes per STAKE: FORBIDDEN
+Partial UNSTAKE: FORBIDDEN (must unstake entire note)
+```
+
+---
+
+## 8. YIELD MECHANISM (Cr/Ur)
+
+### 8.1 R% Bounds
+
+```cpp
+uint32_t year = (nHeight - ACTIVATION_HEIGHT) / BLOCKS_PER_YEAR;
+uint16_t R_MAX_dynamic = std::max(400, 3000 - year * 100);  // basis points
+
+// R_MAX_dynamic schedule:
+// Year 0: 3000 (30%)
+// Year 1: 2900 (29%)
+// ...
+// Year 26: 400 (4%)
+// Year 27+: 400 (4%)
+```
+
+**Constraint:**
+```
+0 <= R_annual <= R_MAX_dynamic
+```
+
+### 8.2 Daily Update (1440 blocks)
+
+```cpp
+if ((nHeight - last_yield_update_height) >= 1440) {
+    for each active ZKHU note:
+        if (nHeight - note.stake_start_height >= 4320) {
+            Ur_daily = (note.amount * R_annual / 10000) / 365;
+            Ur += Ur_daily;
+            Cr += Ur_daily;
+        }
+
+    last_yield_update_height = nHeight;
+}
+```
+
+**INVARIANT_2 preserved: Cr == Ur always.**
+
+### 8.3 Yield Restrictions
+
+```
+- No yield for immature notes (< 4320 blocks).
+- No compounding (Ur not staked automatically).
+- Linear accumulation only (daily addition, never exponential).
+- Ur only realized on UNSTAKE.
+- No early withdrawal of yield.
+```
+
+---
+
+## 9. DOMC (GOVERNANCE OF R%)
+
+### 9.1 Vote Cycle
+
+```cpp
+const uint32_t DOMC_CYCLE_LENGTH = 43200;   // 30 days
+const uint32_t DOMC_PHASE_LENGTH = 4320;    // 3 days
+
+Phase 1: COMMIT   (blocks 0-4319)
+Phase 2: REVEAL   (blocks 4320-8639)
+Phase 3: TALLY    (blocks 8640-12959)
+Phase 4: FINALIZE (blocks 12960-17279)
+... (up to 10 phases total)
+```
+
+### 9.2 Vote Transaction
+
+```cpp
+struct DOMCVotePayload {
+    uint16_t R_proposal;        // Proposed R% (basis points)
+    uint256 commitment;         // Hash(R_proposal || secret) [COMMIT phase]
+    uint256 secret;             // Revealed in REVEAL phase
+    CPubKey voterPubKey;        // Masternode key
+    std::vector<unsigned char> signature;
+};
+```
+
+**Rules:**
+- Only masternodes can vote.
+- One vote per masternode per cycle.
+- COMMIT: submit `commitment = Hash(R_proposal || secret)`.
+- REVEAL: submit `R_proposal` and `secret`, verify commitment.
+- Invalid reveals are discarded.
+
+### 9.3 Tally
+
+```cpp
+median_R = median(all_valid_R_proposals);
+
+if (median_R > R_MAX_dynamic)
+    median_R = R_MAX_dynamic;
+
+R_annual = median_R;
+```
+
+**Activation:**
+```
+R_annual takes effect at: domc_cycle_start + DOMC_CYCLE_LENGTH
+```
+
+### 9.4 Bootstrap
+
+```
+Initial R_annual = 500 (5%)
+First DOMC cycle starts at: ACTIVATION_HEIGHT + 525600 (1 year)
+```
+
+---
+
+## 10. HTLC CROSS-CHAIN
+
+### 10.1 HTLC_CREATE
+
+```cpp
+struct HTLCPayload {
+    uint256 hashlock;           // SHA256(preimage)
+    uint32_t timelock;          // Absolute block height
+    CAmount amount;             // KHU_T amount locked
+    CScript recipientScript;    // Recipient if claimed
+    CScript refundScript;       // Refund if timeout
+};
+```
+
+**Effect:**
+```
+KHU_T locked (not spent, not transferable).
+C, U unchanged (funds still in system).
+```
+
+### 10.2 HTLC_CLAIM
+
+```
+Input:  HTLC outpoint, preimage
+Verify: SHA256(preimage) == hashlock
+        nHeight <= timelock
+Effect: KHU_T transferred to recipientScript
+```
+
+### 10.3 HTLC_REFUND
+
+```
+Input:  HTLC outpoint
+Verify: nHeight > timelock
+Effect: KHU_T refunded to refundScript
+```
+
+**Invariant preservation:**
+- HTLC does not create or destroy KHU.
+- C and U remain unchanged throughout.
+
+---
+
+## 11. VALIDATION RULES
+
+### 11.1 Block Validation
+
+```cpp
+bool CheckBlock(const CBlock& block, CValidationState& state) {
+    // 1. Validate transactions
+    for (const auto& tx : block.vtx) {
+        if (!CheckTransaction(tx, state))
+            return false;
+    }
+
+    // 2. Compute new KHU state
+    KHUGlobalState newState = prevState;
+    for (const auto& tx : block.vtx) {
+        if (!ApplyKHUTransaction(tx, newState, state))
+            return false;
+    }
+
+    // 3. Verify invariants
+    if (newState.C != newState.U)
+        return state.Invalid(false, REJECT_INVALID, "khu-invariant-CD-violation");
+
+    if (newState.Cr != newState.Ur)
+        return state.Invalid(false, REJECT_INVALID, "khu-invariant-CDr-violation");
+
+    // 4. Update daily yield if needed
+    if ((block.nHeight - last_yield_update_height) >= 1440) {
+        UpdateDailyYield(newState, block.nHeight);
+    }
+
+    // 5. Check finality
+    if (!CheckFinality(block, newState))
+        return false;
+
+    return true;
+}
+```
+
+### 11.2 Transaction Validation
+
+```cpp
+bool CheckTransaction(const CTransaction& tx, CValidationState& state) {
+    switch (tx.nType) {
+        case TX_KHU_MINT:
+            return CheckKHUMint(tx, state);
+        case TX_KHU_REDEEM:
+            return CheckKHURedeem(tx, state);
+        case TX_KHU_STAKE:
+            return CheckKHUStake(tx, state);
+        case TX_KHU_UNSTAKE:
+            return CheckKHUUnstake(tx, state);
+        case TX_DOMC_VOTE:
+            return CheckDOMCVote(tx, state);
+        case TX_HTLC_CREATE:
+        case TX_HTLC_CLAIM:
+        case TX_HTLC_REFUND:
+            return CheckHTLC(tx, state);
+        default:
+            return CheckStandardTransaction(tx, state);
+    }
+}
+```
+
+---
+
+## 12. STORAGE
+
+### 12.1 LevelDB Keys
+
+```
+'K' + 'S' + height         → KHUGlobalState (state at height)
+'K' + 'B'                  → Best KHU state hash
+'K' + 'H' + hash           → KHUGlobalState (state by hash)
+'K' + 'C' + height         → KHUStateCommitment (finality signature)
+'K' + 'U' + outpoint       → CKHUUTXO (KHU UTXO)
+'K' + 'N' + nullifier      → ZKHU note data
+'K' + 'D' + cycle          → DOMC vote data
+'K' + 'T' + outpoint       → HTLC data
+```
+
+### 12.2 UTXO Structure
+
+```cpp
+struct CKHUUTXO {
+    int64_t amount;
+    CScript scriptPubKey;
+    uint32_t nHeight;
+
+    // Flags
+    bool fStaked;              // true if currently ZKHU
+    uint32_t nStakeStartHeight; // if staked
+};
+```
+
+---
+
+## 13. NETWORK UPGRADE
+
+### 13.1 Activation
+
+```cpp
+const Consensus::UpgradeIndex UPGRADE_KHU = 15;
+
+// Activation height (TBD, set before mainnet)
+vUpgrades[UPGRADE_KHU].nActivationHeight = <ACTIVATION_HEIGHT>;
+vUpgrades[UPGRADE_KHU].nProtocolVersion = 70023;
+```
+
+### 13.2 Activation Requirements
+
+```
+- Testnet fully operational for >= 525600 blocks (1 year).
+- All invariants verified.
+- No critical bugs.
+- Community approval via DOMC or equivalent governance.
+```
+
+---
+
+## 14. ABSOLUTE PROHIBITIONS
+
+```
+1.  KHU burn outside REDEEM                    → FORBIDDEN
+2.  Z→Z ZKHU transfers                         → FORBIDDEN
+3.  Automatic Cr/Ur funding (outside DOMC)     → FORBIDDEN
+4.  Epsilon tolerance on invariants            → FORBIDDEN
+5.  External yield sources                     → FORBIDDEN
+6.  R% modification outside DOMC               → FORBIDDEN
+7.  Floating point arithmetic                  → FORBIDDEN (use int64_t only)
+8.  Multiple notes per STAKE                   → FORBIDDEN
+9.  Partial UNSTAKE                            → FORBIDDEN
+10. KHU fees (all KHU ops feeless)             → FORBIDDEN
+11. Reorg beyond finalized height              → FORBIDDEN
+12. MINT without PIV burn                      → FORBIDDEN
+13. REDEEM without KHU_T destruction           → FORBIDDEN
+14. Yield before 4320 block maturity           → FORBIDDEN
+15. R_annual > R_MAX_dynamic                   → FORBIDDEN
+```
+
+---
+
+## 15. CONSTANTS
+
+```cpp
+// Time
+const uint32_t BLOCKS_PER_YEAR = 525600;
+const uint32_t BLOCKS_PER_DAY = 1440;
+const uint32_t MATURITY_BLOCKS = 4320;  // 3 days
+
+// Finality
+const uint32_t FINALITY_DEPTH = 12;
+const uint32_t QUORUM_ROTATION = 240;
+
+// Emission
+const int64_t MAX_REWARD_YEAR = 6 * COIN;
+const int64_t EMISSION_YEARS = 6;
+
+// DOMC
+const uint32_t DOMC_CYCLE_LENGTH = 43200;  // 30 days
+const uint32_t DOMC_PHASE_LENGTH = 4320;   // 3 days
+const uint16_t INITIAL_R = 500;            // 5% (basis points)
+const uint16_t MIN_R = 0;
+const uint16_t FLOOR_R_MAX = 400;          // 4% (never below this)
+
+// Precision
+const int64_t COIN = 100000000;            // 1 PIV/KHU = 10^8 satoshis
+const uint16_t BASIS_POINT = 1;            // 0.01%
+```
+
+---
+
+## 16. ALGORITHM REFERENCE
+
+### 16.1 Invariant Enforcement
+
+```cpp
+// Every block must satisfy:
+assert(state.C == state.U);
+assert(state.Cr == state.Ur);
+
+// Or reject block.
+```
+
+### 16.2 State Transition
+
+```cpp
+KHUGlobalState ApplyBlock(const CBlock& block, const KHUGlobalState& prev) {
+    KHUGlobalState next = prev;
+
+    for (const auto& tx : block.vtx) {
+        switch (tx.nType) {
+            case TX_KHU_MINT:
+                next.C += tx.amount;
+                next.U += tx.amount;
+                break;
+
+            case TX_KHU_REDEEM:
+                next.C -= tx.amount;
+                next.U -= tx.amount;
+                break;
+
+            case TX_KHU_UNSTAKE:
+                int64_t bonus = CalculateBonus(tx);
+                next.U += bonus;
+                next.C += bonus;
+                next.Cr -= bonus;
+                next.Ur -= bonus;
+                break;
+        }
+    }
+
+    // Daily yield update
+    if ((block.nHeight - last_yield_update_height) >= BLOCKS_PER_DAY) {
+        int64_t total_yield = CalculateDailyYield(block.nHeight);
+        next.Cr += total_yield;
+        next.Ur += total_yield;
+    }
+
+    // Invariants must hold
+    assert(next.C == next.U);
+    assert(next.Cr == next.Ur);
+
+    return next;
+}
+```
+
+### 16.3 Yield Calculation
+
+```cpp
+int64_t CalculateDailyYield(uint32_t nHeight) {
+    int64_t total = 0;
+
+    for (const auto& note : active_zkhu_notes) {
+        if (nHeight - note.stake_start_height >= MATURITY_BLOCKS) {
+            int64_t daily = (note.amount * R_annual / 10000) / 365;
+            total += daily;
+        }
+    }
+
+    return total;
+}
+```
+
+### 16.4 UNSTAKE Bonus
+
+```cpp
+int64_t CalculateBonus(const CTransaction& unstake_tx) {
+    uint32_t stake_start = GetStakeStartHeight(unstake_tx);
+    int64_t stake_amount = GetStakeAmount(unstake_tx);
+    uint32_t current_height = chainActive.Height();
+
+    if (current_height - stake_start < MATURITY_BLOCKS)
+        return 0;
+
+    uint32_t days_staked = (current_height - stake_start) / BLOCKS_PER_DAY;
+    int64_t bonus = (stake_amount * R_annual / 10000 / 365) * days_staked;
+
+    return bonus;
+}
+```
+
+---
+
+## 17. ERROR CODES
+
+```cpp
+enum KHURejectCode {
+    REJECT_KHU_INVARIANT_CD = 0x60,
+    REJECT_KHU_INVARIANT_CDR = 0x61,
+    REJECT_KHU_INVALID_MINT = 0x62,
+    REJECT_KHU_INVALID_REDEEM = 0x63,
+    REJECT_KHU_INVALID_STAKE = 0x64,
+    REJECT_KHU_INVALID_UNSTAKE = 0x65,
+    REJECT_KHU_FINALITY_VIOLATION = 0x66,
+    REJECT_KHU_IMMATURE_YIELD = 0x67,
+    REJECT_KHU_INVALID_R = 0x68,
+    REJECT_KHU_FORBIDDEN_BURN = 0x69,
+    REJECT_KHU_FORBIDDEN_TRANSFER = 0x6A,
+    REJECT_KHU_HTLC_INVALID = 0x6B,
+};
+```
+
+---
+
+## 18. ACTIVATION SEQUENCE
+
+### Phase 0: Pre-Activation
+```
+Block 0 - (ACTIVATION_HEIGHT - 1):
+- Standard PIVX consensus
+- No KHU functionality
+```
+
+### Phase 1: Activation
+```
+Block ACTIVATION_HEIGHT:
+- Initialize KHUGlobalState: C=0, U=0, Cr=0, Ur=0
+- Enable MINT and REDEEM
+- Emission formula active
+- Fee burning active
+```
+
+### Phase 2: Finality (12 blocks after activation)
+```
+Block (ACTIVATION_HEIGHT + 12):
+- Masternode finality enforced
+- State commitments required
+```
+
+### Phase 3: Sapling (TBD blocks after activation)
+```
+Block (ACTIVATION_HEIGHT + <TBD>):
+- STAKE/UNSTAKE enabled
+- ZKHU notes active
+- Yield mechanism begins
+```
+
+### Phase 4: DOMC (1 year after activation)
+```
+Block (ACTIVATION_HEIGHT + 525600):
+- First DOMC cycle begins
+- Voting enabled
+```
+
+### Phase 5: HTLC (TBD blocks after activation)
+```
+Block (ACTIVATION_HEIGHT + <TBD>):
+- HTLC enabled
+- Cross-chain swaps active
+```
+
+---
+
+## 19. REFERENCE IMPLEMENTATION
+
+All consensus rules must be implemented deterministically in C++17 or later.
+
+Floating point arithmetic is PROHIBITED.
+
+All amounts are int64_t (satoshis).
+
+All calculations must be reproducible across platforms.
+
+---
+
+## 20. VERSION HISTORY
+
+```
+1.0.0 - Initial canonical specification
+```
+
+---
+
+## END OF SPECIFICATION
+
+This document defines the complete consensus rules for PIVX-V6-KHU.
+
+Any deviation from these rules constitutes a consensus failure.
+
+Implementation must follow these rules exactly.
+
+No interpretation. No approximation. Strict compliance only.
