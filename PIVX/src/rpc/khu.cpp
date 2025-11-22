@@ -8,9 +8,7 @@
 #include "chainparams.h"
 #include "khu/khu_state.h"
 #include "rpc/server.h"
-#include "rpc/util.h"
 #include "sync.h"
-#include "util/strencodings.h"
 #include "validation.h"
 
 #include <univalue.h>

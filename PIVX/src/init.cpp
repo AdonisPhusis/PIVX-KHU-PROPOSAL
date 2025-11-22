@@ -1475,7 +1475,8 @@ bool AppInitMain()
 
                 // KHU: Initialize KHU state database (Phase 1 - Foundation)
                 if (!InitKHUStateDB(1 << 20, fReindex)) { // 1 MB cache
-                    return InitError(_("Failed to initialize KHU state database"));
+                    UIError(_("Failed to initialize KHU state database"));
+                    return false;
                 }
 
                 InitTierTwoPreChainLoad(fReindex);

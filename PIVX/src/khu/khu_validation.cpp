@@ -44,7 +44,7 @@ bool GetCurrentKHUState(KhuGlobalState& state)
 {
     LOCK(cs_main);
 
-    CBlockIndex* pindex = ChainActive().Tip();
+    CBlockIndex* pindex = chainActive.Tip();
     if (!pindex) {
         return false;
     }
@@ -106,14 +106,12 @@ bool ProcessKHUBlock(const CBlock& block,
 
     // Verify invariants (CRITICAL)
     if (!newState.CheckInvariants()) {
-        return validationState.Error("khu-invalid-state",
-                                   strprintf("KHU invariants violated at height %d", nHeight));
+        return validationState.Error(strprintf("KHU invariants violated at height %d", nHeight));
     }
 
     // Persist state to database
     if (!db->WriteKHUState(nHeight, newState)) {
-        return validationState.Error("khu-db-write-failed",
-                                   strprintf("Failed to write KHU state at height %d", nHeight));
+        return validationState.Error(strprintf("Failed to write KHU state at height %d", nHeight));
     }
 
     LogPrint(BCLog::NET, "KHU: Processed block %d, C=%d U=%d Cr=%d Ur=%d\n",
@@ -139,14 +137,13 @@ bool DisconnectKHUBlock(CBlockIndex* pindex,
     // Without this check, nodes can diverge on deep reorgs even with empty KHU state
     const int KHU_FINALITY_DEPTH = 12;  // LLMQ finality depth
 
-    CBlockIndex* pindexTip = ChainActive().Tip();
+    CBlockIndex* pindexTip = chainActive.Tip();
     if (pindexTip) {
         int reorgDepth = pindexTip->nHeight - nHeight;
         if (reorgDepth > KHU_FINALITY_DEPTH) {
             LogPrint(BCLog::NET, "KHU: Rejecting reorg depth %d (max %d blocks)\n",
                      reorgDepth, KHU_FINALITY_DEPTH);
-            return validationState.Error("khu-reorg-too-deep",
-                strprintf("KHU reorg depth %d exceeds maximum %d blocks (LLMQ finality)",
+            return validationState.Error(strprintf("KHU reorg depth %d exceeds maximum %d blocks (LLMQ finality)",
                          reorgDepth, KHU_FINALITY_DEPTH));
         }
     }
@@ -158,8 +155,7 @@ bool DisconnectKHUBlock(CBlockIndex* pindex,
     // - Reverse daily yield
 
     if (!db->EraseKHUState(nHeight)) {
-        return validationState.Error("khu-db-erase-failed",
-                                   strprintf("Failed to erase KHU state at height %d", nHeight));
+        return validationState.Error(strprintf("Failed to erase KHU state at height %d", nHeight));
     }
 
     LogPrint(BCLog::NET, "KHU: Disconnected block %d\n", nHeight);

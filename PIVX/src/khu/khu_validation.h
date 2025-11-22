@@ -12,6 +12,7 @@ class CBlockIndex;
 class CCoinsViewCache;
 class CValidationState;
 class CKHUStateDB;
+struct KhuGlobalState;
 
 namespace Consensus {
     struct Params;
