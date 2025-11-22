@@ -622,9 +622,20 @@ Le yield accumulé (`Ur_accumulated`) d'une note ZKHU **ne génère PAS lui-mêm
 
 ✅ CORRECT: `daily = (note.amount * R_annual) / 10000 / 365`
 
-**4. Pas de funding externe du reward pool:**
+**4. Pas de funding externe du reward pool — AXIOME CANONIQUE:**
 
-Toute injection de Cr/Ur provenant de sources **autres que l'émission de bloc** (`ApplyBlockReward`) est interdite.
+```cpp
+// ✅ AXIOME IMMUABLE
+const int64_t KHUPoolInjection = 0;
+```
+
+**Il n'existe AUCUNE injection externe ou interne vers Cr ou Ur.**
+
+Cr et Ur évoluent EXCLUSIVEMENT via:
+1. YIELD quotidien: `Cr += Δ`, `Ur += Δ`
+2. UNSTAKE: `Cr -= B`, `Ur -= B`
+
+Toute autre mutation (y compris depuis émission PIVX, fees, DAO, MN rewards) est **INTERDITE** et doit provoquer un rejet de bloc.
 
 #### Propriétés garanties
 

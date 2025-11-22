@@ -1358,7 +1358,7 @@ bool ReverseDailyYield(KhuGlobalState& state, CValidationState& vstate) {
 }
 ```
 
-### 7.3 Reorg Limits
+### 7.3 Reorg Limits — RÈGLE CANONIQUE IMMUABLE
 
 **LLMQ Finality: 12 blocks**
 
@@ -1366,14 +1366,20 @@ bool ReverseDailyYield(KhuGlobalState& state, CValidationState& vstate) {
 /**
  * Reorg depth validation
  *
- * RULE: Reorg > 12 blocks is FORBIDDEN by LLMQ finality
+ * ✅ RÈGLE CANONIQUE (IMMUABLE):
+ * Un reorg > 12 blocks est INTERDIT par finality LLMQ
+ *
+ * Cette validation DOIT être exécutée dans validation.cpp
+ * AVANT tout appel à DisconnectKHUBlock().
  */
 bool ValidateReorgDepth(int reorg_depth) {
-    const int FINALITY_DEPTH = 12;  // LLMQ finality
+    const int KHU_FINALITY_DEPTH = 12;  // LLMQ finality (consensus constant)
 
-    if (reorg_depth > FINALITY_DEPTH) {
-        return error("KHU: Reorg depth %d exceeds finality %d (FORBIDDEN)",
-                    reorg_depth, FINALITY_DEPTH);
+    if (reorg_depth > KHU_FINALITY_DEPTH) {
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                           "khu-reorg-too-deep",
+                           strprintf("Reorg depth %d exceeds finality %d (FORBIDDEN)",
+                                   reorg_depth, KHU_FINALITY_DEPTH));
     }
 
     return true;
@@ -1382,8 +1388,11 @@ bool ValidateReorgDepth(int reorg_depth) {
 
 **Behavior:**
 - **Reorg 1-11 blocks:** DisconnectKHUBlock() executed ✅
-- **Reorg 12 blocks:** Allowed but at finality boundary ⚠️
-- **Reorg 13+ blocks:** REJECTED (beyond finality) ❌
+- **Reorg 12 blocks:** Allowed (at finality boundary) ✅
+- **Reorg 13+ blocks:** **REJECTED by consensus** (bloc invalide) ❌
+
+**Raison:**
+Le système KHU repose sur la finalité LLMQ (12 blocs). Un reorg au-delà de cette limite pourrait corrompre les états KHU historiques et violer les invariants Cr==Ur, C==U.
 
 ### 7.4 Validation Rules
 

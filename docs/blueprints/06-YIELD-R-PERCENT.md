@@ -134,36 +134,43 @@ struct KhuGlobalState {
 ```cpp
 /**
  * Application block reward (après émission PIVX)
+ *
+ * IMPORTANT: Cette fonction NE MODIFIE PAS Cr/Ur.
+ * L'émission PIVX est distribuée (staker, MN, DAO) mais Cr/Ur restent inchangés.
  */
 void ApplyBlockReward(KhuGlobalState& state, int64_t reward_year) {
-    // 1. Émission PIVX distribuée (staker, MN, DAO)
-    //    (voir blueprint 01-PIVX-INFLATION-DIMINUTION)
+    // Émission PIVX distribuée (staker, MN, DAO)
+    // (voir blueprint 01-PIVX-INFLATION-DIMINUTION)
 
-    // 2. Injection dans pool reward KHU
-    //    Une portion de l'émission est allouée au pool
-    int64_t khu_pool_injection = CalculateKHUPoolInjection(reward_year);
+    // ✅ AXIOME: Aucune injection Cr/Ur depuis émission PIVX
+    // KHUPoolInjection = 0
 
-    state.Cr += khu_pool_injection;  // Atomique
-    state.Ur += khu_pool_injection;  // Atomique
-
-    // Invariant : Cr == Ur préservé
+    // Cr et Ur NE SONT PAS modifiés ici
+    // (voir section 3.5.6 pour règle canonique)
 }
 ```
 
-**Source du pool :**
+**Source du pool — AXIOME CANONIQUE :**
+
 ```
-Bloc N miné :
-  reward_year = 6 PIV (année 0)
+❌ FAUX: Pool Cr/Ur alimenté par émission PIVX
+✅ VRAI: Pool Cr/Ur = système FERMÉ (endogène)
 
-  Distribution :
-  • Staker : 6 PIV
-  • MN :     6 PIV
-  • DAO :    6 PIV
+Cr et Ur évoluent EXCLUSIVEMENT via:
 
-  MAIS AUSSI :
-  • Pool KHU (Cr/Ur) : X PIV → convertis en KHU
+1. YIELD quotidien (ApplyDailyYield):
+   Cr += Δ
+   Ur += Δ
+   où Δ = (stake_total × R_annual / 10000) / 365
 
-  (X dépend de la politique d'injection - TBD)
+2. UNSTAKE (ProcessUNSTAKE):
+   Cr -= B
+   Ur -= B
+   où B = note.Ur_accumulated
+
+AUCUNE autre source (ni émission PIV, ni fees, ni injection externe).
+
+KHUPoolInjection = 0  (axiome immuable)
 ```
 
 ### 2.3 Comment le Pool Finance le Yield ?
@@ -192,15 +199,67 @@ Quand Alice UNSTAKE :
   Alice avait 1000 KHU staké
   Ur_accumulated = 50 KHU (1 an)
 
-  state.Cr -= 50  (consommation pool)
+  state.Cr -= 50  (consommation pool virtuel)
   state.Ur -= 50  (consommation droits)
-  state.C  += 50  (création KHU pour Alice)
-  state.U  += 50  (création KHU pour Alice)
+  state.C  += 50  (MINT nouveaux KHU_T pour bonus)
+  state.U  += 50  (MINT nouveaux KHU_T pour bonus)
 
-  Alice reçoit : 1000 + 50 = 1050 KHU_T
+  Alice reçoit : 1000 KHU_T (principal) + 50 KHU_T (bonus MINTÉ)
+               = 1050 KHU_T total
 ```
 
-**Le pool Cr/Ur est un buffer entre émission et distribution yield.**
+**Cr/Ur = système de création monétaire différée (deferred minting).**
+
+Les KHU_T de bonus sont **créés lors de l'UNSTAKE**, pas lors du yield quotidien.
+Le yield quotidien augmente seulement les compteurs Cr/Ur (promesses virtuelles).
+L'UNSTAKE matérialise ces promesses en KHU_T réels via MINT.
+
+### 2.4 Axiome Injection Pool — RÈGLE CANONIQUE IMMUABLE
+
+**Il n'existe AUCUNE injection externe ou interne vers Cr ou Ur.**
+
+```cpp
+// ✅ AXIOME CANONIQUE (IMMUABLE)
+const int64_t KHUPoolInjection = 0;
+
+// ❌ INTERDIT: Toute source externe vers Cr/Ur
+// • Émission PIVX (reward_year) → N'alimente PAS Cr/Ur
+// • Fees PIV burned → N'alimentent PAS Cr/Ur
+// • Masternode rewards → N'alimentent PAS Cr/Ur
+// • DAO budget → N'alimente PAS Cr/Ur
+// • Inflation externe → INTERDITE
+
+// ✅ SEULES opérations légales sur Cr/Ur:
+
+// 1. YIELD quotidien (ApplyDailyYield)
+Cr += Δ;  // Δ = (stake_total × R_annual / 10000) / 365
+Ur += Δ;
+
+// 2. UNSTAKE (ProcessUNSTAKE)
+Cr -= B;  // B = note.Ur_accumulated
+Ur -= B;
+```
+
+**Conséquence architecturale:**
+
+Le système Cr/Ur est **complètement fermé**, **endogène**, et **auto-déterminé**.
+
+- Cr/Ur commencent à 0 à l'activation (nActivationHeight)
+- Cr/Ur croissent via YIELD quotidien (création promesses)
+- Cr/Ur décroissent via UNSTAKE (matérialisation promesses)
+- Cr/Ur oscillent selon comportement stakers (stake vs unstake)
+
+**Toute mutation Cr/Ur autre que YIELD/UNSTAKE doit provoquer un rejet de bloc.**
+
+```cpp
+// Validation ConnectBlock
+if (state_new.Cr != state_old.Cr + Δ_yield - Σ_unstake_bonuses) {
+    return state.Invalid(REJECT_INVALID, "khu-invalid-cr-mutation");
+}
+if (state_new.Ur != state_old.Ur + Δ_yield - Σ_unstake_bonuses) {
+    return state.Invalid(REJECT_INVALID, "khu-invalid-ur-mutation");
+}
+```
 
 ---
 
