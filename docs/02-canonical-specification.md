@@ -21,36 +21,45 @@ ZKHU    : Sapling note (staking only)
 ### 2.1 State Variables
 
 ```cpp
-struct KHUGlobalState {
+struct KhuGlobalState {
+    // Collateral and supply
     int64_t C;   // PIV collateral
     int64_t U;   // KHU_T supply
+
+    // Reward pool
     int64_t Cr;  // Reward pool
     int64_t Ur;  // Reward rights
 
+    // DOMC parameters
+    uint16_t R_annual;                  // Current yield % (basis points, 0-3000)
+    uint16_t R_MAX_dynamic;             // Max votable R (basis points)
+    uint32_t last_domc_height;          // Last R change height
+
+    // DOMC cycle
+    uint32_t domc_cycle_start;          // Cycle start height
+    uint32_t domc_cycle_length;         // Full cycle length (blocks)
+    uint32_t domc_phase_length;         // Phase length (blocks)
+
+    // Yield scheduler
+    uint32_t last_yield_update_height;  // Last Cr/Ur update (1440 blocks)
+
+    // Chain tracking
     uint32_t nHeight;
     uint256 hashBlock;
     uint256 hashPrevState;
 };
 ```
 
-### 2.2 DOMC Variables
+**Note:** Ces champs constituent le KhuGlobalState canonique. Toute implémentation doit refléter EXACTEMENT cette structure.
 
-```cpp
-uint16_t R_annual;                  // Current yield % (basis points, 0-3000)
-uint16_t R_MAX_dynamic;             // Max votable R (basis points)
-uint32_t last_domc_height;          // Last R change height
-uint32_t domc_cycle_start;          // Cycle start height
-uint32_t domc_cycle_length;         // Full cycle length (blocks)
-uint32_t domc_phase_length;         // Phase length (blocks)
-uint32_t last_yield_update_height;  // Last Cr/Ur update (1440 blocks)
-```
-
-### 2.3 Invariants
+### 2.2 Invariants
 
 ```
-INVARIANT_1: C == U               (strict equality)
-INVARIANT_2: Cr == Ur             (strict equality)
+INVARIANT_1: (U == 0 || C == U)
+INVARIANT_2: (Ur == 0 || Cr == Ur)
 ```
+
+**Note:** Au genesis, U=0 ⇒ C=0 est autorisé. Après premier MINT/REDEEM, égalité stricte C==U doit toujours tenir. De même, après premier yield, égalité stricte Cr==Ur doit tenir.
 
 **Violation → Block rejection.**
 

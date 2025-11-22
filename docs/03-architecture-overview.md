@@ -230,19 +230,22 @@ bool CheckTransaction(const CTransaction& tx, CValidationState& state) {
 
 **Fichier:** `src/validation.cpp`
 
-**Ordre d'exécution:**
+**Ordre d'exécution canonique:**
 ```cpp
 bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pindex, CCoinsViewCache& view) {
-    // 1. Load previous KHU state
+    // 1. Load KhuGlobalState from previous height
     KhuGlobalState prevState;
     pKHUStateDB->ReadKHUState(pindex->nHeight - 1, prevState);
 
     KhuGlobalState newState = prevState;
 
-    // 2. Process coinbase/coinstake (emission)
-    ProcessBlockReward(block, newState);
+    // 2. ApplyDailyYieldIfNeeded() — yield BEFORE transactions
+    if ((pindex->nHeight - newState.last_yield_update_height) >= 1440) {
+        UpdateDailyYield(newState, pindex->nHeight, view);
+        newState.last_yield_update_height = pindex->nHeight;
+    }
 
-    // 3. Process KHU transactions
+    // 3. ProcessKHUTransactions() — MINT / REDEEM / STAKE / UNSTAKE
     for (const auto& tx : block.vtx) {
         if (tx->IsKHUTransaction()) {
             if (!ApplyKHUTransaction(*tx, newState, view, state))
@@ -250,29 +253,14 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
         }
     }
 
-    // 4. Update R_MAX_dynamic
-    UpdateRMaxDynamic(newState, pindex->nHeight);
+    // 4. ApplyBlockReward() — emission AFTER transactions
+    ProcessBlockReward(block, newState);
 
-    // 5. Update daily yield (every 1440 blocks)
-    if ((pindex->nHeight - newState.last_yield_update_height) >= 1440) {
-        UpdateDailyYield(newState, pindex->nHeight, view);
-        newState.last_yield_update_height = pindex->nHeight;
-    }
-
-    // 6. Check DOMC cycle
-    UpdateDOMCCycle(newState, pindex->nHeight);
-
-    // 7. Verify invariants
+    // 5. CheckInvariants() — C==U and Cr==Ur
     if (!newState.CheckInvariants())
         return state.Invalid(false, REJECT_INVALID, "khu-invariant-violation");
 
-    // 8. Check finality
-    if (pindex->nHeight >= 12) {
-        if (!CheckKHUFinality(pindex->nHeight - 12, prevState))
-            return state.Invalid(false, REJECT_INVALID, "khu-finality-violation");
-    }
-
-    // 9. Persist state
+    // 6. PersistKhuState() — LevelDB write
     newState.nHeight = pindex->nHeight;
     newState.hashBlock = pindex->GetBlockHash();
     newState.hashPrevState = prevState.GetHash();
@@ -281,6 +269,12 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     return true;
 }
 ```
+
+**Justification de l'ordre:**
+
+Yield doit être appliqué AVANT transactions pour éviter mismatch avec UNSTAKE dans le même bloc. Un UNSTAKE consomme le Ur accumulé, donc le yield quotidien doit être ajouté à Cr/Ur avant que l'UNSTAKE ne soit traité.
+
+Emission (block reward) doit être appliquée APRÈS transactions pour que C/U soit consistant. L'émission PIV ne modifie PAS l'état KHU (C, U, Cr, Ur), elle crée simplement du PIV pur pour staker/masternode/DAO.
 
 ### 4.3 ApplyKHUTransaction
 
