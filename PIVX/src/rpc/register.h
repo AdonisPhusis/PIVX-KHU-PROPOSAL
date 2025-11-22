@@ -27,6 +27,8 @@ void RegisterBudgetRPCCommands(CRPCTable& tableRPC);
 void RegisterEvoRPCCommands(CRPCTable &tableRPC);
 /** Register Quorums RPC commands */
 void RegisterQuorumsRPCCommands(CRPCTable &tableRPC);
+/** Register KHU RPC commands */
+void RegisterKHURPCCommands(CRPCTable &tableRPC);
 
 static inline void RegisterAllCoreRPCCommands(CRPCTable& tableRPC)
 {
@@ -39,6 +41,7 @@ static inline void RegisterAllCoreRPCCommands(CRPCTable& tableRPC)
     RegisterBudgetRPCCommands(tableRPC);
     RegisterEvoRPCCommands(tableRPC);
     RegisterQuorumsRPCCommands(tableRPC);
+    RegisterKHURPCCommands(tableRPC);
 }
 
 #endif // PIVX_RPC_REGISTER_H

@@ -26,6 +26,7 @@
 #include "httprpc.h"
 #include "invalid.h"
 #include "key.h"
+#include "khu/khu_validation.h"
 #include "mapport.h"
 #include "miner.h"
 #include "netbase.h"
@@ -1471,6 +1472,11 @@ bool AppInitMain()
                 zerocoinDB.reset(new CZerocoinDB(0, false, fReindex));
                 pSporkDB.reset(new CSporkDB(0, false, false));
                 accumulatorCache.reset(new AccumulatorCache(zerocoinDB.get()));
+
+                // KHU: Initialize KHU state database (Phase 1 - Foundation)
+                if (!InitKHUStateDB(1 << 20, fReindex)) { // 1 MB cache
+                    return InitError(_("Failed to initialize KHU state database"));
+                }
 
                 InitTierTwoPreChainLoad(fReindex);
 

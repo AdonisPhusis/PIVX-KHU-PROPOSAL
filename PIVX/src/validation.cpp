@@ -28,6 +28,7 @@
 #include "interfaces/handler.h"
 #include "invalid.h"
 #include "kernel.h"
+#include "khu/khu_validation.h"
 #include "legacy/validation_zerocoin_legacy.h"
 #include "llmq/quorums_chainlocks.h"
 #include "masternode-payments.h"
@@ -1388,6 +1389,16 @@ DisconnectResult DisconnectBlock(CBlock& block, const CBlockIndex* pindex, CCoin
         CacheAccChecksum(pindex, false);
     }
 
+    // KHU: Disconnect KHU state (Phase 1 - Foundation only)
+    // TODO: Add UPGRADE_KHU to consensus/params.h when ready
+    if (consensus.NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_V6_0)) {
+        CValidationState khuState;
+        if (!DisconnectKHUBlock(const_cast<CBlockIndex*>(pindex), khuState)) {
+            error("%s: DisconnectKHUBlock failed for %s", __func__, pindex->GetBlockHash().ToString());
+            return DISCONNECT_FAILED;
+        }
+    }
+
     return fClean ? DISCONNECT_OK : DISCONNECT_UNCLEAN;
 }
 
@@ -1731,6 +1742,15 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     // 100 blocks after the last invalid out, clean the map contents
     if (pindex->nHeight == consensus.height_last_invalid_UTXO + 100) {
         invalid_out::setInvalidOutPoints.clear();
+    }
+
+    // KHU: Process KHU state transitions (Phase 1 - Foundation only)
+    // TODO: Add UPGRADE_KHU to consensus/params.h when ready
+    // For now, this hook is dormant (NetworkUpgradeActive will return false)
+    if (!fJustCheck && consensus.NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_V6_0)) {
+        if (!ProcessKHUBlock(block, pindex, view, state, consensus)) {
+            return error("%s: ProcessKHUBlock failed for %s", __func__, block.GetHash().ToString());
+        }
     }
 
     return true;
