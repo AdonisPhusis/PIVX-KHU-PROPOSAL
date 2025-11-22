@@ -134,12 +134,28 @@ bool DisconnectKHUBlock(CBlockIndex* pindex,
         return validationState.Error("khu-db-not-initialized");
     }
 
+    // PHASE 1 MANDATORY: Validate reorg depth (LLMQ finality)
+    // This is a CONSENSUS RULE, not a Phase 2 feature
+    // Without this check, nodes can diverge on deep reorgs even with empty KHU state
+    const int KHU_FINALITY_DEPTH = 12;  // LLMQ finality depth
+
+    CBlockIndex* pindexTip = ChainActive().Tip();
+    if (pindexTip) {
+        int reorgDepth = pindexTip->nHeight - nHeight;
+        if (reorgDepth > KHU_FINALITY_DEPTH) {
+            LogPrint(BCLog::NET, "KHU: Rejecting reorg depth %d (max %d blocks)\n",
+                     reorgDepth, KHU_FINALITY_DEPTH);
+            return validationState.Error("khu-reorg-too-deep",
+                strprintf("KHU reorg depth %d exceeds maximum %d blocks (LLMQ finality)",
+                         reorgDepth, KHU_FINALITY_DEPTH));
+        }
+    }
+
     // PHASE 1: Simply erase state at this height
     // Previous state remains intact, no need to restore
     // Future phases will add:
     // - Reverse MINT/REDEEM operations
     // - Reverse daily yield
-    // - Validate reorg depth (<= 12 blocks)
 
     if (!db->EraseKHUState(nHeight)) {
         return validationState.Error("khu-db-erase-failed",
