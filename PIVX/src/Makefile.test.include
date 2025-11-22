@@ -118,6 +118,7 @@ BITCOIN_TESTS =\
   test/getarg_tests.cpp \
   test/hash_tests.cpp \
   test/key_tests.cpp \
+  test/khu_phase1_tests.cpp \
   test/dbwrapper_tests.cpp \
   test/validation_tests.cpp \
   test/main_tests.cpp \
