@@ -97,37 +97,133 @@ Ne doivent JAMAIS s'influencer
 
 #### 1.3.6 HTLC Cross-Chain (Gateway Compatible)
 
-**Lois HTLC (spécification Phase 7):**
+**⚠️ RÈGLE FONDAMENTALE : HTLC KHU = HTLC BITCOIN STANDARD**
+
+```
+✅ PIVX supporte DÉJÀ les scripts HTLC (Bitcoin-compatible)
+✅ KHU = Token UTXO standard (comme PIV)
+✅ HTLC KHU fonctionne EXACTEMENT comme HTLC PIV
+❌ AUCUNE implémentation HTLC spéciale nécessaire pour KHU
+```
+
+**Opcodes standard Bitcoin (déjà dans PIVX) :**
+
+```cpp
+OP_IF                    // Conditionnel
+OP_ELSE                  // Alternative
+OP_ENDIF                 // Fin conditionnel
+OP_HASH160               // Hash du secret
+OP_EQUALVERIFY           // Vérification égalité
+OP_CHECKLOCKTIMEVERIFY   // Timelock
+OP_CHECKSIG              // Vérification signature
+OP_DROP                  // Suppression stack
+
+→ C'est TOUT ce qu'il faut pour HTLC !
+→ Marche pour PIV, marche pour KHU automatiquement !
+```
+
+**Lois HTLC (spécification Phase 7) :**
 
 ```
 18. Hashlock = SHA256(secret) UNIQUEMENT (pas SHA3, blake2, keccak)
 19. Timelock = block height UNIQUEMENT (pas timestamp)
-20. Script HTLC = template Bitcoin standard (OP_IF / OP_SHA256 / CLTV)
+20. Script HTLC = template Bitcoin standard (OP_IF / OP_HASH160 / CLTV)
 21. HTLC ne modifie JAMAIS C/U/Cr/Ur (ownership transfer only)
 22. KHU_T uniquement (pas ZKHU, pas PIV direct)
-23. RPC khu_listhtlcs et khu_gethtlc obligatoires (Gateway indexation)
+23. RPC createhtlc/redeemhtlc/refundhtlc (standard Bitcoin pattern)
 24. Aucune logique off-chain on-chain (pas de price oracle, pas de khu_equivalent)
 ```
 
-**Interdictions absolues HTLC:**
+**KHU = Unité de compte INVISIBLE :**
+
+```
+❌ User n'a PAS besoin de wallet KHU pour swap !
+✅ Gateway utilise KHU pour calculer équivalences (invisible)
+
+Exemple swap BTC → USDC :
+  1. Gateway calcule : 1 BTC = 50,000 KHU (rate market)
+  2. Gateway calcule : 50,000 KHU = 100,000 USDC (rate market)
+  3. Gateway matche Alice (BTC) ↔ Bob (USDC)
+  4. Atomic swap direct BTC ↔ USDC via HTLC standard
+  5. KHU n'apparaît JAMAIS dans les transactions !
+
+KHU = comme le MÈTRE (unité de mesure)
+  ❌ Tu n'as pas besoin de "posséder des mètres"
+  ✅ Le mètre sert juste à mesurer
+  ❌ Alice n'a pas besoin de "posséder du KHU"
+  ✅ KHU sert juste à calculer équivalences
+```
+
+**Qui a besoin de KHU ? (OPTIONNEL) :**
+
+```
+1. Market Makers / LP avancés
+   → Veulent exposer plusieurs assets via pool KHU
+
+2. Utilisateurs PIVX
+   → Veulent staker ZKHU (privacy + yield)
+   → Veulent participer governance PIVX
+
+3. Hedge contre volatilité
+   → Sortir de BTC/ZEC volatile
+   → Rester dans écosystème décentralisé (pas USDC)
+
+Pour swaps simples : KHU PAS NÉCESSAIRE !
+```
+
+**Interdictions absolues HTLC :**
+
 ```
 ❌ Z→Z HTLC (ZKHU → ZKHU)
-❌ Timelock timestamp
-❌ SHA3/blake2/keccak hashlock
+❌ Timelock timestamp (block height uniquement)
+❌ SHA3/blake2/keccak hashlock (SHA256 uniquement)
 ❌ KHU burn via HTLC
 ❌ Metadata on-chain
 ❌ KHU→PIV direct via HTLC
 ❌ Oracle de prix on-chain
-❌ Format HTLC propriétaire (non-Bitcoin compatible)
+❌ Format HTLC propriétaire (Bitcoin standard uniquement)
+❌ Code HTLC spécial pour KHU (utiliser code Bitcoin existant)
 ```
 
-**Séparation stricte:**
+**Séparation stricte :**
+
 ```
-Gateway (off-chain) = price discovery + matching + order book
-PIVX Core (on-chain) = HTLC execution + atomicity + secret propagation
+Gateway (off-chain):
+  • Price discovery (KHU comme unité de compte)
+  • Matching engine (Alice BTC ↔ Bob USDC)
+  • Order book
+  • Instructions HTLC
+
+PIVX Core (on-chain):
+  • HTLC execution (scripts Bitcoin standard)
+  • Atomicity (hash lock + time lock)
+  • Secret propagation
+  • Aucun calcul de prix on-chain
 ```
 
-**Référence:** `docs/blueprint-khu-htlc-gw.md`
+**Code nécessaire PIVX Core v6 :**
+
+```cpp
+// ✅ KHU Token (~500 lignes)
+class CKHUToken {
+    bool MintKHU(amount);    // PIV → KHU (1:1)
+    bool BurnKHU(amount);    // KHU → PIV (1:1)
+    bool TransferKHU(...);   // Standard UTXO transfer
+};
+
+// ✅ RPC Commands (~300 lignes)
+UniValue mintkhu(...);
+UniValue burnkhu(...);
+UniValue sendkhu(...);
+UniValue createhtlc(...);   // Probablement déjà existant pour PIV !
+UniValue redeemhtlc(...);
+UniValue refundhtlc(...);
+
+// ❌ AUCUN code HTLC spécial pour KHU nécessaire
+// Les scripts HTLC standard fonctionnent automatiquement !
+```
+
+**Référence détaillée :** `docs/blueprints/08-KHU-HTLC-GATEWAY.md`
 
 #### 1.3.7 SAPLING / ZKHU — RÈGLES GLOBALES (CANONIQUES)
 
