@@ -543,35 +543,40 @@ assert(new_Ur == old_Ur - bonus_khu);
 
 ### Phase 5: R% Governance (DOMC Commit-Reveal)
 
-**Objectif:** Masternodes votent R% via commit-reveal avec calendrier fixe et préavis LP.
+**Objectif:** Masternodes votent R% via commit-reveal. R% actif 4 mois complets, gouvernance en parallèle.
 
 **ARCHITECTURE:** Commit-Reveal + Auto-Proposal DAO
 - Extension `CMasternodePing` avec 3 champs: `nRCommitment`, `nRProposal`, `nRSecret`
-- Vote caché (commit SHA256) pendant 2 semaines
-- Reveal automatique au bloc fixe (149760)
-- Auto-proposal création avec R_next (préavis 2 semaines)
-- Cycle complet: 169920 blocs (4 mois)
+- **IMPORTANT**: Toutes dates relatives à **nActivationHeight** (fork V6 PIVX)
+- R% actif pendant **172800 blocs (4 mois COMPLETS)**
+- Gouvernance = processus parallèle dans dernier mois
+- Cycle complet: 172800 blocs (4 mois exacts)
 
-**CYCLE 4 MOIS (4 Phases):**
-1. **Phase 1 — ACTIF** (129600 blocs = 3 mois)
-   - R% verrouillé (garantie LP)
-   - Aucun changement possible
+**CYCLE 4 MOIS (R% actif en continu):**
+1. **Phase 1 — R% ACTIF** (132480 blocs = 3 mois + 2 jours)
+   - R% distribué quotidiennement (yield)
+   - Aucune gouvernance (période stable)
+   - LP planifient avec certitude absolue
 
 2. **Phase 2 — COMMIT** (20160 blocs = 2 semaines)
-   - MN créent commitments SHA256(R_proposal || secret)
+   - ✅ R% CONTINUE d'être actif (yield quotidien)
+   - 🔄 EN PARALLÈLE: MN votent (commitments SHA256)
    - Votes totalement cachés (privacy)
 
-3. **Phase 3 — REVEAL** (bloc 149760 fixe)
-   - Validation automatique reveals
+3. **Phase 3 — REVEAL** (bloc nActivationHeight + 152640)
+   - ✅ R% CONTINUE d'être actif
+   - 🔄 Validation automatique reveals
    - Consensus = moyenne(reveals_valides)
    - Auto-proposal créée: "KHU_R_22.50_NEXT"
 
 4. **Phase 4 — PRÉAVIS** (20160 blocs = 2 semaines)
-   - R_next visible dans auto-proposal réseau
-   - LP adaptent stratégies (prévisibilité)
+   - ✅ R% CONTINUE d'être actif (jusqu'à la fin)
+   - 👁️ R_next visible dans auto-proposal
+   - LP adaptent stratégies (2 semaines avant)
 
-5. **Activation** (bloc 169920)
-   - R_next activé → nouveau cycle Phase 1
+5. **Activation** (bloc nActivationHeight + 172800)
+   - R_next activé → nouveau cycle
+   - Position reset à 0
 
 **Deliverables:**
 - [ ] Extension `CMasternodePing` (nRCommitment, nRProposal, nRSecret)
@@ -605,41 +610,46 @@ uint16_t R_consensus = sum / valid_reveals.size();
 int pos = GetKHUCyclePosition(nHeight, nActivationHeight);
 assert(pos >= 0 && pos < KHU_R_CYCLE_BLOCKS);
 
-// Dates fixes (prévisibilité)
-assert(revealHeight == cycleStart + 129600 + 20160);
-assert(activationHeight == cycleStart + 169920);
+// Dates fixes (toutes relatives à nActivationHeight)
+int cycle = GetKHUCycleNumber(nHeight, nActivationHeight);
+assert(revealHeight == nActivationHeight + (cycle * 172800) + 152640);
+assert(activationHeight == nActivationHeight + ((cycle + 1) * 172800));
 ```
 
 **Exemple usage:**
 ```bash
-# PHASE 2 (Commit): MN vote R% (caché)
+# PHASE 2 (Commit): MN vote R% (caché, R% actuel toujours actif)
 ./pivx-cli masternode commitkhu 22.50
 {
   "status": "committed",
   "R_proposal": 2250,
   "commitment": "a3f5b2c7d1e9...",
-  "reveal_height": 149760
+  "reveal_height": "nActivationHeight + 152640",
+  "activation_height": "nActivationHeight + 172800"
 }
 
-# PHASE 3 (Reveal): Automatique au bloc 149760
+# PHASE 3 (Reveal): Automatique au bloc nActivationHeight + 152640
+# → R% actuel (25.00%) CONTINUE d'être distribué
 # → ProcessKHUReveal() valide tous les reveals
 # → Crée auto-proposal "KHU_R_22.70_NEXT"
 
 # PHASE 4 (Préavis): Query status cycle
 ./pivx-cli getkhugovernance
 {
+  "cycle_number": 0,
   "cycle_position": 155000,
   "phase": "notice",
   "R_current": 25.00,
   "R_next": 22.70,
   "R_max": 29.00,
-  "reveal_height": 149760,
-  "activation_height": 169920,
-  "valid_commits": 350
+  "reveal_height": "nActivationHeight + 152640",
+  "activation_height": "nActivationHeight + 172800",
+  "valid_commits": 350,
+  "blocks_until_activation": 17800
 }
 
 # PHASE 1 (Actif): Nouveau cycle après activation
-# → R% = 22.70% verrouillé 3 mois
+# → R% = 22.70% actif 4 MOIS COMPLETS (172800 blocs)
 ```
 
 **Complexité:** MOYENNE (~6-7 jours)

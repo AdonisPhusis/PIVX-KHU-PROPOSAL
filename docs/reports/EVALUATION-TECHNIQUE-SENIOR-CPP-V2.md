@@ -500,11 +500,12 @@ src/khu/zkhu_db.h/cpp        ~400 lignes  // Namespace 'K'
 
 **Complexité RÉELLE: MOYENNE** (6-7 jours)
 
-**Raison:** Commit-Reveal + Auto-Proposal + Cycle 4 Phases
+**Raison:** Commit-Reveal + Auto-Proposal + Cycle 4 Mois Complets
 1. ✅ Extension CMasternodePing (3 champs) — Infrastructure existante
 2. ✅ SHA256 commitment (standard crypto) — Librairie existante
 3. ✅ Auto-proposal DAO — Réutilisation budget manager PIVX
-4. ✅ Cycle 4 phases (calendrier fixe) — Logique déterministe simple
+4. ✅ Cycle 172800 blocs (calendrier fixe depuis nActivationHeight)
+5. ✅ R% actif 4 mois complets (gouvernance = processus parallèle)
 
 **Breakdown effort:**
 - RPC commitkhu + commitment SHA256: 2 jours — Extension ping MN
@@ -531,27 +532,38 @@ src/budget/budgetmanager.cpp     ~40 lignes   // CreateKHUAutoProposal
 ```
 
 **Architecture:**
-1. **Phase COMMIT** (2 semaines = 20160 blocs)
-   - Votes cachés via SHA256(R_proposal || secret)
-   - Privacy complète (commit-reveal standard)
+⚠️ **IMPORTANT**: R% ACTIF PENDANT 172800 BLOCS (4 MOIS COMPLETS)
+Gouvernance = processus parallèle dans dernier mois
 
-2. **Phase REVEAL** (bloc 195360 fixe)
-   - Validation automatique reveals
+1. **Phase R% ACTIF** (132480 blocs = 3 mois + 2 jours)
+   - R% distribué quotidiennement (yield)
+   - Aucune gouvernance (période stable)
+
+2. **Phase COMMIT** (20160 blocs = 2 semaines)
+   - ✅ R% CONTINUE d'être actif (yield quotidien)
+   - 🔄 EN PARALLÈLE: Votes cachés SHA256(R_proposal || secret)
+   - Privacy complète (commit-reveal)
+
+3. **Phase REVEAL** (bloc nActivationHeight + 152640)
+   - ✅ R% CONTINUE d'être actif
+   - 🔄 Validation automatique reveals
    - Consensus = moyenne arithmétique
    - Auto-proposal "KHU_R_22.50_NEXT" créée
 
-3. **Phase PRÉAVIS** (2 semaines = 20160 blocs)
-   - R_next visible dans proposal réseau
+4. **Phase PRÉAVIS** (20160 blocs = 2 semaines)
+   - ✅ R% CONTINUE d'être actif (jusqu'à la fin)
+   - 👁️ R_next visible dans proposal réseau
    - LP adaptent stratégies (prévisibilité)
 
-4. **Activation** (bloc 169920)
-   - R_next activé, verrouillé 3 mois
+5. **Activation** (bloc nActivationHeight + 172800)
+   - R_next activé, actif 4 mois complets
 
-**Cycle complet:** 169920 blocs (4 mois)
-- Phase 1 ACTIF: 129600 blocs (3 mois) — R% verrouillé
-- Phase 2 COMMIT: 20160 blocs (2 semaines) — Votes cachés
-- Phase 3 REVEAL: 1 bloc (149760) — Consensus automatique
-- Phase 4 PRÉAVIS: 20160 blocs (2 semaines) — R_next visible
+**Cycle complet:** 172800 blocs (4 mois exacts)
+- Toutes positions relatives à nActivationHeight (fork V6)
+- Phase ACTIF pur: 132480 blocs — R% seul
+- Phase COMMIT: 20160 blocs — R% actif + gouvernance parallèle
+- Phase REVEAL: 1 bloc — R% actif + consensus
+- Phase PRÉAVIS: 20160 blocs — R% actif + R_next visible
 
 **Score Phase 5:** 90/100 (bien spécifié, simple, déterministe)
 

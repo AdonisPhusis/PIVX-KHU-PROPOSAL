@@ -480,7 +480,9 @@ Design optimal combinant:
 - ✅ **Préavis LP**: R_next visible 2 semaines avant activation
 - ✅ **Simple**: Extension ping MN + validation automatique
 
-**CYCLE COMPLET: 169920 blocs (4 mois)**
+**CYCLE COMPLET: 172800 blocs (4 mois exacts)**
+
+**IMPORTANT:** Toutes les dates sont calculées depuis **nActivationHeight** (fork V6 PIVX)
 
 ```cpp
 /**
@@ -534,85 +536,108 @@ class CMasternodePing {
 - **Vote caché** : Commitment SHA256 (invisible pendant 2 semaines)
 - **Format** : XX.XX% (2 decimals) — Ex: 25.55%, 20.20%
 - **Agrégation** : Moyenne arithmétique (reveals valides uniquement)
-- **Durée application** : 3 mois (129600 blocs = R% verrouillé)
-- **Cycle total** : 4 mois (169920 blocs)
-- **Préavis** : 2 semaines (R_next visible avant activation)
+- **Durée application** : **4 MOIS COMPLETS** (R% TOUJOURS ACTIF)
+- **Cycle total** : 172800 blocs (4 mois exacts)
+- **Gouvernance parallèle** : Dernier mois (commit + préavis EN PARALLÈLE avec R% actif)
 
 **TIMELINE COMPLÈTE (Cycle 4 mois) :**
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ PHASE 1 : R% ACTIF (VERROUILLÉ 3 MOIS = 129600 blocs)          │
-├─────────────────────────────────────────────────────────────────┤
-│ • R% = 25.00% GARANTI (aucun changement possible)              │
-│ • LP peuvent planifier avec certitude                          │
-│ • Période stable pour stratégies                               │
-│                                                                 │
-│ Blocs 0 ─────────────────────────────────► 129600              │
-│         └────── R% verrouillé = 25.00% ────┘                   │
+│ ⚠️ IMPORTANT: R% = 25.00% ACTIF PENDANT LES 4 MOIS COMPLETS    │
+│ Les processus de gouvernance se déroulent EN PARALLÈLE          │
+│ Toutes positions relatives à nActivationHeight (fork V6)       │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│ PHASE 2 : COMMIT (VOTE CACHÉ) — 2 SEMAINES = 20160 blocs       │
+│ PHASE 1 : R% ACTIF UNIQUEMENT — 3 mois + 2 jours               │
+│           (132480 blocs depuis nActivationHeight)               │
 ├─────────────────────────────────────────────────────────────────┤
+│ • R% = 25.00% ACTIF (yield distribué chaque jour)              │
+│ • AUCUNE gouvernance (période stable)                          │
+│ • LP planifient avec certitude totale                          │
+│                                                                 │
+│ Position dans cycle: 0 → 132480                                │
+│         └──── R% actif = 25.00%, pas de vote ────┘             │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ PHASE 2 : COMMIT (2 SEMAINES) — R% TOUJOURS ACTIF 25.00%       │
+│           Position: 132480 → 152640                             │
+├─────────────────────────────────────────────────────────────────┤
+│ ✅ R% = 25.00% CONTINUE d'être distribué (yield quotidien)     │
+│ 🔄 EN PARALLÈLE: Gouvernance commence (commit votes)           │
+│                                                                 │
+│ Processus commit (parallèle):                                  │
 │ 1. MN choisit R_proposal (ex: 2250 = 22.50%)                   │
 │ 2. MN génère secret aléatoire (32 bytes)                       │
 │ 3. MN calcule commitment = SHA256(R_proposal || secret)        │
 │ 4. MN broadcast commitment via ping                            │
 │                                                                 │
-│ 🔒 VOTES TOTALEMENT CACHÉS (privacy complète)                  │
-│ 🔒 Personne ne peut voir les R% proposés                       │
-│ 🔒 Impossible de copier/influencer autres votes                │
+│ 🔒 VOTES CACHÉS (commitment SHA256 uniquement)                 │
+│ 🔒 R% actuel (25.00%) INCHANGÉ pendant cette phase             │
 │                                                                 │
-│ Blocs 129600 ───────────────────────► 149760                   │
-│         └──── Commitments (cachés) ────┘                       │
+│ Position: nActivationHeight + 132480 + (nHeight % 172800)      │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│ PHASE 3 : REVEAL AUTOMATIQUE (BLOC 149760 — DATE FIXE)         │
+│ PHASE 3 : REVEAL (BLOC 152640) — R% TOUJOURS ACTIF 25.00%      │
+│           Position: nActivationHeight + 152640 + (cycle × …)   │
 ├─────────────────────────────────────────────────────────────────┤
-│ • AU BLOC 149760 EXACTEMENT (deadline automatique):            │
-│   1. MN doivent reveal (R_proposal + secret)                   │
-│   2. Validation: SHA256(R_proposal || secret) == commitment    │
-│   3. Si valide → vote compté ✅                                 │
-│   4. Si invalide/absent → vote rejeté ❌                        │
+│ ✅ R% = 25.00% CONTINUE d'être distribué                       │
+│ 🔄 REVEAL automatique au bloc fixe:                            │
 │                                                                 │
-│ • Consensus calculé immédiatement:                             │
-│   R_consensus = moyenne(reveals_valides)                       │
+│   1. Validation reveals: SHA256(R || secret) == commitment     │
+│   2. Consensus: R_next = moyenne(reveals_valides)              │
+│   3. Auto-proposal créée: "KHU_R_22.50_NEXT"                   │
+│   4. R% actuel (25.00%) INCHANGÉ                               │
 │                                                                 │
-│ • Auto-proposal créée automatiquement:                         │
-│   Nom: "KHU_R_22.50_NEXT"                                      │
-│   Montant: 2250 (R% encodé)                                    │
-│   Activation: Bloc 169920                                      │
-│                                                                 │
-│ Bloc 149760 ← REVEAL DEADLINE (automatique)                    │
+│ Position exacte: nActivationHeight + (cycle × 172800) + 152640 │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│ PHASE 4 : PRÉAVIS PUBLIC (2 SEMAINES = 20160 blocs)            │
+│ PHASE 4 : PRÉAVIS (2 SEMAINES) — R% TOUJOURS ACTIF 25.00%      │
+│           Position: 152640 → 172800                             │
 ├─────────────────────────────────────────────────────────────────┤
-│ • R_next = 22.50% VISIBLE dans auto-proposal réseau            │
-│ • LP peuvent voir nouveau R% 2 SEMAINES AVANT activation       │
-│ • Temps adaptation stratégies / rééquilibrage pools            │
-│ • Calendrier prévisible (bloc 169920 connu à l'avance)        │
+│ ✅ R% = 25.00% CONTINUE d'être distribué (jusqu'à la fin)      │
+│ 👁️ EN PARALLÈLE: R_next = 22.50% VISIBLE (auto-proposal)       │
 │                                                                 │
-│ 👁️ TRANSPARENCE TOTALE (après reveal)                          │
-│ 📅 DATE ACTIVATION FIXE (pas de surprise)                      │
+│ • LP voient R_next 2 SEMAINES AVANT activation                 │
+│ • Adaptation stratégies / rééquilibrage pools                  │
+│ • Calendrier prévisible (bloc activation connu)                │
+│ • R% actuel (25.00%) ACTIF jusqu'au dernier bloc               │
 │                                                                 │
-│ Blocs 149760 ───────────────────────► 169920                   │
-│         └──── R_next = 22.50% visible ──┘                      │
+│ Position: nActivationHeight + (cycle × 172800) + [152640..172800] │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│ ACTIVATION AUTOMATIQUE (BLOC 169920 — DATE FIXE)                │
+│ ACTIVATION (BLOC 172800) — NOUVEAU R% ACTIVÉ                    │
+│ Position: nActivationHeight + ((cycle+1) × 172800)             │
 ├─────────────────────────────────────────────────────────────────┤
-│ • R% = 22.50% activé (verrouillé 3 mois)                       │
-│ • Nouveau cycle Phase 1 commence                                │
-│ • Prochain commit dans 129600 blocs (prévisible)               │
+│ • R% = 22.50% ACTIVÉ (remplace 25.00%)                         │
+│ • Nouveau cycle commence (position reset à 0)                  │
+│ • R_next actif pour 4 MOIS COMPLETS                            │
+│ • Prochain commit dans 132480 blocs (3 mois + 2 jours)         │
 └─────────────────────────────────────────────────────────────────┘
 
-CYCLE TOTAL: 169920 blocs (4 mois) puis répétition infinie
-Calendrier prévisible: Activation tous les 169920 blocs
+CYCLE TOTAL: 172800 blocs (4 mois exacts) puis répétition infinie
+
+TIMELINE VISUELLE (positions relatives à nActivationHeight):
+
+0────────132480────152640────172800────────────────►
+│   R% ACTIF  │ COMMIT │PRÉAVIS│  Cycle 2 (R% nouveau)
+│   25.00%    │+25.00% │+25.00%│  22.50% actif 4 mois
+│  (3m+2j)    │ 2 sem  │ 2 sem │
+└─────────────┴────────┴───────┴─────────────────────►
+                       ▲
+                    REVEAL
+              (bloc fixe calculé)
+
+FORMULE UNIVERSELLE:
+Position dans cycle = (nHeight - nActivationHeight) % 172800
+Cycle actuel = (nHeight - nActivationHeight) / 172800
+Reveal height = nActivationHeight + (cycle × 172800) + 152640
+Activation height = nActivationHeight + ((cycle+1) × 172800)
 ```
 
 ### 5.3 Implémentation C++ — Commit-Reveal + Auto-Proposal
@@ -630,44 +655,67 @@ Calendrier prévisible: Activation tous les 169920 blocs
 ```cpp
 /**
  * Constantes cycle DOMC R%
+ * CRITIQUE: R% actif pendant 172800 blocs COMPLETS
+ *           Gouvernance = processus parallèle (dernier mois)
  */
-const int KHU_R_CYCLE_BLOCKS = 169920;      // 4 mois total
-const int KHU_R_ACTIVE_BLOCKS = 129600;     // 3 mois R% verrouillé
-const int KHU_R_COMMIT_BLOCKS = 20160;      // 2 semaines commit (caché)
-const int KHU_R_NOTICE_BLOCKS = 20160;      // 2 semaines préavis (visible)
+const int KHU_R_CYCLE_BLOCKS = 172800;      // 4 mois exacts (R% actif complet)
+const int KHU_R_PURE_BLOCKS  = 132480;      // 3 mois + 2 jours (R% seul)
+const int KHU_R_COMMIT_BLOCKS = 20160;      // 2 semaines commit (parallèle)
+const int KHU_R_NOTICE_BLOCKS = 20160;      // 2 semaines préavis (parallèle)
 
 /**
- * Calculer position dans cycle
+ * IMPORTANT: Toutes les fonctions utilisent nActivationHeight comme référence
+ *            nActivationHeight = fork V6 PIVX (tous nodes doivent upgrade)
+ */
+
+/**
+ * Calculer position dans cycle actuel
+ * @return Position [0..172799] relative au début du cycle
  */
 int GetKHUCyclePosition(int nHeight, int nActivationHeight) {
+    if (nHeight < nActivationHeight) return -1;
     return (nHeight - nActivationHeight) % KHU_R_CYCLE_BLOCKS;
 }
 
 /**
+ * Calculer numéro cycle actuel
+ * @return Cycle 0 = premier cycle après fork V6
+ */
+int GetKHUCycleNumber(int nHeight, int nActivationHeight) {
+    if (nHeight < nActivationHeight) return -1;
+    return (nHeight - nActivationHeight) / KHU_R_CYCLE_BLOCKS;
+}
+
+/**
  * Vérifier période commit (votes cachés)
+ * Pendant commit: R% ACTUEL reste actif (processus parallèle)
  */
 bool IsKHUCommitPeriod(int nHeight, int nActivationHeight) {
     int pos = GetKHUCyclePosition(nHeight, nActivationHeight);
-    return (pos >= KHU_R_ACTIVE_BLOCKS &&
-            pos < KHU_R_ACTIVE_BLOCKS + KHU_R_COMMIT_BLOCKS);
+    if (pos < 0) return false;
+    return (pos >= KHU_R_PURE_BLOCKS &&
+            pos < KHU_R_PURE_BLOCKS + KHU_R_COMMIT_BLOCKS);
 }
 
 /**
- * Calculer hauteur reveal (bloc fixe)
+ * Calculer hauteur reveal (bloc fixe) pour cycle actuel
+ * Formula: nActivationHeight + (cycle × 172800) + 152640
  */
 int GetKHURevealHeight(int nHeight, int nActivationHeight) {
-    int pos = GetKHUCyclePosition(nHeight, nActivationHeight);
-    int cycleStart = nHeight - pos;
-    return cycleStart + KHU_R_ACTIVE_BLOCKS + KHU_R_COMMIT_BLOCKS;
+    if (nHeight < nActivationHeight) return -1;
+    int cycle = GetKHUCycleNumber(nHeight, nActivationHeight);
+    return nActivationHeight + (cycle * KHU_R_CYCLE_BLOCKS) +
+           KHU_R_PURE_BLOCKS + KHU_R_COMMIT_BLOCKS;
 }
 
 /**
- * Calculer hauteur activation
+ * Calculer hauteur activation PROCHAIN R%
+ * Formula: nActivationHeight + ((cycle+1) × 172800)
  */
 int GetKHUActivationHeight(int nHeight, int nActivationHeight) {
-    int pos = GetKHUCyclePosition(nHeight, nActivationHeight);
-    int cycleStart = nHeight - pos;
-    return cycleStart + KHU_R_CYCLE_BLOCKS;
+    if (nHeight < nActivationHeight) return -1;
+    int cycle = GetKHUCycleNumber(nHeight, nActivationHeight);
+    return nActivationHeight + ((cycle + 1) * KHU_R_CYCLE_BLOCKS);
 }
 ```
 
@@ -1049,24 +1097,26 @@ UniValue getkhugovernance(const JSONRPCRequest& request)
 ```cpp
 /**
  * EXEMPLE COMPLET: Cycle DOMC Commit-Reveal
+ * Toutes positions relatives à nActivationHeight (fork V6 PIVX)
  *
- * Cycle #1: Blocs 0 → 169920
- * =============================
+ * Cycle #0: Blocs nActivationHeight → nActivationHeight+172800
+ * =============================================================
  *
- * PHASE 1: ACTIF (0 → 129600)
- * ---------------------------
- * Bloc 0:
- *   R% = 25.00% ACTIVÉ (verrouillé 3 mois)
+ * PHASE 1: R% ACTIF (0 → 132480)
+ * -------------------------------
+ * Bloc nActivationHeight:
+ *   R% = 25.00% ACTIVÉ (actif pendant 4 mois COMPLETS)
  *
- * Blocs 1-129599:
- *   R% = 25.00% GARANTI
- *   Aucun changement possible
- *   LP planifient avec certitude
+ * Blocs nActivationHeight+1 → nActivationHeight+132479:
+ *   R% = 25.00% distribué QUOTIDIENNEMENT (yield)
+ *   Aucune gouvernance (période stable)
+ *   LP planifient avec certitude absolue
  *
- * PHASE 2: COMMIT (129600 → 149760)
- * ----------------------------------
- * Bloc 129600:
- *   Période commit commence ✅
+ * PHASE 2: COMMIT (132480 → 152640) — R% TOUJOURS 25.00%
+ * --------------------------------------------------------
+ * Bloc nActivationHeight+132480:
+ *   ✅ R% = 25.00% CONTINUE d'être distribué (yield quotidien)
+ *   🔄 Période commit commence (gouvernance parallèle)
  *
  * MN1 exécute:
  *   $ masternode commitkhu 22.50
@@ -1082,14 +1132,16 @@ UniValue getkhugovernance(const JSONRPCRequest& request)
  *
  * ... (tous MN votent pendant 2 semaines)
  *
- * Blocs 129601-149759:
+ * Blocs nActivationHeight+132481 → nActivationHeight+152639:
+ *   ✅ R% = 25.00% ACTIF (yield distribué chaque jour)
  *   🔒 Votes CACHÉS (commitments SHA256 uniquement)
  *   🔒 Personne ne peut voir les R% proposés
  *
- * PHASE 3: REVEAL (Bloc 149760)
- * ------------------------------
- * Bloc 149760 ATTEINT:
- *   ProcessKHUReveal() exécuté automatiquement
+ * PHASE 3: REVEAL (Bloc nActivationHeight+152640)
+ * ------------------------------------------------
+ * Bloc nActivationHeight+152640 ATTEINT:
+ *   ✅ R% = 25.00% CONTINUE d'être distribué
+ *   🔄 ProcessKHUReveal() exécuté automatiquement
  *
  *   MN1 ping contient:
  *     nRCommitment = 7d3e9c...
@@ -1122,38 +1174,60 @@ UniValue getkhugovernance(const JSONRPCRequest& request)
  *   Auto-Proposal créée:
  *     Nom: "KHU_R_22.70_NEXT"
  *     Montant: 22.70 PIVX (symbolique)
- *     Activation: Bloc 169920
+ *     Activation: Bloc nActivationHeight+172800
  *
- * PHASE 4: PRÉAVIS (149761 → 169920)
- * -----------------------------------
- * Bloc 149761:
- *   R_next = 22.70% VISIBLE (auto-proposal réseau)
+ * PHASE 4: PRÉAVIS (152641 → 172800) — R% TOUJOURS 25.00%
+ * --------------------------------------------------------
+ * Bloc nActivationHeight+152641:
+ *   ✅ R% = 25.00% CONTINUE d'être distribué (jusqu'à la fin)
+ *   👁️ R_next = 22.70% VISIBLE (auto-proposal réseau)
  *
- * Blocs 149762-169919:
- *   👁️ R_next visible 2 semaines
- *   👁️ LP adaptent stratégies
- *   📅 Activation bloc 169920 (prévisible)
+ * Blocs nActivationHeight+152642 → nActivationHeight+172799:
+ *   ✅ R% = 25.00% ACTIF (yield quotidien continue)
+ *   👁️ R_next visible 2 semaines avant activation
+ *   👁️ LP adaptent stratégies / rééquilibrage pools
+ *   📅 Activation nActivationHeight+172800 (prévisible)
  *
- * ACTIVATION (Bloc 169920)
- * ------------------------
- * Bloc 169920 ATTEINT:
- *   R% = 22.70% ACTIVÉ (verrouillé 3 mois)
- *   Nouveau Cycle #2 commence (positions reset)
+ * ACTIVATION (Bloc nActivationHeight+172800)
+ * -------------------------------------------
+ * Bloc nActivationHeight+172800 ATTEINT:
+ *   ❌ R% = 25.00% DÉSACTIVÉ (fin du cycle)
+ *   ✅ R% = 22.70% ACTIVÉ (début cycle #1)
+ *   Nouveau cycle commence (position = 0)
+ *   R% = 22.70% actif pour 4 MOIS COMPLETS
  *
- * CYCLE #2 COMMENCE
+ * CYCLE #1 COMMENCE
  * =================
- * Bloc 169920 → 339840 (prochain cycle)
+ * Blocs nActivationHeight+172800 → nActivationHeight+345600
  *
- * TIMELINE VISUELLE:
+ * TIMELINE VISUELLE (positions relatives à nActivationHeight):
  *
- * 0─────────129600────149760────169920────────────────►
- * │   ACTIF   │ COMMIT │ NOTICE │   ACTIF (cycle 2)
- * │ R=25.00%  │(caché) │R_next  │   R=22.70%
- * │ 3 mois    │2 sem   │2 sem   │   3 mois
- * └───────────┴────────┴────────┴─────────────────────►
- *                      ▲
- *                   REVEAL
- *                 (automatique)
+ * nActivationHeight
+ *   ↓
+ *   0────────132480────152640────172800────────────────►
+ *   │   R% ACTIF  │ COMMIT │PRÉAVIS│  Cycle 1
+ *   │   25.00%    │+25.00% │+25.00%│  R=22.70% (4m)
+ *   │  (3m+2j)    │ 2 sem  │ 2 sem │
+ *   └─────────────┴────────┴───────┴─────────────────────►
+ *                          ▲
+ *                       REVEAL
+ *                 (bloc fixe calculé)
+ *
+ * FORMULES HEIGHTS (relatives à nActivationHeight):
+ *   Cycle #0 start:  nActivationHeight + 0
+ *   Commit start:    nActivationHeight + 132480
+ *   Reveal:          nActivationHeight + 152640
+ *   Activation #1:   nActivationHeight + 172800
+ *   Cycle #1 start:  nActivationHeight + 172800
+ *   Commit #1:       nActivationHeight + 172800 + 132480 = nActivationHeight + 305280
+ *   Reveal #1:       nActivationHeight + 172800 + 152640 = nActivationHeight + 325440
+ *   Activation #2:   nActivationHeight + 172800 × 2 = nActivationHeight + 345600
+ *
+ * GÉNÉRIQUE:
+ *   Cycle N start:  nActivationHeight + (N × 172800)
+ *   Commit N:       nActivationHeight + (N × 172800) + 132480
+ *   Reveal N:       nActivationHeight + (N × 172800) + 152640
+ *   Activation N+1: nActivationHeight + ((N+1) × 172800)
  */
 ```
 
