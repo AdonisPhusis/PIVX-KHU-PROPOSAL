@@ -91,9 +91,19 @@ struct KhuGlobalState {
     uint256 hashBlock;
     uint256 hashPrevState;
 
-    // Invariants check
+    // Invariant verification
     bool CheckInvariants() const {
-        return (U == 0 || C == U) && (Ur == 0 || Cr == Ur);
+        // Verify non-negativity
+        if (C < 0 || U < 0 || Cr < 0 || Ur < 0)
+            return false;
+
+        // INVARIANT 1: Collateralization
+        bool cd_ok = (U == 0 || C == U);
+
+        // INVARIANT 2: Reward Collateralization
+        bool cdr_ok = (Ur == 0 || Cr == Ur);
+
+        return cd_ok && cdr_ok;
     }
 
     uint256 GetHash() const;

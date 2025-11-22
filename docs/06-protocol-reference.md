@@ -265,6 +265,11 @@ struct ZKHUNoteData {
 ```cpp
 bool ConnectBlock(const CBlock& block, CBlockIndex* pindex, CCoinsViewCache& view) {
     if (NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_KHU)) {
+        // ============================================================
+        // CRITICAL LOCK: Protect all KHU state mutations
+        // ============================================================
+        LOCK(cs_khu);
+
         KhuGlobalState prevState = LoadKhuState(pindex->pprev);
         KhuGlobalState newState = prevState;
 
@@ -273,7 +278,8 @@ bool ConnectBlock(const CBlock& block, CBlockIndex* pindex, CCoinsViewCache& vie
 
         // 2. Process KHU transactions (MINT, REDEEM, STAKE, UNSTAKE, DOMC, HTLC)
         for (const auto& tx : block.vtx) {
-            ProcessKHUTransaction(tx, newState, view, state);
+            if (!ProcessKHUTransaction(tx, newState, view, state))
+                return false;  // Stop immediately if transaction invalid
         }
 
         // 3. Apply block reward (emission)
@@ -547,13 +553,15 @@ void ApplyDailyYield(KhuGlobalState& state, uint32_t nHeight, CCoinsViewCache& v
     int64_t Ur_increment = 0;
 
     // Calculate for each mature ZKHU note
-    for (const ZKHUNoteData& note : GetMatureZKHUNotes(view, nHeight)) {
+    // Note: Cannot use const reference because we modify Ur_accumulated
+    for (ZKHUNoteData& note : GetMatureZKHUNotes(view, nHeight)) {
         // Maturity: staked for >= 4320 blocks
         if ((nHeight - note.stakeStartHeight) < KHU_MATURITY_BLOCKS)
             continue;
 
         // Annual yield for this note
-        int64_t annual = (note.amount * state.R_annual) / 10000;
+        // Divide first to prevent overflow (note.amount * R_annual could overflow)
+        int64_t annual = (note.amount / 10000) * state.R_annual;
         int64_t daily = annual / 365;
 
         Ur_increment += daily;
@@ -575,8 +583,10 @@ void ApplyDailyYield(KhuGlobalState& state, uint32_t nHeight, CCoinsViewCache& v
 
     state.last_yield_update_height = nHeight;
 
-    // Post-mutation verification
-    assert(state.CheckInvariants());
+    // Post-mutation verification (MUST use Invalid, not assert)
+    if (!state.CheckInvariants()) {
+        return error("ApplyDailyYield(): invariant violation after yield update");
+    }
 }
 ```
 

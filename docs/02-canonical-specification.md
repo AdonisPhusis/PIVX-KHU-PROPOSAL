@@ -44,6 +44,24 @@ struct KhuGlobalState {
     uint32_t nHeight;       // Hauteur de cet état
     uint256  hashPrevState; // Hash de l'état précédent
     uint256  hashBlock;     // Hash du bloc ayant produit cet état
+
+    // Invariant verification
+    bool CheckInvariants() const {
+        // Verify non-negativity
+        if (C < 0 || U < 0 || Cr < 0 || Ur < 0)
+            return false;
+
+        // INVARIANT 1: Collateralization
+        bool cd_ok = (U == 0 || C == U);
+
+        // INVARIANT 2: Reward Collateralization
+        bool cdr_ok = (Ur == 0 || Cr == Ur);
+
+        return cd_ok && cdr_ok;
+    }
+
+    uint256 GetHash() const;
+    SERIALIZE_METHODS(KhuGlobalState, obj) { /* ... */ }
 };
 ```
 
