@@ -238,8 +238,12 @@ BITCOIN_CORE_H = \
   budget/finalizedbudget.h \
   budget/finalizedbudgetvote.h \
   budget/budgetutil.h \
+  khu/khu_coins.h \
+  khu/khu_mint.h \
+  khu/khu_redeem.h \
   khu/khu_state.h \
   khu/khu_statedb.h \
+  khu/khu_utxo.h \
   khu/khu_validation.h \
   mapport.h \
   memusage.h \
@@ -552,8 +556,11 @@ libbitcoin_common_a_SOURCES = \
   budget/finalizedbudget.cpp \
   budget/finalizedbudgetvote.cpp \
   budget/budgetutil.cpp \
+  khu/khu_mint.cpp \
+  khu/khu_redeem.cpp \
   khu/khu_state.cpp \
   khu/khu_statedb.cpp \
+  khu/khu_utxo.cpp \
   khu/khu_validation.cpp \
   chainparams.cpp \
   consensus/upgrades.cpp \

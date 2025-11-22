@@ -25,15 +25,15 @@ class CValidationState;
  */
 struct CRedeemKHUPayload {
     CAmount amount;          //! Montant KHU_T à détruire
-    CTxDestination dest;     //! Destinataire PIV
+    CScript scriptPubKey;    //! Script destinataire PIV (Phase 2: simple serialization)
 
     CRedeemKHUPayload() : amount(0) {}
-    CRedeemKHUPayload(CAmount amountIn, const CTxDestination& destIn)
-        : amount(amountIn), dest(destIn) {}
+    CRedeemKHUPayload(CAmount amountIn, const CScript& scriptIn)
+        : amount(amountIn), scriptPubKey(scriptIn) {}
 
     SERIALIZE_METHODS(CRedeemKHUPayload, obj) {
         READWRITE(obj.amount);
-        READWRITE(obj.dest);
+        READWRITE(obj.scriptPubKey);
     }
 
     std::string ToString() const;

@@ -25,15 +25,15 @@ class CValidationState;
  */
 struct CMintKHUPayload {
     CAmount amount;          //! Montant PIV à verrouiller
-    CTxDestination dest;     //! Destinataire KHU_T
+    CScript scriptPubKey;    //! Script destinataire KHU_T (Phase 2: simple serialization)
 
     CMintKHUPayload() : amount(0) {}
-    CMintKHUPayload(CAmount amountIn, const CTxDestination& destIn)
-        : amount(amountIn), dest(destIn) {}
+    CMintKHUPayload(CAmount amountIn, const CScript& scriptIn)
+        : amount(amountIn), scriptPubKey(scriptIn) {}
 
     SERIALIZE_METHODS(CMintKHUPayload, obj) {
         READWRITE(obj.amount);
-        READWRITE(obj.dest);
+        READWRITE(obj.scriptPubKey);
     }
 
     std::string ToString() const;

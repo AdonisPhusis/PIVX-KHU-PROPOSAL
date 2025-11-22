@@ -6,12 +6,15 @@
 
 #include "coins.h"
 #include "consensus/validation.h"
+#include "destination_io.h"
 #include "khu/khu_coins.h"
 #include "khu/khu_state.h"
+#include "khu/khu_utxo.h"
 #include "logging.h"
 #include "script/standard.h"
 #include "sync.h"
 #include "util/system.h"
+#include "utilmoneystr.h"
 #include "validation.h"
 
 // External lock (defined in khu_validation.cpp)
@@ -19,9 +22,9 @@ extern RecursiveMutex cs_khu;
 
 std::string CMintKHUPayload::ToString() const
 {
-    return strprintf("CMintKHUPayload(amount=%s, dest=%s)",
+    return strprintf("CMintKHUPayload(amount=%s, script=%s)",
                      FormatMoney(amount),
-                     EncodeDestination(dest));
+                     HexStr(scriptPubKey));
 }
 
 bool GetMintKHUPayload(const CTransaction& tx, CMintKHUPayload& payload)
@@ -113,9 +116,9 @@ bool CheckKHUMint(const CTransaction& tx, CValidationState& state, const CCoinsV
     }
 
     // 9. Vérifier destination valide
-    if (!IsValidDestination(payload.dest)) {
+    if (payload.scriptPubKey.empty()) {
         return state.Invalid(false, REJECT_INVALID, "khu-mint-invalid-destination",
-                             "Destination is not valid");
+                             "Destination script is empty");
     }
 
     return true;
@@ -156,9 +159,15 @@ bool ApplyKHUMint(const CTransaction& tx, KhuGlobalState& state, CCoinsViewCache
     }
 
     // 5. Créer UTXO KHU_T
-    // TODO Phase 2: Implement view.AddKHUCoin() in CCoinsViewCache
-    // For now, we create a standard output but mark it as KHU conceptually
-    // This will be fully implemented with KHU UTXO tracking
+    CKHUUTXO newCoin(amount, payload.scriptPubKey, nHeight);
+    newCoin.fIsKHU = true;
+    newCoin.fStaked = false;
+    newCoin.nStakeStartHeight = 0;
+
+    COutPoint khuOutpoint(tx.GetHash(), 1);  // Output index 1 = KHU_T
+    if (!AddKHUCoin(view, khuOutpoint, newCoin)) {
+        return error("ApplyKHUMint: Failed to add KHU coin");
+    }
 
     // 6. Log
     LogPrint(BCLog::KHU, "ApplyKHUMint: amount=%s C=%s U=%s height=%d\n",
@@ -209,7 +218,10 @@ bool UndoKHUMint(const CTransaction& tx, KhuGlobalState& state, CCoinsViewCache&
     }
 
     // 6. Supprimer UTXO KHU_T
-    // TODO Phase 2: Implement view.SpendKHUCoin()
+    COutPoint khuOutpoint(tx.GetHash(), 1);  // Output index 1 = KHU_T
+    if (!SpendKHUCoin(view, khuOutpoint)) {
+        return error("UndoKHUMint: Failed to spend KHU coin");
+    }
 
     // 7. Log
     LogPrint(BCLog::KHU, "UndoKHUMint: amount=%s C=%s U=%s\n",

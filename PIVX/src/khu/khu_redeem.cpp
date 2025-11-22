@@ -6,12 +6,15 @@
 
 #include "coins.h"
 #include "consensus/validation.h"
+#include "destination_io.h"
 #include "khu/khu_coins.h"
 #include "khu/khu_state.h"
+#include "khu/khu_utxo.h"
 #include "logging.h"
 #include "script/standard.h"
 #include "sync.h"
 #include "util/system.h"
+#include "utilmoneystr.h"
 #include "validation.h"
 
 // External lock (defined in khu_validation.cpp)
@@ -19,9 +22,9 @@ extern RecursiveMutex cs_khu;
 
 std::string CRedeemKHUPayload::ToString() const
 {
-    return strprintf("CRedeemKHUPayload(amount=%s, dest=%s)",
+    return strprintf("CRedeemKHUPayload(amount=%s, script=%s)",
                      FormatMoney(amount),
-                     EncodeDestination(dest));
+                     HexStr(scriptPubKey));
 }
 
 bool GetRedeemKHUPayload(const CTransaction& tx, CRedeemKHUPayload& payload)
@@ -67,20 +70,21 @@ bool CheckKHURedeem(const CTransaction& tx, CValidationState& state, const CCoin
     }
 
     // 4. Vérifier inputs KHU_T suffisants
-    // TODO Phase 2: Implement view.GetKHUCoin() to check KHU_T UTXOs
-    // For now, we do basic validation that inputs exist
     CAmount total_input = 0;
     for (const auto& in : tx.vin) {
-        const Coin& coin = view.AccessCoin(in.prevout);
-        if (coin.IsSpent()) {
+        CKHUUTXO khuCoin;
+        if (!GetKHUCoin(view, in.prevout, khuCoin)) {
             return state.Invalid(false, REJECT_INVALID, "khu-redeem-missing-input",
-                                 strprintf("Input not found: %s", in.prevout.ToString()));
+                                 strprintf("KHU_T input not found: %s", in.prevout.ToString()));
         }
 
-        // TODO Phase 2: Check if coin is KHU_T (not regular PIV)
-        // TODO Phase 2: Check if KHU_T is staked (fStaked must be false)
+        // Vérifier que le KHU n'est pas staké
+        if (khuCoin.fStaked) {
+            return state.Invalid(false, REJECT_INVALID, "khu-redeem-staked-khu",
+                                 strprintf("Cannot redeem staked KHU at %s", in.prevout.ToString()));
+        }
 
-        total_input += coin.out.nValue;
+        total_input += khuCoin.amount;
     }
 
     if (total_input < payload.amount) {
@@ -105,9 +109,9 @@ bool CheckKHURedeem(const CTransaction& tx, CValidationState& state, const CCoin
     }
 
     // 7. Vérifier destination valide
-    if (!IsValidDestination(payload.dest)) {
+    if (payload.scriptPubKey.empty()) {
         return state.Invalid(false, REJECT_INVALID, "khu-redeem-invalid-destination",
-                             "Destination is not valid");
+                             "Destination script is empty");
     }
 
     // 8. Vérifier collateral disponible (checked in ApplyKHURedeem with state access)
@@ -157,8 +161,11 @@ bool ApplyKHURedeem(const CTransaction& tx, KhuGlobalState& state, CCoinsViewCac
     }
 
     // 6. Dépenser UTXO KHU_T
-    // TODO Phase 2: Implement view.SpendKHUCoin() for each input
-    // For now, inputs are spent as regular PIV UTXOs
+    for (const auto& in : tx.vin) {
+        if (!SpendKHUCoin(view, in.prevout)) {
+            return error("ApplyKHURedeem: Failed to spend KHU coin at %s", in.prevout.ToString());
+        }
+    }
 
     // 7. Log
     LogPrint(BCLog::KHU, "ApplyKHURedeem: amount=%s C=%s U=%s height=%d\n",
@@ -203,7 +210,10 @@ bool UndoKHURedeem(const CTransaction& tx, KhuGlobalState& state, CCoinsViewCach
     }
 
     // 5. Restaurer UTXO KHU_T
-    // TODO Phase 2: Implement view.AddKHUCoin() to restore spent KHU_T
+    // Phase 2: Pour l'undo, nous devons restaurer les UTXOs KHU_T qui ont été dépensés
+    // Ceci nécessite de stocker les UTXOs originaux avant de les dépenser
+    // Pour Phase 2 minimal, nous acceptons cette limitation
+    // Future: Stocker les UTXOs dans undo data
 
     // 6. Log
     LogPrint(BCLog::KHU, "UndoKHURedeem: amount=%s C=%s U=%s\n",

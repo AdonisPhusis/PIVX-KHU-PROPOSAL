@@ -67,6 +67,7 @@ namespace BCLog {
         NET_MN      = (1 << 26),
         DKG         = (1 << 27),
         CHAINLOCKS  = (1 << 28),
+        KHU         = (1 << 29),  // Phase 2: KHU MINT/REDEEM logging
         ALL         = ~(uint32_t)0,
     };
 

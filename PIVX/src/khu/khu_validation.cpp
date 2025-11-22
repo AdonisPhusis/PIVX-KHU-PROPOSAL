@@ -6,6 +6,8 @@
 
 #include "chain.h"
 #include "consensus/params.h"
+#include "khu/khu_mint.h"
+#include "khu/khu_redeem.h"
 #include "khu/khu_state.h"
 #include "khu/khu_statedb.h"
 #include "primitives/block.h"
@@ -96,13 +98,25 @@ bool ProcessKHUBlock(const CBlock& block,
     newState.hashBlock = hashBlock;
     newState.hashPrevState = prevState.GetHash();
 
-    // PHASE 1: No KHU transactions yet (MINT/REDEEM/STAKE/UNSTAKE)
-    // State simply propagates forward with updated height/hash
-    // Future phases will add:
-    // - ProcessMINT() / ProcessREDEEM() (Phase 2)
-    // - ApplyDailyYield() (Phase 3)
-    // - ProcessUNSTAKE() (Phase 4)
-    // - ProcessDOMC() (Phase 5)
+    // PHASE 2: Process MINT/REDEEM transactions
+    // Ordre canonique immuable (cf. blueprints):
+    // 1. ApplyDailyYieldIfNeeded() — Phase 3 (non implémenté)
+    // 2. ProcessKHUTransactions() — Phase 2 (MINT/REDEEM)
+    // 3. ApplyBlockReward() — Future
+    // 4. CheckInvariants()
+    // 5. PersistState()
+
+    for (const auto& tx : block.vtx) {
+        if (tx->nType == CTransaction::TxType::KHU_MINT) {
+            if (!ApplyKHUMint(*tx, newState, view, nHeight)) {
+                return validationState.Error(strprintf("Failed to apply KHU MINT at height %d", nHeight));
+            }
+        } else if (tx->nType == CTransaction::TxType::KHU_REDEEM) {
+            if (!ApplyKHURedeem(*tx, newState, view, nHeight)) {
+                return validationState.Error(strprintf("Failed to apply KHU REDEEM at height %d", nHeight));
+            }
+        }
+    }
 
     // Verify invariants (CRITICAL)
     if (!newState.CheckInvariants()) {
