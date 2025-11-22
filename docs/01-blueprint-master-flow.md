@@ -541,24 +541,59 @@ assert(new_Ur == old_Ur - bonus_khu);
 
 ---
 
-### Phase 5: DOMC Governance
+### Phase 5: R% Governance (Masternode Ping Extension)
 
-**Objectif:** Masternodes votent R% annuel.
+**Objectif:** Masternodes votent R% annuel via extension ping (simple, gratuit).
+
+**ARCHITECTURE:** Réutilisation infrastructure DAO PIVX
+- Extension `CMasternodePing` avec champ `nRProposal` (2 bytes)
+- Vote temps réel via pings masternodes existants
+- Aucun collateral requis (gratuit)
+- Cycle activation: 30 jours (superblock budget DAO)
 
 **Deliverables:**
-- [ ] Vote proposal : SetKhuYieldRate(R_new)
-- [ ] Validation bornes [0, R_MAX_dynamic]
-- [ ] Activation vote dans ConnectBlock
-- [ ] RPC : getkhugovernance, votekhurate (MN only)
-- [ ] Tests : test_khu_governance.cpp, khu_governance.py
+- [ ] Extension `CMasternodePing::nRProposal` (masternode.h)
+- [ ] RPC `masternode votekhu <R%>` (masternode.cpp)
+- [ ] Calcul consensus `GetRConsensus()` (masternodemanager.cpp)
+- [ ] RPC query `getkhurconsensus` (khu_rpc.cpp)
+- [ ] Activation superblock dans ConnectBlock (validation.cpp)
+- [ ] Tests unitaires : test_khu_governance.cpp
+- [ ] Tests fonctionnels : khu_governance.py
 
 **Verification:**
 ```cpp
-// Vote valide:
-assert(R_new >= 0 && R_new <= R_MAX_dynamic);
+// Vote valide (format XX.XX%)
+assert(R_new >= 0 && R_new <= 9999);  // 0.00% - 99.99%
+assert(R_new <= R_MAX_dynamic);       // Respect plafond
+
+// Moyenne arithmétique
+uint64_t sum = 0;
+for (uint16_t r : votes) sum += r;
+uint16_t average = sum / votes.size();
+
 // Egalite: DOMC ne gouverne QUE R%
 assert(reward_year == max(6 - year, 0));  // Emission inchangee
 ```
+
+**Exemple usage:**
+```bash
+# Masternode vote R%
+./pivx-cli masternode votekhu 25.55
+> "success"
+
+# Query consensus réseau
+./pivx-cli getkhurconsensus
+{
+  "R_annual": 23.45,
+  "votes_count": 150,
+  "total_masternodes": 200
+}
+```
+
+**Complexité:** SIMPLE (~5 jours au lieu de 8j)
+- Pas de commit-reveal (vote transparent)
+- Réutilise ping MN existant
+- ~150 lignes code total
 
 **Git:**
 - Branche: `khu-phase5-governance`

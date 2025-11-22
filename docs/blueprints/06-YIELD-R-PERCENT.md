@@ -467,175 +467,308 @@ R_MAX_dynamic (%)
     └────────────────────────────────> temps
 ```
 
-### 5.2 Vote DOMC (Masternodes) — VOTE MOYEN CACHÉ
+### 5.2 Vote R% via Masternode Ping (Infrastructure DAO PIVX)
 
-**Masternodes votent R% via DOMC (Decentralized Onchain Masternode Consensus).**
+**Masternodes votent R% en étendant le mécanisme de ping existant.**
 
-**SPÉCIFICATIONS DOMC R% :**
-- **Vote shielded** (caché) : Chaque MN vote en secret
-- **Format** : XX.XX% (2 decimals) — Ex: 25.55%, 20.20%
-- **Agrégation** : Moyenne arithmétique de tous les votes valides
-- **Durée application** : 4 mois (175200 blocs)
-- **Cycle DOMC** : 4 semaines (40320 blocs)
-  - Phase 1: Vote shielded (2 semaines = 20160 blocs)
-  - Phase 2: Reveal + Implementation (2 semaines = 20160 blocs)
+**ARCHITECTURE: Réutilisation Infrastructure DAO PIVX**
+
+PIVX possède déjà un système de governance robuste (actif depuis 2015):
+- Masternodes pingent le réseau régulièrement (toutes les ~15 minutes)
+- Chaque ping est signé cryptographiquement
+- Les pings sont relayés sur tout le réseau P2P
+- Infrastructure éprouvée et mature
+
+**MODIFICATION MINIMALE: Extension Ping avec R%**
+
+On ajoute simplement un champ `nRProposal` au ping masternode existant:
 
 ```cpp
 /**
- * Structure vote DOMC pour R%
+ * Extension du Masternode Ping existant (masternode.h)
  */
-struct DOMCVoteR {
-    uint16_t R_proposal;        // Nouveau R% proposé (centièmes de %)
+class CMasternodePing {
+    CTxIn vin;                  // Masternode identifier (existant)
+    uint256 blockHash;          // Block hash (existant)
+    int64_t sigTime;            // Signature timestamp (existant)
+    std::vector<unsigned char> vchSig;  // Signature (existant)
+
+    // ← NOUVEAU: R% préféré du masternode
+    uint16_t nRProposal;        // R% en centièmes (0-9999 = 0.00%-99.99%)
+                                // 0 = pas d'opinion / abstention
                                 // Ex: 2555 = 25.55%
-    uint256 commitment;         // Hash(R_proposal || secret) [VOTE SHIELDED]
-    uint256 secret;             // Révélé en REVEAL phase
-    CPubKey voterPubKey;        // Clé publique masternode
-    std::vector<unsigned char> signature;
+
+    ADD_SERIALIZE_METHODS;
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream& s, Operation ser_action) {
+        READWRITE(vin);
+        READWRITE(blockHash);
+        READWRITE(sigTime);
+        READWRITE(vchSig);
+
+        // Rétrocompatibilité: seulement si version >= PROTOCOL_VERSION_KHU
+        if (s.GetVersion() >= PROTOCOL_VERSION_KHU)
+            READWRITE(nRProposal);
+    }
 };
 ```
 
-**Processus vote (2 phases) :**
+**SPÉCIFICATIONS R% :**
+- **Vote public** (transparent) : Pas de commit-reveal nécessaire
+- **Format** : XX.XX% (2 decimals) — Ex: 25.55%, 20.20%
+- **Agrégation** : Moyenne arithmétique de tous les votes valides
+- **Durée application** : 30 jours (cycle budget DAO = 43200 blocs mainnet)
+- **Mise à jour** : Temps réel (MN peut changer vote à tout moment)
+- **Coût** : GRATUIT (utilise ping existant)
+
+**Processus vote (Simple, Temps Réel) :**
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│ PHASE 1 : VOTE SHIELDED (20160 blocs = 2 semaines)  │
+│ VOTE CONTINU (Temps réel via pings masternodes)     │
 ├──────────────────────────────────────────────────────┤
-│ • Chaque MN choisit R_proposal (ex: 2555 = 25.55%)  │
-│ • MN génère secret aléatoire (256 bits)             │
-│ • MN crée commitment = SHA256(R_proposal || secret) │
-│ • MN broadcast commitment (vote CACHÉ)              │
-│ • Stockage commitments on-chain (shielded)          │
+│ 1. Masternode choisit R_proposal (ex: 2555 = 25.55%)│
+│ 2. RPC: masternode votekhu 25.55                    │
+│ 3. Stockage local: activeMasternode.nRProposal = 2555│
+│ 4. Prochain ping inclut automatiquement nRProposal │
+│ 5. Ping broadcast réseau (comme d'habitude)        │
+│ 6. Tous les nodes collectent votes via pings       │
+│ 7. Calcul consensus temps réel (moyenne arith.)    │
 │                                                      │
-│ ⚠️ CRITICAL: Le vote reste SECRET pendant 2 semaines│
-│ Personne ne peut voir les R_proposal individuels    │
+│ ✅ SIMPLE: Pas de commitment, pas de reveal        │
+│ ✅ GRATUIT: Aucun collateral requis                │
+│ ✅ TEMPS RÉEL: MN peut changer vote instantanément │
 └──────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────┐
-│ PHASE 2 : REVEAL + IMPLEMENTATION                   │
-│         (20160 blocs = 2 semaines)                   │
+│ ACTIVATION (Cycle Budget DAO = 30 jours)            │
 ├──────────────────────────────────────────────────────┤
-│ SEMAINE 1 (Reveal):                                  │
-│ • MN broadcast R_proposal + secret                  │
-│ • Validation : SHA256(R_proposal || secret) == commitment │
-│ • Si match : vote valide ✅                          │
-│ • Si pas match : vote rejeté ❌                      │
-│ • Si pas reveal : vote ignoré ❌                     │
+│ • Tous les 43200 blocs (mainnet) = 30 jours         │
+│ • Au superblock budget DAO:                         │
+│   1. Collecter tous pings masternodes actifs       │
+│   2. Filtrer MN avec nRProposal > 0                 │
+│   3. Calculer moyenne: R_new = Σ(nRProposal) / count│
+│   4. Si R_new > R_MAX_dynamic: clamp à R_MAX       │
+│   5. Activer: SetKhuAnnualRate(R_new)              │
+│   6. Application: 30 prochains jours                │
 │                                                      │
-│ SEMAINE 2 (Calcul moyenne + Activation):            │
-│ • Collecte tous votes valides                       │
-│ • Calcul MOYENNE arithmétique :                     │
-│   R_new = ΣR_proposal / nombre_votes_valides       │
-│ • Si R_new > R_MAX_dynamic : R_new = R_MAX          │
-│ • Activation : R_annual = R_new                     │
-│ • Application : 4 prochains mois (175200 blocs)     │
+│ ✅ DÉTERMINISTE: Hauteur de bloc uniquement        │
+│ ✅ CONSENSUS: Tous nodes calculent même résultat   │
 └──────────────────────────────────────────────────────┘
 ```
 
-**Timeline complète (1 cycle DOMC) :**
+**Timeline complète (1 cycle = 30 jours) :**
 
 ```
-Bloc 0      │◄─── VOTE SHIELDED (2 sem) ───►│◄── REVEAL + IMPL (2 sem) ──►│
-            │                                │                             │
-            │  Votes cachés (commitments)    │  Reveal → Moyenne → Activer │
-            │                                │                             │
-Bloc 20160  │                                │                             │
-            │                                │                             │
-Bloc 40320  │                                                              │
-            │                                                              │
-            │◄─────────────── R% appliqué (4 mois = 175200 blocs) ───────►│
+Bloc 0          │◄────────────── Vote continu (30 jours) ──────────────►│
+                │                                                        │
+                │  MN votent à tout moment (temps réel)                  │
+                │  Consensus calculé en continu                          │
+                │                                                        │
+Bloc 43200      │ ACTIVATION (superblock DAO)                           │
+(Mainnet)       │   → Calcul moyenne finale                             │
+                │   → R_annual = moyenne                                │
+                │                                                        │
+                │◄─────── R% appliqué (30 prochains jours) ────────────►│
 ```
 
-### 5.3 Implémentation C++ — Calcul Moyenne
+### 5.3 Implémentation C++ — Infrastructure Simple
+
+**Fichiers à modifier:**
+- `src/masternode/masternode.h` — Extension CMasternodePing
+- `src/rpc/masternode.cpp` — Nouveau RPC `masternode votekhu`
+- `src/masternode/masternodemanager.cpp` — Calcul consensus
+- `src/validation.cpp` — Activation au superblock
+
+#### 5.3.1 RPC Vote Masternode
 
 ```cpp
 /**
- * Calculer moyenne R% (fin Phase 2)
+ * RPC: masternode votekhu <R_percent>
+ * Fichier: src/rpc/masternode.cpp
  */
-uint16_t CalculateDOMCAverageR(
-    const std::vector<DOMCVoteR>& valid_votes,
-    uint16_t R_MAX_dynamic
-) {
-    if (valid_votes.empty()) {
-        LogPrintf("WARNING: No valid DOMC votes, keeping current R%\n");
-        return GetCurrentRAnnual();  // Pas de changement
-    }
+UniValue masternode_votekhu(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 2)
+        throw std::runtime_error(
+            "masternode votekhu <R_percent>\n"
+            "\nVote for KHU annual yield rate (masternode only).\n"
+            "\nArguments:\n"
+            "1. R_percent    (numeric, required) Annual yield rate (0.00-99.99)\n"
+            "                Example: 25.55 for 25.55%\n"
+            "\nResult:\n"
+            "\"success\"      Vote preference saved, will broadcast in next ping\n"
+            "\nExamples:\n"
+            + HelpExampleCli("masternode votekhu", "25.55")
+            + HelpExampleRpc("masternode", "\"votekhu\", 25.55")
+        );
 
-    // Somme des votes valides
-    uint64_t sum = 0;
-    for (const auto& vote : valid_votes) {
-        sum += vote.R_proposal;
-    }
+    // Vérifier que c'est un masternode actif
+    if (!fMasterNode)
+        throw JSONRPCError(RPC_MISC_ERROR, "This is not a masternode");
 
-    // Moyenne arithmétique
-    uint16_t average = static_cast<uint16_t>(sum / valid_votes.size());
+    // Parser R% (format XX.XX)
+    double R_percent = request.params[1].get_real();
 
-    // Clamping à R_MAX_dynamic
-    if (average > R_MAX_dynamic) {
-        LogPrintf("DOMC average %d exceeds R_MAX %d, clamping\n",
-                  average, R_MAX_dynamic);
-        average = R_MAX_dynamic;
-    }
+    // Convertir en centièmes
+    uint16_t R_centimes = static_cast<uint16_t>(R_percent * 100.0);
 
-    LogPrintf("DOMC result: %d votes, average R = %.2f%%\n",
-              valid_votes.size(), average / 100.0);
+    // Valider bornes
+    if (R_centimes > 9999)
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                          "R% must be between 0.00 and 99.99");
 
-    return average;
+    // Vérifier R_MAX_dynamic
+    uint16_t R_MAX = GetKhuRMax();
+    if (R_centimes > R_MAX)
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                          strprintf("R% exceeds current R_MAX (%.2f%%)",
+                                   R_MAX / 100.0));
+
+    // Stocker préférence localement
+    activeMasternode.nRProposal = R_centimes;
+
+    LogPrintf("Masternode R% vote: %.2f%% (will broadcast in next ping)\n",
+              R_percent);
+
+    return "success";
 }
+```
 
+#### 5.3.2 Calcul Consensus Réseau
+
+```cpp
 /**
- * Valider proposition R%
+ * Calculer consensus R% depuis pings masternodes
+ * Fichier: src/masternode/masternodemanager.cpp
  */
-bool ValidateRProposal(uint16_t R_proposal, uint16_t R_MAX_dynamic) {
-    // Vérifier bornes: 0.00% ≤ R ≤ R_MAX_dynamic
-    if (R_proposal > R_MAX_dynamic) {
-        return error("Invalid R proposal %d (max %d)", R_proposal, R_MAX_dynamic);
-    }
+uint16_t CMasternodeMan::GetRConsensus() const
+{
+    LOCK(cs);
 
-    // Vérifier format valide (XX.XX%)
-    // Max 99.99% (9999 centièmes)
-    if (R_proposal > 9999) {
-        return error("Invalid R proposal %d (max 9999 = 99.99%%)", R_proposal);
-    }
+    std::vector<uint16_t> R_values;
 
-    return true;
-}
+    // Parcourir tous les masternodes
+    for (const auto& mnpair : mapMasternodes) {
+        const CMasternode& mn = mnpair.second;
 
-/**
- * Tie-breaking : Si égalité parfaite, garder R actuel
- */
-uint16_t ResolveDOMCTie(
-    const std::vector<uint16_t>& proposals,
-    uint16_t R_current
-) {
-    // Compter occurrences
-    std::map<uint16_t, uint32_t> counts;
-    for (uint16_t prop : proposals) {
-        counts[prop]++;
-    }
-
-    // Trouver max occurrences
-    uint32_t max_count = 0;
-    for (const auto& pair : counts) {
-        max_count = std::max(max_count, pair.second);
-    }
-
-    // Compter combien ont max_count
-    std::vector<uint16_t> tied;
-    for (const auto& pair : counts) {
-        if (pair.second == max_count) {
-            tied.push_back(pair.first);
+        // Filtrer masternodes actifs avec vote R%
+        if (mn.IsEnabled() && mn.lastPing.nRProposal > 0) {
+            R_values.push_back(mn.lastPing.nRProposal);
         }
     }
 
-    // Si égalité parfaite (plusieurs valeurs avec même count)
-    if (tied.size() > 1) {
-        LogPrintf("DOMC tie detected, keeping current R = %.2f%%\n",
-                  R_current / 100.0);
-        return R_current;
+    // Si aucun vote, garder R% actuel
+    if (R_values.empty()) {
+        LogPrint(BCLog::MASTERNODE,
+                "GetRConsensus: No R% votes, keeping current rate\n");
+        return GetCurrentRAnnual();
     }
 
-    // Sinon, retourner la valeur majoritaire
-    return tied[0];
+    // Calcul moyenne arithmétique
+    uint64_t sum = 0;
+    for (uint16_t r : R_values)
+        sum += r;
+
+    uint16_t average = static_cast<uint16_t>(sum / R_values.size());
+
+    // Clamping à R_MAX_dynamic
+    uint16_t R_MAX = GetKhuRMax();
+    if (average > R_MAX) {
+        LogPrintf("R% consensus %.2f%% exceeds R_MAX %.2f%%, clamping\n",
+                 average / 100.0, R_MAX / 100.0);
+        average = R_MAX;
+    }
+
+    LogPrintf("R% consensus: %d votes, average = %.2f%%\n",
+             R_values.size(), average / 100.0);
+
+    return average;
+}
+```
+
+#### 5.3.3 RPC Query Consensus
+
+```cpp
+/**
+ * RPC: getkhurconsensus
+ * Fichier: src/rpc/blockchain.cpp (ou khu_rpc.cpp)
+ */
+UniValue getkhurconsensus(const JSONRPCRequest& request)
+{
+    if (request.fHelp)
+        throw std::runtime_error(
+            "getkhurconsensus\n"
+            "\nGet current KHU R% consensus from masternode votes.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"R_annual\": xx.xx,        (numeric) Consensus R% annual\n"
+            "  \"R_centimes\": xxxx,       (numeric) R% in centimes\n"
+            "  \"votes_count\": n,         (numeric) Number of MN votes\n"
+            "  \"total_masternodes\": n,   (numeric) Total enabled MN\n"
+            "  \"R_current\": xx.xx,       (numeric) Currently active R%\n"
+            "  \"R_max\": xx.xx           (numeric) Maximum allowed R%\n"
+            "}\n"
+        );
+
+    uint16_t R_consensus = mnodeman.GetRConsensus();
+    uint16_t R_current = GetCurrentRAnnual();
+    uint16_t R_MAX = GetKhuRMax();
+
+    int votes_count = 0;
+    int total_mn = 0;
+
+    LOCK(mnodeman.cs);
+    for (const auto& mnpair : mnodeman.mapMasternodes) {
+        const CMasternode& mn = mnpair.second;
+        if (mn.IsEnabled()) {
+            total_mn++;
+            if (mn.lastPing.nRProposal > 0)
+                votes_count++;
+        }
+    }
+
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("R_annual", R_consensus / 100.0);
+    result.pushKV("R_centimes", R_consensus);
+    result.pushKV("votes_count", votes_count);
+    result.pushKV("total_masternodes", total_mn);
+    result.pushKV("R_current", R_current / 100.0);
+    result.pushKV("R_max", R_MAX / 100.0);
+
+    return result;
+}
+```
+
+#### 5.3.4 Activation au Superblock
+
+```cpp
+/**
+ * Activation R% au superblock budget (30 jours)
+ * Fichier: src/validation.cpp (dans ConnectBlock)
+ */
+bool ConnectBlock(const CBlock& block, CValidationState& state, ...)
+{
+    // ... code existant ...
+
+    // Activation KHU R% au superblock budget DAO
+    if (nHeight >= Params().GetConsensus().vUpgrades[Consensus::UPGRADE_KHU].nActivationHeight)
+    {
+        // Tous les 43200 blocs (mainnet) = 30 jours
+        if (nHeight % Params().GetConsensus().nBudgetCycleBlocks == 0)
+        {
+            // Calculer consensus R% depuis pings masternodes
+            uint16_t R_consensus = mnodeman.GetRConsensus();
+
+            // Activer nouveau R%
+            SetKhuAnnualRate(R_consensus);
+
+            LogPrintf("KHU R% activated at height %d: %.2f%% (applied for next 30 days)\n",
+                     nHeight, R_consensus / 100.0);
+        }
+    }
+
+    // ... suite code existant ...
 }
 ```
 
