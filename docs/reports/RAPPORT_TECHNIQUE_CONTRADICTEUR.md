@@ -277,82 +277,79 @@ struct KhuStateCommitment {
 
 **Deliverables:**
 ```
-- STAKE: KHU_T → ZKHU
+- STAKE: KHU_T → ZKHU (Sapling standard)
 - UNSTAKE: ZKHU → KHU_T (avec bonus=0 car pas yield encore)
-- SaplingMerkleTree séparé (zkhuTree)
-- Nullifier set séparé (zkhuNullifiers)
+- Memo encoding stakeStartHeight + amount
+- TxType distinction (KHU_STAKE/KHU_UNSTAKE)
 - Maturity 4320 blocs
 ```
 
 **Complexité:** ⭐⭐⭐⭐☆ (Élevée - circuits zk-SNARK)
 
-**Faisabilité:** ✅ **RÉALISABLE** avec attention
+**Faisabilité:** ✅ **RÉALISABLE**
 
-PIVX a déjà Sapling (src/sapling/), mais:
+PIVX a déjà Sapling (src/sapling/).
 
-**CRITIQUE: Separation pools zPIV/ZKHU**
+**Architecture ZKHU:**
 
-Doc 03 section 7.1:
-```
-ZKHU utilise un pool Sapling séparé distinct du pool zPIV existant.
-
-- Flag interne fIsKHU dans OutputDescription
-- Commitment tree séparé: zkhuTree vs saplingTree
-- Nullifier set séparé
-```
-
-**Implémentation nécessaire:**
+ZKHU utilise **Sapling SHIELD standard PIVX** sans modification:
 
 ```cpp
-// src/sapling/sapling_state.h
-struct SaplingState {
-    SaplingMerkleTree saplingTree;      // zPIV (existant)
-    SaplingMerkleTree zkhuTree;         // ZKHU (nouveau)
+// ZKHU = Sapling standard, différenciation via TxType uniquement
 
-    std::set<uint256> saplingNullifiers;  // zPIV
-    std::set<uint256> zkhuNullifiers;     // ZKHU (nouveau)
-};
+// STAKE: KHU_T → ZKHU
+TxType = KHU_STAKE
+→ Génère note Sapling standard
+→ Memo encode: stakeStartHeight + amount (512 bytes standard)
+→ Commitment dans SaplingMerkleTree existant
+→ Nullifier généré standard
+
+// UNSTAKE: ZKHU → KHU_T
+TxType = KHU_UNSTAKE
+→ Révèle nullifier
+→ Prouve ownership via zk-SNARK standard
+→ Pas de Z→Z
+→ Retourne à KHU_T transparent
 ```
 
-**Question technique:**
+**Différences vs Sapling normal:**
+1. **TxType:** `KHU_STAKE` / `KHU_UNSTAKE` (distinction consensus)
+2. **Memo format:** Magic "ZKHU" + stakeStartHeight + amount
+3. **Contrainte pipeline:** T→Z→T uniquement (pas Z→Z)
 
-**Comment distinguer zPIV vs ZKHU dans OutputDescription?**
+**PAS de:**
+- ❌ Nouveaux circuits zk-SNARK
+- ❌ Arbre Merkle séparé
+- ❌ Nullifier set séparé
+- ❌ Modification OutputDescription
+- ❌ "Pools séparés" (concept erroné)
 
-**Option A: Nouveau champ fIsKHU**
+**Implémentation:**
+
 ```cpp
-class OutputDescription {
-    // ... champs Sapling existants ...
-    bool fIsKHU;  // false = zPIV, true = ZKHU
-};
-```
-**Problème:** Modifie structure Sapling standard → hard fork.
+// src/khu/khu_stake.cpp
+bool CreateKHUStake(const CAmount& khuAmount, uint32_t nHeight, CMutableTransaction& tx) {
+    // Use STANDARD Sapling primitives
+    libzcash::SaplingNote note(khuAmount);
 
-**Option B: Utiliser memo field**
-```cpp
-// ZKHU memo commence par "ZKHU" magic
-if (output.memo[0..3] == "ZKHU") {
-    // C'est ZKHU
-} else {
-    // C'est zPIV
+    // Encode metadata in STANDARD 512-byte memo
+    std::array<unsigned char, 512> memo;
+    memo.fill(0);
+    memcpy(memo.data(), "ZKHU", 4);         // Magic
+    WriteLE32(memo.data() + 4, 1);           // Version
+    WriteLE32(memo.data() + 8, nHeight);     // stakeStartHeight
+    WriteLE64(memo.data() + 12, khuAmount);  // amount
+
+    // Create STANDARD Sapling output
+    libzcash::SaplingPaymentAddress addr = wallet.GenerateSaplingAddress();
+    auto output = libzcash::OutputDescriptionInfo(note, addr, memo);
+
+    tx.sapData->vShieldedOutput.push_back(output);
+    tx.nType = TxType::KHU_STAKE;  // ← SEULE différence consensus
+
+    return true;
 }
 ```
-**Avantage:** Pas de modification structure.
-**Problème:** Memo lisible on-chain → leak metadata.
-
-**Option C: Pool séparé via TxType**
-```cpp
-if (tx.nType == TxType::KHU_STAKE) {
-    // Outputs vont dans zkhuTree
-} else if (tx has sapling outputs) {
-    // Outputs vont dans saplingTree
-}
-```
-**Avantage:** Pas de modification Sapling, séparation claire.
-**Problème:** Nécessite TxType distinct.
-
-**⚠️ QUESTION POUR ARCHITECTE:**
-
-**Comment séparer pools zPIV/ZKHU?** Je recommande **Option C (TxType)** car c'est le moins invasif et cohérent avec pipeline KHU.
 
 **Estimation:** 10-15 jours (1500-2000 LOC)
 
@@ -797,7 +794,7 @@ Les specs sont **rigoureuses, cohérentes, et bien pensées**.
 - ❌ Monitoring Prometheus obligatoire
 - ❌ Doxygen obligatoire
 
-**Je me limite aux CLARIFICATIONS d'implémentation** (burn PIV, pool separation, etc.).
+**Je me limite aux CLARIFICATIONS d'implémentation** (burn PIV, HTLC timelock).
 
 ---
 
@@ -851,7 +848,7 @@ Les specs sont **rigoureuses, cohérentes, et bien pensées**.
 - Garde-fous anti-dérive complets
 
 **Points faibles:**
-- 3 ambiguïtés mineures (burn PIV, pool separation, HTLC timelock)
+- 2 clarifications nécessaires (burn PIV, HTLC timelock)
 - Risque performance >500k notes (à surveiller testnet)
 
 ### 10.2 Faisabilité Technique
