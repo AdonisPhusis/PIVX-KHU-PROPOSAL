@@ -1,4 +1,4 @@
-# 02 — PIVX-V6-KHU ARCHITECTURE OVERVIEW
+# 03 — PIVX-V6-KHU ARCHITECTURE OVERVIEW
 
 Version: 1.0.0
 Status: FINAL
@@ -456,6 +456,27 @@ Quorum type: LLMQ_400_60 (400 MN, 60% threshold)
 - Réutiliser circuits Sapling existants
 - Ajouter métadonnées dans memo field
 - Pas de nouveau circuit zk-SNARK
+
+**IMPORTANT — Separation des pools Sapling:**
+
+ZKHU utilise un **pool Sapling séparé** distinct du pool zPIV existant.
+
+**Raison:**
+- Évite collision entre ZKHU et zPIV
+- Permet tracking indépendant des commitment trees
+- Simplifie l'audit de l'état KHU (C, U, Cr, Ur)
+- Garantit que ZKHU ne peut pas être confondu avec zPIV
+
+**Implementation:**
+- Flag interne `fIsKHU` dans `OutputDescription`
+- Commitment tree séparé : `zkhu_tree` vs `sapling_tree`
+- Nullifier set séparé pour éviter double-spend entre pools
+- Wallet tracking séparé
+
+**Conséquence:**
+- ZKHU et zPIV ne partagent AUCUNE structure on-chain
+- Pas de conversion ZKHU ↔ zPIV possible
+- Anonymity set ZKHU indépendant de anonymity set zPIV
 
 ### 7.2 STAKE Transaction
 

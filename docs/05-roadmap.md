@@ -55,9 +55,15 @@ KHU fonctionne comme actif collatéralisé 1:1.
 - Rotation quorum toutes les 240 blocs :
   Un quorum = groupe déterministe de masternodes signant les blocs.
   Rotation = empêche capture longue.
+- **KhuStateCommitment** signé par LLMQ :
+  - Chaque état KHU (C, U, Cr, Ur) reçoit une signature BLS du quorum actif
+  - Après 12 confirmations avec signatures, l'état devient **irréversible**
+  - Structure : `struct KhuStateCommitment { uint256 stateHash; vector<CBLSSignature> sigs; }`
+  - Stockage : LevelDB clé `'K' + 'C' + height`
 
 ### Résultat
 Invariants CD et CDr deviennent impossibles à briser.
+Finality garantit que l'état KHU est irréversible après 12 blocs signés.
 
 ---------------------------------------
 

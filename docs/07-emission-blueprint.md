@@ -113,6 +113,23 @@ CAmount dao_reward = staker_reward;
 
 **Aucune autre logique. Aucune exception. Aucun cas particulier.**
 
+**TIMING CRITIQUE — Ordre d'application dans ConnectBlock:**
+
+L'application des récompenses d'émission DOIT se faire **APRÈS** les opérations KHU et le yield scheduler:
+
+```
+1. ApplyDailyYieldIfNeeded()   // Phase 3
+2. ProcessKHUTransactions()     // Phase 2+
+3. ApplyBlockReward()           // ← ÉMISSION ICI (Phase 1)
+4. CheckInvariants()
+5. PersistState()
+```
+
+**Raison:** Les récompenses d'émission ne modifient PAS l'état KHU (C, U, Cr, Ur).
+Elles sont distribuées en PIV pur, indépendamment du système KHU.
+
+**Référence:** Voir `06-PROTOCOL-REFERENCE.md` section "Order of Operations in ConnectBlock".
+
 ---
 
 ## 7. TESTS OBLIGATOIRES

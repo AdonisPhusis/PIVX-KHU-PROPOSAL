@@ -1,4 +1,4 @@
-# 06 — PIVX-V6-KHU BLUEPRINT MASTER-FLOW
+# 01 — PIVX-V6-KHU BLUEPRINT MASTER-FLOW
 
 ### *Guide operationnel pour un build autonome et supervise*
 
@@ -276,6 +276,23 @@ assert(new_U == old_U - khu_burned);
 - [ ] Maturity 4320 blocs enforcement
 - [ ] Tests unitaires : test_khu_yield.cpp
 - [ ] Tests fonctionnels : khu_yield.py
+
+**IMPORTANT — Timing de mise à jour du yield:**
+
+Tous les updates de yield DOIVENT se produire **AVANT** l'exécution des transactions dans ConnectBlock.
+
+**Ordre canonique:**
+```
+1. ApplyDailyYieldIfNeeded()   // ← YIELD ICI (Phase 3)
+2. ProcessKHUTransactions()     // MINT, REDEEM, STAKE, UNSTAKE
+3. ApplyBlockReward()           // Emission PIVX
+4. CheckInvariants()
+5. PersistState()
+```
+
+**Raison:** Éviter mismatch entre Cr/Ur accumulés et UNSTAKE dans le même bloc.
+
+Le yield est appliqué en début de bloc, PUIS les transactions sont traitées avec l'état yield à jour.
 
 **Verification:**
 ```cpp
