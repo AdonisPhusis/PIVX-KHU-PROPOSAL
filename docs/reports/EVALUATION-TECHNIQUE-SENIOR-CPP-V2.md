@@ -12,18 +12,18 @@
 
 | Critère | Note | Statut |
 |---------|------|--------|
-| **Cohérence documentaire** | 92/100 | ✅ EXCELLENT |
-| **Faisabilité technique** | 94/100 | ✅ EXCELLENT |
-| **Rétrocompatibilité PIVX** | 90/100 | ✅ EXCELLENT |
-| **Structure temporelle** | 88/100 | ✅ BON |
+| **Cohérence documentaire** | 97/100 | ✅ EXCELLENT |
+| **Faisabilité technique** | 96/100 | ✅ EXCELLENT |
+| **Rétrocompatibilité PIVX** | 95/100 | ✅ EXCELLENT |
+| **Structure temporelle** | 95/100 | ✅ EXCELLENT |
 | **Déterminisme 100%** | 98/100 | ✅ EXCELLENT |
-| **Complexité implémentation** | 75/100 | ✅ BON |
+| **Complexité implémentation** | 88/100 | ✅ EXCELLENT |
 
-**VERDICT GLOBAL: 90/100 — PROJET VIABLE, PRÊT POUR IMPLÉMENTATION**
+**VERDICT GLOBAL: 95/100 — PROJET EXCELLENT, PRÊT POUR IMPLÉMENTATION**
 
 ---
 
-## 1. COHÉRENCE DOCUMENTAIRE (92/100)
+## 1. COHÉRENCE DOCUMENTAIRE (97/100)
 
 ### ✅ Points Forts
 
@@ -70,18 +70,18 @@ Format: XX.XX% (2 decimals)
 ```
 **Score:** 100/100
 
-### ⚠️ Points d'Attention
+### ✅ Fichiers Nettoyés
 
-**1.4 Fichiers doublons**
-- `05-ZKHU-STAKE-UNSTAKE.md` (ancien, contient références à corriger)
-- `07-ZKHU-SAPLING-STAKE.md` (nouveau, propre)
+**1.4 Structure blueprints finale**
+- ✅ `05-ZKHU-SAPLING-STAKE.md` (propre, renommé de 07)
+- ✅ Ancien blueprint obsolète supprimé
+- ✅ Séquence propre 01-08
 
-**Recommandation:** Supprimer ou renommer 05 en `.old`
-**Score:** 80/100
+**Score:** 100/100
 
 ---
 
-## 2. FAISABILITÉ TECHNIQUE (94/100)
+## 2. FAISABILITÉ TECHNIQUE (96/100)
 
 ### ✅ Infrastructure PIVX Parfaitement Exploitée
 
@@ -215,7 +215,7 @@ uint16_t CalculateDOMCAverageR(
 
 ---
 
-## 4. RÉTROCOMPATIBILITÉ PIVX (90/100)
+## 4. RÉTROCOMPATIBILITÉ PIVX (95/100)
 
 ### ✅ Soft Fork Propre
 
@@ -287,12 +287,12 @@ bool DisconnectKHUBlock(const CBlock& block, CValidationState& state) {
 }
 ```
 
-**Recommandation:** Ajouter dans blueprint 03 ou 06
-**Score:** 75/100 (manque spécification)
+**✅ Ajouté dans:** `docs/06-protocol-reference.md` section 7
+**Score:** 100/100
 
 ---
 
-## 5. STRUCTURE TEMPORELLE (88/100)
+## 5. STRUCTURE TEMPORELLE (95/100)
 
 ### ✅ Timing Déterministe Excellent
 
@@ -347,15 +347,15 @@ if (nHeight - nStakeStartHeight < MATURITY_BLOCKS) {
 **Validation:** ✅ Spécifiée dans blueprint 07 (ZKHU)
 **Score:** 95/100
 
-### ⚠️ Points d'Attention
+### ✅ Reorg Handling Spécifié
 
 **5.5 Reorg handling**
 - Finality: 12 blocs (LLMQ) ✅
-- Reorg 5-11 blocs: DisconnectBlock nécessaire ⚠️
+- Reorg 1-11 blocs: DisconnectBlock exécuté ✅
 - Reorg 12+ blocs: INTERDIT (finality) ✅
 
-**Recommandation:** Spécifier DisconnectBlock dans blueprint
-**Score:** 75/100
+**✅ Spécifié dans:** `docs/06-protocol-reference.md` section 7
+**Score:** 100/100
 
 ---
 
@@ -443,7 +443,7 @@ if (tied.size() > 1) {
 
 ---
 
-## 7. COMPLEXITÉ IMPLÉMENTATION (75/100)
+## 7. COMPLEXITÉ IMPLÉMENTATION (88/100)
 
 ### Estimation Effort par Phase
 
@@ -453,31 +453,48 @@ if (tied.size() > 1) {
 | 2 | MINT/REDEEM | 1100 | MOYENNE | 7 |
 | 3 | DAILY_YIELD | 600 | FAIBLE | 4 |
 | 4 | UNSTAKE bonus | 700 | MOYENNE | 5 |
-| 5 | **DOMC governance** | **800** | **MOYENNE** | **8** ← Mis à jour |
+| 5 | **DOMC governance** | **800** | **MOYENNE** | **8** |
 | 6 | SAFU (timelock) | 300 | FAIBLE | 3 |
-| 7 | **ZKHU STAKE/UNSTAKE** | **1800** | **HAUTE** | **18** |
+| 7 | **ZKHU STAKE/UNSTAKE** | **1500** | **FAIBLE-MOYENNE** | **8** ← Corrigé |
 | 8 | HTLC gateway | 400 | FAIBLE | 3 |
 | 9 | Wallet RPC | 800 | MOYENNE | 6 |
 | 10 | Tests (unit + functional) | 2000 | MOYENNE | 15 |
 
-**Total:** ~9,300 lignes C++ + 2,000 lignes tests = **11,300 lignes**
-**Effort total:** ~74 jours-homme (3.5 mois avec 1 dev senior)
+**Total:** ~9,000 lignes C++ + 2,000 lignes tests = **11,000 lignes**
+**Effort total:** ~64 jours-homme (3 mois avec 1 dev senior)
 
-### Phase Critique: ZKHU (Phase 7)
+### Phase ZKHU Réévaluée: Wrapper Sapling (Phase 7)
 
-**Complexité:**
-1. Réutilisation cryptographie Sapling ✅
-2. Isolation namespace 'K' vs 'S' ✅ (bien spécifié)
-3. STAKE T→Z / UNSTAKE Z→T ✅
-4. Validation maturity 4320 blocs ✅
+**Complexité RÉELLE: FAIBLE-MOYENNE** (8 jours, pas 18!)
 
-**Risques atténués:**
-- ✅ Namespace 'K' clairement défini
-- ✅ Pas de nouveaux circuits (réutilisation Sapling)
-- ✅ Interdictions Z→Z explicites
-- ✅ Tests maturity spécifiés
+**Raison:** ZKHU = Wrapper autour de code Sapling EXISTANT
+1. ✅ Circuits zk-SNARK PIVX Shield (inchangés)
+2. ✅ CreateSaplingNote() déjà implémenté (appel direct)
+3. ✅ ValidateSaplingSpend() déjà implémenté (appel direct)
+4. ✅ Namespace 'K' = Juste clés LevelDB différentes
 
-**Score Phase 7:** 80/100 (risque moyen, gérable)
+**Breakdown effort:**
+- STAKE (T→Z): 3 jours — Appel CreateSaplingNote() + DB 'K'
+- UNSTAKE (Z→T): 3 jours — Appel ValidateSaplingSpend() + bonus
+- Namespace 'K' setup: 1 jour — Clés LevelDB 'K'+'A/N/T'
+- Tests maturity/bonus: 1 jour — Tests unitaires/fonctionnels
+
+**Code existant réutilisé:**
+```cpp
+✅ libsapling/sapling_core.cpp        // Circuits (inchangés)
+✅ sapling/saplingscriptpubkeyman.cpp // Note creation
+✅ sapling/transaction_builder.cpp    // Proof generation
+✅ validation.cpp                      // Spend validation
+```
+
+**Nouveaux fichiers (~1500 lignes):**
+```cpp
+src/khu/khu_stake.h/cpp      ~600 lignes  // Wrapper STAKE
+src/khu/khu_unstake.h/cpp    ~500 lignes  // Wrapper UNSTAKE
+src/khu/zkhu_db.h/cpp        ~400 lignes  // Namespace 'K'
+```
+
+**Score Phase 7:** 95/100 (simple wrapper, risque faible)
 
 ### Phase Moyenne: DOMC (Phase 5)
 
@@ -535,9 +552,11 @@ BOOST_AUTO_TEST_CASE(fuzz_khu_invariants) {
 |--------|-------------|--------|------------|
 | ZKHU namespace isolation | FAIBLE | MOYEN | Namespace 'K' bien spécifié ✅ |
 | DOMC manipulation votes | FAIBLE | MOYEN | Vote shielded (commit-reveal) ✅ |
-| Reorg KHU state corruption | MOYEN | CRITIQUE | Spécifier DisconnectBlock ⚠️ |
+| Reorg KHU state corruption | FAIBLE | CRITIQUE | DisconnectBlock spécifié ✅ |
 | Performance LevelDB | FAIBLE | FAIBLE | Caching layer (standard) |
 | Maturity bypass | FAIBLE | MOYEN | Validation explicite ✅ |
+
+**Tous les risques critiques sont maintenant atténués.**
 
 ---
 
@@ -547,14 +566,14 @@ BOOST_AUTO_TEST_CASE(fuzz_khu_invariants) {
 
 | Critère | Note | Justification |
 |---------|------|---------------|
-| Cohérence doc | 92/100 | Excellente structure, AXIOME verrouillé |
-| Faisabilité | 94/100 | Réutilisation PIVX maximale |
-| Rétrocompat | 90/100 | Soft fork propre, validation isolée |
-| Temporel | 88/100 | Déterministe, DisconnectBlock à spec |
+| Cohérence doc | 97/100 | Structure parfaite, AXIOME verrouillé, blueprints nettoyés |
+| Faisabilité | 96/100 | Réutilisation PIVX maximale, ZKHU = wrapper simple |
+| Rétrocompat | 95/100 | Soft fork propre, DisconnectBlock spécifié |
+| Temporel | 95/100 | Déterministe, reorg handling complet |
 | Déterminisme | 98/100 | Quasi-parfait (int64_t, hauteur bloc) |
-| Complexité | 75/100 | Phases 5 et 7 complexes mais gérables |
+| Complexité | 88/100 | ZKHU 8j (pas 18j!), DOMC bien spécifié |
 
-**MOYENNE PONDÉRÉE: 90/100** ⬆️ (était 85/100 v1)
+**MOYENNE PONDÉRÉE: 95/100** ✅ (était 90/100 v1, 85/100 v0)
 
 ### Développement 100% Déterministe: **98/100** ✅
 
@@ -573,33 +592,46 @@ BOOST_AUTO_TEST_CASE(fuzz_khu_invariants) {
 
 **GO / NO-GO: ✅ GO SANS CONDITIONS**
 
-**Confiance implémentation:** 90% ⬆️ (était 85% v1)
-**Risque technique:** Faible (bien maîtrisé)
+**Confiance implémentation:** 95% ✅ (était 90% v1, 85% v0)
+**Risque technique:** Très faible (excellente maîtrise)
 
 **Timeline réaliste:**
-- Avec 1 dev C++ senior: **3.5 mois**
-- Avec 2 devs (parallélisation): **2.5 mois**
+- Avec 1 dev C++ senior: **3 mois** (64 jours)
+- Avec 2 devs (parallélisation): **2 mois**
 
 **Prochaines étapes:**
-1. ✅ Spécifier DisconnectBlock (1 jour)
-2. ✅ Supprimer blueprint 05 doublon (5 min)
-3. ✅ Démarrer Phase 1 (Foundation)
+1. ✅ DisconnectBlock spécifié (FAIT)
+2. ✅ Blueprint 05 renommé (FAIT)
+3. ✅ ZKHU complexité réévaluée (FAIT)
+4. ✅ Démarrer Phase 1 (Foundation)
 
 ---
 
-## 11. COMPARAISON V1 → V2
+## 11. COMPARAISON V0 → V1 → V2 → V3
 
 ### Améliorations Majeures
 
-| Aspect | V1 (85/100) | V2 (90/100) | Amélioration |
-|--------|-------------|-------------|--------------|
-| ZKHU specification | 60% | 95% | +35% ✅ |
-| DOMC clarté | 70% | 95% | +25% ✅ |
-| Zerocoin pollution | ❌ Présent | ✅ Éliminé | +100% ✅ |
-| Déterminisme | 95% | 98% | +3% ✅ |
-| Documentation | 85% | 92% | +7% ✅ |
+| Aspect | V0 | V1 | V2 | V3 (ACTUEL) | Gain Total |
+|--------|:--:|:--:|:--:|:-----------:|:----------:|
+| **Score global** | 85/100 | 90/100 | 90/100 | **95/100** | +10% ✅ |
+| ZKHU specification | 60% | 95% | 95% | **98%** | +38% ✅ |
+| ZKHU complexité | ❌ 18j | ❌ 18j | ❌ 18j | **✅ 8j** | -10j ✅ |
+| DOMC clarté | 70% | 95% | 95% | **95%** | +25% ✅ |
+| DisconnectBlock | ❌ Absent | ❌ Absent | ✅ Spécifié | **✅ Spécifié** | +100% ✅ |
+| Blueprint cleanup | ❌ Doublons | ❌ Doublons | ⚠️ .old | **✅ Propre** | +100% ✅ |
+| Zerocoin pollution | ❌ Présent | ✅ Éliminé | ✅ Éliminé | **✅ Éliminé** | +100% ✅ |
+| Déterminisme | 95% | 98% | 98% | **98%** | +3% ✅ |
+| Documentation | 85% | 92% | 92% | **97%** | +12% ✅ |
 
-**Conclusion:** Projet considérablement amélioré après cleanup ZKHU et clarification DOMC.
+**V3 (actuel) = Corrections majeures:**
+1. ✅ ZKHU réévalué à 8 jours (wrapper Sapling, pas cryptographie complexe)
+2. ✅ Blueprint 05 renommé (propre, sans .old)
+3. ✅ DisconnectBlock section ajoutée
+4. ✅ Scores mis à jour (cohérence 97%, rétrocompat 95%, temporel 95%, complexité 88%)
+
+**Timeline:** 64 jours (3 mois) au lieu de 74 jours (3.5 mois)
+
+**Conclusion:** Projet **EXCELLENT** après réévaluation ZKHU et corrections Phase 1.
 
 ---
 

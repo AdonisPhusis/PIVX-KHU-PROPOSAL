@@ -312,7 +312,28 @@ KHU_T → STAKE → ZKHU → UNSTAKE → KHU_T
 // ✅ Aucun chevauchement de clés — isolation complète
 ```
 
-**RÉFÉRENCE DÉTAILLÉE:** `docs/blueprints/07-ZKHU-SAPLING-STAKE.md`
+**9. COMPLEXITÉ IMPLÉMENTATION ZKHU: FAIBLE-MOYENNE**
+
+```
+ZKHU = Wrapper Sapling existant (8 jours-homme)
+
+❌ Pas de nouveau circuit cryptographique
+❌ Pas de modification code Sapling
+✅ Appel fonctions PIVX Shield existantes
+✅ Namespace 'K' isolation (clés LevelDB différentes)
+```
+
+**Breakdown effort:**
+- STAKE (T→Z): 3 jours (appel CreateSaplingNote())
+- UNSTAKE (Z→T): 3 jours (appel ValidateSaplingSpend())
+- Namespace 'K' setup: 1 jour (DB keys)
+- Tests: 1 jour
+
+**Total Phase 7 ZKHU: 8 jours** (pas 18 jours!)
+
+**Raison:** Tout est déjà dans PIVX. ZKHU juste réutilise avec namespace séparé.
+
+**RÉFÉRENCE DÉTAILLÉE:** `docs/blueprints/05-ZKHU-SAPLING-STAKE.md`
 
 ### 1.4 Nomenclature PIVX Obligatoire
 

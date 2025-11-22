@@ -35,7 +35,55 @@ ZKHU réutilise les primitives Sapling **SANS MODIFICATION** :
 
 ---
 
-## 2. INTERDICTIONS
+## 2. ESTIMATION COMPLEXITÉ IMPLÉMENTATION
+
+**COMPLEXITÉ: FAIBLE-MOYENNE** (8 jours-homme)
+
+ZKHU réutilise INTÉGRALEMENT le code Sapling existant de PIVX. L'implémentation consiste principalement à **appeler les fonctions Sapling existantes** avec un namespace LevelDB différent.
+
+### 2.1 Breakdown Effort
+
+| Tâche | Jours | Raison |
+|-------|-------|--------|
+| STAKE (T→Z) | 3 | Appel CreateSaplingNote() existant + namespace 'K' |
+| UNSTAKE (Z→T) | 3 | Appel ValidateSaplingSpend() existant + bonus calc |
+| Namespace 'K' setup | 1 | Clés LevelDB 'K'+'A/N/T' (simple) |
+| Tests maturity + bonus | 1 | Tests unitaires/fonctionnels |
+| **TOTAL** | **8 jours** | Pas de cryptographie nouvelle |
+
+### 2.2 Code Existant Réutilisé (PIVX Shield)
+
+```cpp
+✅ libsapling/sapling_core.cpp        // Circuits zk-SNARK (inchangés)
+✅ sapling/saplingscriptpubkeyman.cpp // Note creation (réutilisé)
+✅ sapling/transaction_builder.cpp    // Proof generation (réutilisé)
+✅ validation.cpp (Sapling validation) // Spend validation (réutilisé)
+```
+
+**Nouveaux fichiers ZKHU (~1500 lignes total):**
+
+```cpp
+src/khu/khu_stake.h/cpp      ~600 lignes  // Wrapper STAKE T→Z
+src/khu/khu_unstake.h/cpp    ~500 lignes  // Wrapper UNSTAKE Z→T
+src/khu/zkhu_db.h/cpp        ~400 lignes  // Namespace 'K' LevelDB
+```
+
+### 2.3 Pas de Nouveau Circuit
+
+```
+❌ Aucune modification cryptographique
+❌ Aucun nouveau circuit zk-SNARK
+❌ Aucune preuve à recalculer
+✅ Appel SaplingNote::Create() existant
+✅ Appel SaplingSpendDescription::Verify() existant
+✅ Juste namespace 'K' différent de 'S'
+```
+
+**Conclusion:** ZKHU n'est PAS une implémentation cryptographique complexe. C'est un **wrapper léger** autour de Sapling PIVX avec isolation namespace.
+
+---
+
+## 3. INTERDICTIONS
 
 ```
 ❌ Aucun Z→Z (pas de transfert ZKHU → ZKHU)
