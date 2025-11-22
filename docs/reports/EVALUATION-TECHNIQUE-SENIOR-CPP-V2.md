@@ -544,13 +544,13 @@ src/budget/budgetmanager.cpp     ~40 lignes   // CreateKHUAutoProposal
    - R_next visible dans proposal réseau
    - LP adaptent stratégies (prévisibilité)
 
-4. **Activation** (bloc 215520)
-   - R_next activé, verrouillé 4 mois
+4. **Activation** (bloc 169920)
+   - R_next activé, verrouillé 3 mois
 
-**Cycle complet:** 215520 blocs (~4.5 mois)
-- Phase 1 ACTIF: 175200 blocs (4 mois) — R% verrouillé
+**Cycle complet:** 169920 blocs (4 mois)
+- Phase 1 ACTIF: 129600 blocs (3 mois) — R% verrouillé
 - Phase 2 COMMIT: 20160 blocs (2 semaines) — Votes cachés
-- Phase 3 REVEAL: 1 bloc (195360) — Consensus automatique
+- Phase 3 REVEAL: 1 bloc (149760) — Consensus automatique
 - Phase 4 PRÉAVIS: 20160 blocs (2 semaines) — R_next visible
 
 **Score Phase 5:** 90/100 (bien spécifié, simple, déterministe)

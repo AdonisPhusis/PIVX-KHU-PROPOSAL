@@ -548,12 +548,12 @@ assert(new_Ur == old_Ur - bonus_khu);
 **ARCHITECTURE:** Commit-Reveal + Auto-Proposal DAO
 - Extension `CMasternodePing` avec 3 champs: `nRCommitment`, `nRProposal`, `nRSecret`
 - Vote caché (commit SHA256) pendant 2 semaines
-- Reveal automatique au bloc fixe (195360)
+- Reveal automatique au bloc fixe (149760)
 - Auto-proposal création avec R_next (préavis 2 semaines)
-- Cycle complet: 215520 blocs (~4.5 mois)
+- Cycle complet: 169920 blocs (4 mois)
 
-**CYCLE 4.5 MOIS (4 Phases):**
-1. **Phase 1 — ACTIF** (175200 blocs = 4 mois)
+**CYCLE 4 MOIS (4 Phases):**
+1. **Phase 1 — ACTIF** (129600 blocs = 3 mois)
    - R% verrouillé (garantie LP)
    - Aucun changement possible
 
@@ -561,7 +561,7 @@ assert(new_Ur == old_Ur - bonus_khu);
    - MN créent commitments SHA256(R_proposal || secret)
    - Votes totalement cachés (privacy)
 
-3. **Phase 3 — REVEAL** (bloc 195360 fixe)
+3. **Phase 3 — REVEAL** (bloc 149760 fixe)
    - Validation automatique reveals
    - Consensus = moyenne(reveals_valides)
    - Auto-proposal créée: "KHU_R_22.50_NEXT"
@@ -570,7 +570,7 @@ assert(new_Ur == old_Ur - bonus_khu);
    - R_next visible dans auto-proposal réseau
    - LP adaptent stratégies (prévisibilité)
 
-5. **Activation** (bloc 215520)
+5. **Activation** (bloc 169920)
    - R_next activé → nouveau cycle Phase 1
 
 **Deliverables:**
@@ -606,8 +606,8 @@ int pos = GetKHUCyclePosition(nHeight, nActivationHeight);
 assert(pos >= 0 && pos < KHU_R_CYCLE_BLOCKS);
 
 // Dates fixes (prévisibilité)
-assert(revealHeight == cycleStart + 175200 + 20160);
-assert(activationHeight == cycleStart + 215520);
+assert(revealHeight == cycleStart + 129600 + 20160);
+assert(activationHeight == cycleStart + 169920);
 ```
 
 **Exemple usage:**
@@ -618,28 +618,28 @@ assert(activationHeight == cycleStart + 215520);
   "status": "committed",
   "R_proposal": 2250,
   "commitment": "a3f5b2c7d1e9...",
-  "reveal_height": 195360
+  "reveal_height": 149760
 }
 
-# PHASE 3 (Reveal): Automatique au bloc 195360
+# PHASE 3 (Reveal): Automatique au bloc 149760
 # → ProcessKHUReveal() valide tous les reveals
 # → Crée auto-proposal "KHU_R_22.70_NEXT"
 
 # PHASE 4 (Préavis): Query status cycle
 ./pivx-cli getkhugovernance
 {
-  "cycle_position": 200000,
+  "cycle_position": 155000,
   "phase": "notice",
   "R_current": 25.00,
   "R_next": 22.70,
   "R_max": 29.00,
-  "reveal_height": 195360,
-  "activation_height": 215520,
+  "reveal_height": 149760,
+  "activation_height": 169920,
   "valid_commits": 350
 }
 
 # PHASE 1 (Actif): Nouveau cycle après activation
-# → R% = 22.70% verrouillé 4 mois
+# → R% = 22.70% verrouillé 3 mois
 ```
 
 **Complexité:** MOYENNE (~6-7 jours)

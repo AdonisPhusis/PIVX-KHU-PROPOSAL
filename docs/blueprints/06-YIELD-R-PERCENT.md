@@ -480,7 +480,7 @@ Design optimal combinant:
 - ✅ **Préavis LP**: R_next visible 2 semaines avant activation
 - ✅ **Simple**: Extension ping MN + validation automatique
 
-**CYCLE COMPLET: 215520 blocs (~4.5 mois)**
+**CYCLE COMPLET: 169920 blocs (4 mois)**
 
 ```cpp
 /**
@@ -534,21 +534,21 @@ class CMasternodePing {
 - **Vote caché** : Commitment SHA256 (invisible pendant 2 semaines)
 - **Format** : XX.XX% (2 decimals) — Ex: 25.55%, 20.20%
 - **Agrégation** : Moyenne arithmétique (reveals valides uniquement)
-- **Durée application** : 4 mois (175200 blocs = garantie LP)
-- **Cycle total** : 4.5 mois (215520 blocs)
+- **Durée application** : 3 mois (129600 blocs = R% verrouillé)
+- **Cycle total** : 4 mois (169920 blocs)
 - **Préavis** : 2 semaines (R_next visible avant activation)
 
-**TIMELINE COMPLÈTE (Cycle 4.5 mois) :**
+**TIMELINE COMPLÈTE (Cycle 4 mois) :**
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ PHASE 1 : R% ACTIF (VERROUILLÉ 4 MOIS = 175200 blocs)          │
+│ PHASE 1 : R% ACTIF (VERROUILLÉ 3 MOIS = 129600 blocs)          │
 ├─────────────────────────────────────────────────────────────────┤
 │ • R% = 25.00% GARANTI (aucun changement possible)              │
 │ • LP peuvent planifier avec certitude                          │
 │ • Période stable pour stratégies                               │
 │                                                                 │
-│ Blocs 0 ─────────────────────────────────► 175200              │
+│ Blocs 0 ─────────────────────────────────► 129600              │
 │         └────── R% verrouillé = 25.00% ────┘                   │
 └─────────────────────────────────────────────────────────────────┘
 
@@ -564,14 +564,14 @@ class CMasternodePing {
 │ 🔒 Personne ne peut voir les R% proposés                       │
 │ 🔒 Impossible de copier/influencer autres votes                │
 │                                                                 │
-│ Blocs 175200 ───────────────────────► 195360                   │
+│ Blocs 129600 ───────────────────────► 149760                   │
 │         └──── Commitments (cachés) ────┘                       │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│ PHASE 3 : REVEAL AUTOMATIQUE (BLOC 195360 — DATE FIXE)         │
+│ PHASE 3 : REVEAL AUTOMATIQUE (BLOC 149760 — DATE FIXE)         │
 ├─────────────────────────────────────────────────────────────────┤
-│ • AU BLOC 195360 EXACTEMENT (deadline automatique):            │
+│ • AU BLOC 149760 EXACTEMENT (deadline automatique):            │
 │   1. MN doivent reveal (R_proposal + secret)                   │
 │   2. Validation: SHA256(R_proposal || secret) == commitment    │
 │   3. Si valide → vote compté ✅                                 │
@@ -583,9 +583,9 @@ class CMasternodePing {
 │ • Auto-proposal créée automatiquement:                         │
 │   Nom: "KHU_R_22.50_NEXT"                                      │
 │   Montant: 2250 (R% encodé)                                    │
-│   Activation: Bloc 215520                                      │
+│   Activation: Bloc 169920                                      │
 │                                                                 │
-│ Bloc 195360 ← REVEAL DEADLINE (automatique)                    │
+│ Bloc 149760 ← REVEAL DEADLINE (automatique)                    │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
@@ -594,25 +594,25 @@ class CMasternodePing {
 │ • R_next = 22.50% VISIBLE dans auto-proposal réseau            │
 │ • LP peuvent voir nouveau R% 2 SEMAINES AVANT activation       │
 │ • Temps adaptation stratégies / rééquilibrage pools            │
-│ • Calendrier prévisible (bloc 215520 connu à l'avance)        │
+│ • Calendrier prévisible (bloc 169920 connu à l'avance)        │
 │                                                                 │
 │ 👁️ TRANSPARENCE TOTALE (après reveal)                          │
 │ 📅 DATE ACTIVATION FIXE (pas de surprise)                      │
 │                                                                 │
-│ Blocs 195360 ───────────────────────► 215520                   │
+│ Blocs 149760 ───────────────────────► 169920                   │
 │         └──── R_next = 22.50% visible ──┘                      │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│ ACTIVATION AUTOMATIQUE (BLOC 215520 — DATE FIXE)                │
+│ ACTIVATION AUTOMATIQUE (BLOC 169920 — DATE FIXE)                │
 ├─────────────────────────────────────────────────────────────────┤
-│ • R% = 22.50% activé (verrouillé 4 mois)                       │
+│ • R% = 22.50% activé (verrouillé 3 mois)                       │
 │ • Nouveau cycle Phase 1 commence                                │
-│ • Prochain commit dans 175200 blocs (prévisible)               │
+│ • Prochain commit dans 129600 blocs (prévisible)               │
 └─────────────────────────────────────────────────────────────────┘
 
-CYCLE TOTAL: 215520 blocs (~4.5 mois) puis répétition infinie
-Calendrier prévisible: Activation tous les 215520 blocs
+CYCLE TOTAL: 169920 blocs (4 mois) puis répétition infinie
+Calendrier prévisible: Activation tous les 169920 blocs
 ```
 
 ### 5.3 Implémentation C++ — Commit-Reveal + Auto-Proposal
@@ -631,8 +631,8 @@ Calendrier prévisible: Activation tous les 215520 blocs
 /**
  * Constantes cycle DOMC R%
  */
-const int KHU_R_CYCLE_BLOCKS = 215520;      // 4.5 mois total
-const int KHU_R_ACTIVE_BLOCKS = 175200;     // 4 mois R% verrouillé
+const int KHU_R_CYCLE_BLOCKS = 169920;      // 4 mois total
+const int KHU_R_ACTIVE_BLOCKS = 129600;     // 3 mois R% verrouillé
 const int KHU_R_COMMIT_BLOCKS = 20160;      // 2 semaines commit (caché)
 const int KHU_R_NOTICE_BLOCKS = 20160;      // 2 semaines préavis (visible)
 
@@ -1050,22 +1050,22 @@ UniValue getkhugovernance(const JSONRPCRequest& request)
 /**
  * EXEMPLE COMPLET: Cycle DOMC Commit-Reveal
  *
- * Cycle #1: Blocs 0 → 215520
+ * Cycle #1: Blocs 0 → 169920
  * =============================
  *
- * PHASE 1: ACTIF (0 → 175200)
+ * PHASE 1: ACTIF (0 → 129600)
  * ---------------------------
  * Bloc 0:
- *   R% = 25.00% ACTIVÉ (verrouillé 4 mois)
+ *   R% = 25.00% ACTIVÉ (verrouillé 3 mois)
  *
- * Blocs 1-175199:
+ * Blocs 1-129599:
  *   R% = 25.00% GARANTI
  *   Aucun changement possible
  *   LP planifient avec certitude
  *
- * PHASE 2: COMMIT (175200 → 195360)
+ * PHASE 2: COMMIT (129600 → 149760)
  * ----------------------------------
- * Bloc 175200:
+ * Bloc 129600:
  *   Période commit commence ✅
  *
  * MN1 exécute:
@@ -1082,13 +1082,13 @@ UniValue getkhugovernance(const JSONRPCRequest& request)
  *
  * ... (tous MN votent pendant 2 semaines)
  *
- * Blocs 175201-195359:
+ * Blocs 129601-149759:
  *   🔒 Votes CACHÉS (commitments SHA256 uniquement)
  *   🔒 Personne ne peut voir les R% proposés
  *
- * PHASE 3: REVEAL (Bloc 195360)
+ * PHASE 3: REVEAL (Bloc 149760)
  * ------------------------------
- * Bloc 195360 ATTEINT:
+ * Bloc 149760 ATTEINT:
  *   ProcessKHUReveal() exécuté automatiquement
  *
  *   MN1 ping contient:
@@ -1122,34 +1122,34 @@ UniValue getkhugovernance(const JSONRPCRequest& request)
  *   Auto-Proposal créée:
  *     Nom: "KHU_R_22.70_NEXT"
  *     Montant: 22.70 PIVX (symbolique)
- *     Activation: Bloc 215520
+ *     Activation: Bloc 169920
  *
- * PHASE 4: PRÉAVIS (195361 → 215520)
+ * PHASE 4: PRÉAVIS (149761 → 169920)
  * -----------------------------------
- * Bloc 195361:
+ * Bloc 149761:
  *   R_next = 22.70% VISIBLE (auto-proposal réseau)
  *
- * Blocs 195362-215519:
+ * Blocs 149762-169919:
  *   👁️ R_next visible 2 semaines
  *   👁️ LP adaptent stratégies
- *   📅 Activation bloc 215520 (prévisible)
+ *   📅 Activation bloc 169920 (prévisible)
  *
- * ACTIVATION (Bloc 215520)
+ * ACTIVATION (Bloc 169920)
  * ------------------------
- * Bloc 215520 ATTEINT:
- *   R% = 22.70% ACTIVÉ (verrouillé 4 mois)
+ * Bloc 169920 ATTEINT:
+ *   R% = 22.70% ACTIVÉ (verrouillé 3 mois)
  *   Nouveau Cycle #2 commence (positions reset)
  *
  * CYCLE #2 COMMENCE
  * =================
- * Bloc 215520 → 431040 (prochain cycle)
+ * Bloc 169920 → 339840 (prochain cycle)
  *
  * TIMELINE VISUELLE:
  *
- * 0─────────175200────195360────215520────────────────►
+ * 0─────────129600────149760────169920────────────────►
  * │   ACTIF   │ COMMIT │ NOTICE │   ACTIF (cycle 2)
  * │ R=25.00%  │(caché) │R_next  │   R=22.70%
- * │ 4 mois    │2 sem   │2 sem   │   4 mois
+ * │ 3 mois    │2 sem   │2 sem   │   3 mois
  * └───────────┴────────┴────────┴─────────────────────►
  *                      ▲
  *                   REVEAL
