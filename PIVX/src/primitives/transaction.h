@@ -258,6 +258,8 @@ public:
         PROUPREG = 3,
         PROUPREV = 4,
         LLMQCOMM = 5,
+        KHU_MINT = 6,      // Phase 2: PIV → KHU_T (1:1 ratio)
+        KHU_REDEEM = 7,    // Phase 2: KHU_T → PIV (1:1 ratio)
     };
 
     static const int16_t CURRENT_VERSION = TxVersion::LEGACY;
