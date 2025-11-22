@@ -265,8 +265,9 @@ total_emission(h) = 3 × reward_year(h)
 
 ```
 fees_pivx(h) → BURNED
+fees_khu_tx(h) → BURNED (payées en PIV, pas en KHU)
 
-fees_khu(h) = 0  ∀h
+∀ KHU transaction: fee ∈ PIV, fee ∉ KHU
 ```
 
 ### 7.5 Supply Cap

@@ -379,8 +379,14 @@ Total emission per block = 3 * reward_year
 
 ```
 All PIV transaction fees: BURNED (not given to block producer).
-KHU transaction fees: NONE (all KHU operations are feeless).
+KHU transaction fees: PIV (burned, same as PIV transactions).
 ```
+
+**Note importante :**
+- Les opérations KHU (MINT, REDEEM, STAKE, UNSTAKE, Transfer) paient des **fees en PIV**
+- Les fees PIV sont **BURN** (pas donnés au producteur de bloc)
+- **Aucun fee en KHU** : Impossible de payer fees avec KHU
+- Fees identiques aux transactions PIVX standard
 
 ### 5.5 Inviolabilité de l'Émission
 
@@ -921,7 +927,7 @@ vUpgrades[UPGRADE_KHU].nProtocolVersion = 70023;
 7.  Floating point arithmetic                  → FORBIDDEN (use int64_t only)
 8.  Multiple notes per STAKE                   → FORBIDDEN
 9.  Partial UNSTAKE                            → FORBIDDEN
-10. KHU fees (all KHU ops feeless)             → FORBIDDEN
+10. Feeless KHU operations (no PIV fees)       → FORBIDDEN
 11. Reorg beyond finalized height              → FORBIDDEN
 12. MINT without PIV burn                      → FORBIDDEN
 13. REDEEM without KHU_T destruction           → FORBIDDEN

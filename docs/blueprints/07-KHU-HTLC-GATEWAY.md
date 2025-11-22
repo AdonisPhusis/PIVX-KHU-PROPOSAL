@@ -1,4 +1,4 @@
-# 08 — KHU HTLC / GATEWAY BLUEPRINT
+# 07 — KHU HTLC / GATEWAY BLUEPRINT
 
 **Date:** 2025-11-22
 **Version:** 1.0
