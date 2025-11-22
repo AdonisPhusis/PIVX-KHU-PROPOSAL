@@ -129,6 +129,92 @@ PIVX Core (on-chain) = HTLC execution + atomicity + secret propagation
 
 **Référence:** `docs/blueprint-khu-htlc-gw.md`
 
+#### 1.3.7 SAPLING / ZKHU — RÈGLES GLOBALES (CANONIQUES)
+
+**⚠️ SECTION IMMUABLE — Ces règles définissent l'architecture ZKHU/Sapling et NE DOIVENT JAMAIS ÊTRE MODIFIÉES.**
+
+**RÈGLE 1 — INTERDICTION ABSOLUE ZEROCOIN / ZPIV**
+
+```
+❌ Ne JAMAIS utiliser quoi que ce soit de Zerocoin ou zPIV
+❌ Ne JAMAIS mentionner, imiter, réutiliser de code Zerocoin
+❌ Ne JAMAIS s'inspirer de l'architecture Zerocoin
+❌ Zerocoin est MORT et ne doit JAMAIS contaminer KHU
+```
+
+**RÈGLE 2 — ZKHU = STAKING ONLY (PAS Z→Z)**
+
+```
+✅ ZKHU est pour STAKING uniquement
+❌ ZKHU ne fait PAS de privacy spending
+❌ Pas de transactions Z→Z (ZKHU → ZKHU)
+❌ Pas de transactions ZKHU → Shield
+❌ Pas de transactions Shield → ZKHU
+❌ Pas de join-split
+❌ Pas de pool mixing
+
+Pipeline strict:
+  PIV → KHU_T → ZKHU → KHU_T → PIV
+  (T→Z pour stake, Z→T pour unstake, pas de Z→Z)
+```
+
+**RÈGLE 3 — CRYPTOGRAPHIE SAPLING PARTAGÉE, STOCKAGE LEVELDB SÉPARÉ**
+
+```
+✅ PARTAGÉ (Cryptographie):
+  - Circuits zk-SNARK Sapling (pas de modification)
+  - Format OutputDescription (512-byte memo)
+  - Algorithmes de commitment/nullifier
+  - Format de proof zk-SNARK
+
+❌ SÉPARÉ (Stockage LevelDB):
+  - zkhuTree ≠ saplingTree (merkle trees distincts)
+  - zkhuNullifierSet ≠ nullifierSet (nullifier sets distincts)
+  - Clés LevelDB préfixe 'K' pour ZKHU
+  - Clés LevelDB préfixe 'S'/'s' pour Shield
+  - Anonymity sets séparés (pas de pool mixing)
+```
+
+**RÈGLE 4 — CLÉS LEVELDB CANONIQUES (IMMUABLES)**
+
+```cpp
+// ZKHU (namespace 'K' — OBLIGATOIRE)
+'K' + 'A' + anchor_khu     → ZKHU SaplingMerkleTree
+'K' + 'N' + nullifier_khu  → ZKHU nullifier spent flag
+'K' + 'T' + note_id        → ZKHUNoteData (amount, Ur, height)
+
+// Shield (PIVX Sapling public — namespace 'S'/'s')
+'S' + anchor      → Shield SaplingMerkleTree
+'s' + nullifier   → Shield nullifier spent flag
+
+// ⚠️ CRITICAL: Aucun chevauchement de clés
+// ZKHU et Shield sont COMPLÈTEMENT isolés
+```
+
+**INTERDICTIONS ABSOLUES ZKHU/SAPLING:**
+
+```cpp
+❌ JAMAIS utiliser clés Shield ('S', 's') pour ZKHU
+❌ JAMAIS partager saplingTree entre ZKHU et Shield
+❌ JAMAIS partager nullifierSet entre ZKHU et Shield
+❌ JAMAIS permettre Z→Z transactions (ZKHU ↔ Shield)
+❌ JAMAIS mélanger anonymity sets ZKHU/Shield
+❌ JAMAIS modifier circuits zk-SNARK Sapling
+❌ JAMAIS réutiliser quoi que ce soit de Zerocoin/zPIV
+```
+
+**CONSÉQUENCES TECHNIQUES:**
+
+```
+1. ZKHU réutilise la cryptographie Sapling éprouvée (pas de nouveau circuit)
+2. ZKHU maintient ses propres structures de stockage (isolation complète)
+3. Pas de conversion ZKHU ↔ Shield possible (pas de Z→Z)
+4. Pas d'anonymity set partagé (ZKHU = staking, Shield = privacy)
+5. Audit et compliance ZKHU séparés de Shield
+```
+
+**RÉFÉRENCE DÉTAILLÉE:** `docs/blueprints/07-ZKHU-STAKE-UNSTAKE.md`
+
 ### 1.4 Nomenclature PIVX Obligatoire
 
 Le code doit respecter les conventions PIVX:
