@@ -18,62 +18,60 @@ ZKHU    : Sapling note (staking only)
 
 ## 2. GLOBAL STATE
 
-### 2.1 State Variables
+### 2.1 Structure canonique : KhuGlobalState
+
+La structure KhuGlobalState représente l'état économique global du système KHU à un height donné.
+
+Elle contient **14 champs**, définis comme suit :
 
 ```cpp
 struct KhuGlobalState {
-    // Collateral and supply
-    int64_t C;   // PIV collateral
-    int64_t U;   // KHU_T supply
+    int64_t  C;      // Collatéral total PIV (inclut collatéralisations de bonus)
+    int64_t  U;      // Supply totale KHU_T
+    int64_t  Cr;     // Collatéral réservé au pool de reward
+    int64_t  Ur;     // Reward accumulé (droits de reward)
 
-    // Reward pool
-    int64_t Cr;  // Reward pool
-    int64_t Ur;  // Reward rights
+    uint16_t R_annual;        // Paramètre DOMC (basis points, ex: 500 = 5.00%)
+    uint16_t R_MAX_dynamic;   // Limite supérieure votable dynamique
 
-    // DOMC parameters
-    uint16_t R_annual;                  // Current yield % (basis points, 0-3000)
-    uint16_t R_MAX_dynamic;             // Max votable R (basis points)
-    uint32_t last_domc_height;          // Last R change height
+    uint32_t last_domc_height;        // Dernière mise à jour DOMC
+    uint32_t domc_cycle_start;        // Début du cycle DOMC actif
+    uint32_t domc_cycle_length;       // 43200 blocs (cycle)
+    uint32_t domc_phase_length;       // 4320 blocs (commit/reveal)
 
-    // DOMC cycle
-    uint32_t domc_cycle_start;          // Cycle start height
-    uint32_t domc_cycle_length;         // Full cycle length (blocks)
-    uint32_t domc_phase_length;         // Phase length (blocks)
+    uint32_t last_yield_update_height; // Dernière application yield
 
-    // Yield scheduler
-    uint32_t last_yield_update_height;  // Last Cr/Ur update (1440 blocks)
-
-    // Chain tracking
-    uint32_t nHeight;
-    uint256 hashBlock;
-    uint256 hashPrevState;
+    uint32_t nHeight;       // Hauteur de cet état
+    uint256  hashPrevState; // Hash de l'état précédent
+    uint256  hashBlock;     // Hash du bloc ayant produit cet état
 };
 ```
 
-**Note:** Ces champs constituent le KhuGlobalState canonique. Toute implémentation doit refléter EXACTEMENT cette structure.
+**Note:** Ces 14 champs constituent le KhuGlobalState canonique. Toute implémentation doit refléter EXACTEMENT cette structure.
 
-### 2.2 Invariants (Version Canonique)
+### 2.2 Invariants (version canonique)
 
-Les invariants de base du système sont:
+Les invariants doivent être vrais **à chaque fin de ConnectBlock()** :
 
-**INVARIANT_1 (CD):**
-- Si `U == 0` alors `C == 0`
-- Sinon, `C == U` (égalité stricte)
+**INVARIANT 1 — Collateralization (CD = 1) :**
+```
+(U == 0 && C == 0)  OR  (C == U)
+```
 
-**INVARIANT_2 (CDr):**
-- Si `Ur == 0` alors `Cr == 0`
-- Sinon, `Cr == Ur` (égalité stricte)
+**INVARIANT 2 — Reward Collateralization (CDr = 1) :**
+```
+(Ur == 0 && Cr == 0)  OR  (Cr == Ur)
+```
 
 **Vérification:**
 
-Ces invariants doivent être vrais **à chaque fin de ConnectBlock()**.
+Les invariants doivent être vérifiés immédiatement après :
+- ApplyDailyYield
+- ApplyKHUTransactions
+- ApplyKhuUnstake
+- ApplyBlockReward
 
 Tout bloc pour lequel l'un de ces invariants est violé doit être rejeté avec code `BLOCK_CONSENSUS`.
-
-**Cas particuliers:**
-- Au genesis: U=0 ⇒ C=0 est autorisé (état initial)
-- Après premier MINT/REDEEM: égalité stricte C==U doit toujours tenir
-- Après premier yield: égalité stricte Cr==Ur doit toujours tenir
 
 **Atomicité:**
 
@@ -132,6 +130,75 @@ PIV → MINT → KHU_T → STAKE → ZKHU → UNSTAKE → KHU_T → REDEEM → P
 ```
 
 **No other path allowed.**
+
+### 3.5 Atomicité du Double Flux (semantics canonique)
+
+Les opérations suivantes constituent une *transition atomique unique* :
+
+**1. Yield quotidien (après maturité 3 jours et toutes les 1440 blocs) :**
+```
+Ur  += Δ
+Cr  += Δ
+```
+
+**2. UNSTAKE d'une note ZKHU :**
+```
+U   += B
+C   += B
+Cr  -= B
+Ur  -= B
+```
+(où B = Ur accumulé pour cette note)
+
+**Règles d'atomicité:**
+
+Ces mises à jour doivent être appliquées :
+- dans le même bloc
+- dans la même exécution de ConnectBlock()
+- sous LOCK(cs_khu)
+- sans état intermédiaire persistant
+
+Toute exécution partielle DOIT provoquer:
+```
+reject_block("khu-invariant-violation")
+```
+
+### 3.6 Atomicité MINT & REDEEM
+
+**MINT :**
+```
+C += amount
+U += amount
+```
+
+**REDEEM :**
+```
+C -= amount
+U -= amount
+```
+
+Ces opérations sont atomiques : C et U NE DOIVENT JAMAIS être modifiés séparément.
+
+### 3.7 Pipeline canonique KHU (immuable)
+
+```
+PIV → MINT → KHU_T → STAKE → ZKHU → UNSTAKE → KHU_T → REDEEM → PIV
+```
+
+Aucune autre transformation n'est autorisée.
+
+### 3.8 Ordre canonique ConnectBlock()
+
+```
+1. LoadKhuState(height - 1)
+2. ApplyDailyYieldIfNeeded()
+3. ProcessKHUTransactions()
+4. ApplyBlockReward()
+5. CheckInvariants()
+6. SaveKhuState(height)
+```
+
+Cet ordre est **immuable** et doit être respecté strictement dans l'implémentation.
 
 ---
 
@@ -938,15 +1005,46 @@ Block (ACTIVATION_HEIGHT + <TBD>):
 
 ---
 
-## 19. REFERENCE IMPLEMENTATION
+## 19. NOTES DE CONSENSUS (OBLIGATOIRES)
 
-All consensus rules must be implemented deterministically in C++17 or later.
+Les règles suivantes sont **absolues** et constituent le fondement du consensus KHU :
 
-Floating point arithmetic is PROHIBITED.
+### 19.1 Atomicité des mutations d'état
 
-All amounts are int64_t (satoshis).
+- C/U et Cr/Ur ne doivent **jamais** être modifiés séparément
+- Toutes les mutations C/U/Cr/Ur doivent être atomiques
+- Toute séparation de ces mutations constitue une violation de consensus
 
-All calculations must be reproducible across platforms.
+### 19.2 Ordre d'exécution
+
+L'ordre ConnectBlock() est **immuable** :
+
+```
+1. LoadKhuState(height - 1)
+2. ApplyDailyYieldIfNeeded()
+3. ProcessKHUTransactions()
+4. ApplyBlockReward()
+5. CheckInvariants()
+6. SaveKhuState(height)
+```
+
+Toute modification de cet ordre constitue un consensus break.
+
+### 19.3 Verrouillage
+
+Toute fonction modifiant C, U, Cr, ou Ur DOIT :
+- Acquérir le lock `cs_khu` avant toute mutation
+- Maintenir ce lock pendant toutes les mutations atomiques
+- Appeler `CheckInvariants()` avant de relâcher le lock
+
+### 19.4 Rejet de bloc
+
+Toute déviation des règles ci-dessus DOIT provoquer :
+```
+reject_block("khu-invariant-violation")
+```
+
+Aucune correction automatique. Aucune tolérance. Rejet immédiat.
 
 ---
 
