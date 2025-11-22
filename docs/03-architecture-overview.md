@@ -223,9 +223,360 @@ bool DisconnectBlock(const CBlock& block, CBlockIndex* pindex, CCoinsViewCache& 
 }
 ```
 
-**Alternative (Delta-based):**
-- Stocker les deltas (C_delta, U_delta, Cr_delta, Ur_delta) par bloc
-- Revert = soustraire les deltas
+### 3.5 DÉCISIONS ARCHITECTURALES PHASE 1 (CANONIQUES)
+
+Cette section documente les **décisions architecturales définitives** prises après audit complet de la documentation et analyse des trade-offs. Ces décisions sont **IMMUABLES** et doivent être suivies à la lettre durant l'implémentation Phase 1.
+
+---
+
+#### 3.5.1 Reorg Strategy = STATE-BASED (DÉCISION FINALE)
+
+**Choix:** Stocker l'état complet `KhuGlobalState` à chaque bloc
+
+**Justification:**
+- Finalité LLMQ → max reorg = 12 blocs
+- 12 × sizeof(KhuGlobalState) = 12 × 150 bytes = 1.8 KB overhead (négligeable)
+- Pas de deltas, pas de journaling, pas de complexité
+- DisconnectBlock() = simple lecture de l'état précédent
+
+**Alternative rejetée:** Delta-based (stocker uniquement les changements)
+- Complexité accrue (calcul inverse des deltas)
+- Performance équivalente pour max 12 blocs
+- Risque d'erreur dans le calcul inverse
+- Pas de gain de stockage significatif
+
+**Implémentation obligatoire:**
+
+```cpp
+// src/validation.cpp DisconnectBlock()
+bool DisconnectBlock(const CBlock& block, CBlockIndex* pindex, CCoinsViewCache& view) {
+    if (!NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_KHU))
+        return true;
+
+    // ⚠️ DÉCISION ARCHITECTE: STATE-BASED reorg
+    // Load complete previous state from DB (no delta computation)
+    LOCK2(cs_main, cs_khu);
+
+    KhuGlobalState prev;
+    if (!pKHUStateDB->ReadKHUState(pindex->nHeight - 1, prev))
+        return error("KHU: Failed to load previous state at height %d", pindex->nHeight - 1);
+
+    // Replace current state with previous state (atomic revert)
+    khuGlobalState = prev;
+
+    return true;
+}
+```
+
+**Propriétés garanties:**
+- ✅ Reorg en O(1) par bloc (lecture simple)
+- ✅ Pas de risque de désynchronisation delta
+- ✅ Invariants vérifiables à chaque height
+- ✅ Audit trail complet (état à chaque bloc disponible)
+
+**Interdit:**
+- ❌ Calculer deltas inverses
+- ❌ Implémenter journaling
+- ❌ Stocker uniquement hashPrevState sans état complet
+- ❌ Utiliser snapshot tous les N blocs
+
+**Validation:**
+```bash
+# Vérifier que DisconnectBlock() ne calcule PAS de deltas
+grep -A20 "DisconnectBlock.*KHU" src/validation.cpp | grep -E "(delta|inverse|journal)"
+# Expected output: RIEN (aucune occurrence)
+```
+
+---
+
+#### 3.5.2 Per-Note Ur Tracking = STREAMING VIA LEVELDB CURSOR (DÉCISION FINALE)
+
+**Choix:** Itération note par note via curseur LevelDB, batch updates via CDBBatch
+
+**Justification:**
+- Yield appliqué 1× par 1440 blocs → performance pas critique
+- Évite OOM (Out Of Memory) avec large note set (>100k notes)
+- CDBBatch permet updates efficaces sans flush par note
+- Streaming maintient empreinte mémoire constante
+
+**Alternative rejetée:** Charger toutes les notes en RAM
+- Risque OOM avec grand nombre de stakers
+- Empreinte mémoire proportionnelle au nombre de notes
+- Pas de gain de performance significatif (yield 1×/jour)
+
+**Implémentation obligatoire:**
+
+```cpp
+// src/khu/khu_yield.cpp
+bool ApplyDailyYield(KhuGlobalState& state, uint32_t nHeight) {
+    AssertLockHeld(cs_khu);
+
+    // ⚠️ DÉCISION ARCHITECTE: STREAMING via LevelDB cursor
+    // Never load all notes in RAM - iterate one by one
+
+    int64_t total_daily_yield = 0;
+    CDBBatch batch(CLIENT_VERSION);
+
+    // Create cursor to iterate active ZKHU notes
+    std::unique_ptr<CKHUNoteCursor> cursor = pKHUNoteDB->GetCursor();
+
+    // Stream through all active notes
+    for (cursor->SeekToFirst(); cursor->Valid(); cursor->Next()) {
+        CKHUNoteData note = cursor->GetNote();
+
+        // Skip spent notes (marked via flag in DB, not deletion)
+        if (note.fSpent)
+            continue;
+
+        // Check maturity
+        uint32_t age = nHeight - note.nStakeStartHeight;
+        if (age < MATURITY_BLOCKS)
+            continue;
+
+        // Calculate daily yield for this note
+        // ⚠️ Division BEFORE multiplication to prevent overflow
+        int64_t daily = (note.amount / 10000) * state.R_annual / 365;
+
+        // Accumulate in note (batch update, not immediate write)
+        note.Ur_accumulated += daily;
+        batch.Write(std::make_pair('N', note.nullifier), note);
+
+        // Accumulate global total
+        total_daily_yield += daily;
+    }
+
+    // Update global state (atomically: Cr and Ur together)
+    state.Cr += total_daily_yield;
+    state.Ur += total_daily_yield;
+
+    // Flush batch to DB (single atomic write)
+    pKHUNoteDB->WriteBatch(batch);
+
+    return state.CheckInvariants();
+}
+```
+
+**Propriétés garanties:**
+- ✅ Empreinte mémoire O(1) (indépendante du nombre de notes)
+- ✅ Pas de OOM avec 1M+ notes actives
+- ✅ Batch updates efficient (single LevelDB write)
+- ✅ Yield correctness vérifiable note par note
+
+**Interdit:**
+- ❌ `std::vector<CKHUNoteData> allNotes = LoadAllNotes();`
+- ❌ Flush DB après chaque note
+- ❌ Charger notes en cache global
+- ❌ Précharger notes en mémoire "pour performance"
+
+**Validation:**
+```bash
+# Vérifier usage de curseur (pas de LoadAll)
+grep -r "LoadAllNotes\|GetAllNotes" src/khu/
+# Expected output: RIEN (aucune fonction de chargement en masse)
+
+# Vérifier présence de cursor
+grep -r "CKHUNoteCursor\|GetCursor" src/khu/khu_yield.cpp
+# Expected output: au moins 1 occurrence
+```
+
+---
+
+#### 3.5.3 Rolling Frontier Tree = MARQUAGE, PAS SUPPRESSION (DÉCISION FINALE)
+
+**Choix:** Arbre Sapling standard append-only, gestion des notes actives via flag `fSpent` en DB
+
+**Justification:**
+- Sapling commitment tree est append-only par design (merkle tree)
+- Suppression de commitment = fork consensus (invalide merkle proof)
+- Flag `fSpent` en DB suffit pour tracking actif/inactif
+- Simplicité : pas de nouveau type d'arbre
+
+**Alternative rejetée:** Pruning des commitments anciens
+- Invalide les merkle proofs existants
+- Nécessite nouveau type d'arbre (complexité)
+- Pas de gain de stockage significatif (commitments = 32 bytes)
+
+**Implémentation obligatoire:**
+
+```cpp
+// src/khu/khu_db.h
+struct CKHUNoteData {
+    uint256 commitment;        // Sapling commitment (never deleted)
+    uint256 nullifier;         // Revealed on spend
+    int64_t amount;            // Principal staked
+    int64_t Ur_accumulated;    // Yield accumulated
+    uint32_t nStakeStartHeight;
+    bool fSpent;               // ⚠️ MARQUAGE: true if nullifier revealed
+
+    SERIALIZE_METHODS(CKHUNoteData, obj) {
+        READWRITE(obj.commitment, obj.nullifier, obj.amount,
+                  obj.Ur_accumulated, obj.nStakeStartHeight, obj.fSpent);
+    }
+};
+
+// src/sapling/incrementalmerkletree.cpp
+class SaplingMerkleTree {
+    // ⚠️ Append-only: commitments NEVER removed
+    void append(const uint256& commitment) {
+        // Standard Sapling append (no deletion support)
+        witnesses.append(commitment);
+    }
+
+    // ❌ FORBIDDEN: No prune() or remove() method
+};
+```
+
+**Gestion des notes actives:**
+
+```cpp
+// src/khu/khu_unstake.cpp
+bool ApplyKHUUnstake(const CTransaction& tx, KhuGlobalState& state, ...) {
+    // 1. Verify nullifier not already spent
+    CKHUNoteData note;
+    if (!pKHUNoteDB->ReadNote(nullifier, note))
+        return state.Invalid("khu-note-not-found");
+
+    if (note.fSpent)
+        return state.Invalid("khu-double-spend");
+
+    // 2. Mark as spent (DO NOT delete commitment from tree)
+    note.fSpent = true;
+    pKHUNoteDB->WriteNote(nullifier, note);
+
+    // 3. Commitment remains in Sapling tree forever
+    // (merkle proofs for other notes still valid)
+
+    return true;
+}
+```
+
+**Propriétés garanties:**
+- ✅ Merkle proofs toujours valides (tree append-only)
+- ✅ Pas de fork consensus via pruning
+- ✅ Simplicité (réutilisation code Sapling standard)
+- ✅ Notes actives trackables via query `WHERE fSpent = false`
+
+**Interdit:**
+- ❌ `saplingTree.remove(commitment);`
+- ❌ `pruneOldCommitments();`
+- ❌ Supprimer note de DB après UNSTAKE
+- ❌ Compacter l'arbre périodiquement
+
+**Validation:**
+```bash
+# Vérifier absence de code de suppression
+grep -r "remove.*commitment\|prune.*tree\|delete.*note" src/sapling/ src/khu/
+# Expected output: RIEN (aucune suppression)
+
+# Vérifier présence de flag fSpent
+grep -r "fSpent" src/khu/khu_db.h src/khu/khu_unstake.cpp
+# Expected output: au moins 2 occurrences
+```
+
+---
+
+#### 3.5.4 Rappels Critiques (OBLIGATOIRES)
+
+Ces règles sont des **invariants d'implémentation** qui ne peuvent JAMAIS être violés.
+
+**1. Ordre d'exécution: Yield → ProcessKHUTransaction**
+
+**Règle:**
+```cpp
+// CORRECT (OBLIGATOIRE)
+ApplyDailyYieldIfNeeded();      // Étape 2
+ProcessKHUTransactions();        // Étape 3
+
+// ❌ FORBIDDEN (cause consensus failure)
+ProcessKHUTransactions();        // WRONG ORDER
+ApplyDailyYieldIfNeeded();
+```
+
+**Raison:** UNSTAKE consomme Ur_accumulated. Si yield pas encore appliqué, bonus calculé faux → invariant violation.
+
+**2. Double flux UNSTAKE = atomique**
+
+**Règle:**
+```cpp
+// CORRECT (OBLIGATOIRE)
+state.U  += B;   // Les 4 updates dans la même fonction
+state.C  += B;   // sous le même lock cs_khu
+state.Cr -= B;   // pas de return/break entre les lignes
+state.Ur -= B;   // vérification invariants immédiatement après
+
+// ❌ FORBIDDEN
+state.U += B;
+if (someCondition) return false;  // ❌ Rollback partiel interdit
+state.C += B;
+```
+
+**3. C/U et Cr/Ur = jamais séparés**
+
+**Règle:**
+```cpp
+// CORRECT (OBLIGATOIRE)
+state.C += amount;
+state.U += amount;  // Toujours ensemble, jamais séparés
+
+// ❌ FORBIDDEN
+state.C += amount;
+DoSomethingElse();  // ❌ Autre code entre les mutations
+state.U += amount;
+```
+
+**4. Lock order: LOCK2(cs_main, cs_khu)**
+
+**Règle:**
+```cpp
+// CORRECT (OBLIGATOIRE)
+LOCK2(cs_main, cs_khu);
+// ... mutations KHU state ...
+
+// ❌ FORBIDDEN (deadlock risk)
+LOCK(cs_khu);
+LOCK(cs_main);  // ❌ Ordre inversé
+```
+
+**5. Remplacer assert() → Invalid()**
+
+**Règle:**
+```cpp
+// CORRECT (OBLIGATOIRE)
+if (!state.CheckInvariants())
+    return state.Invalid("khu-invariant-violation");
+
+// ❌ FORBIDDEN (crash node au lieu de rejeter bloc)
+assert(state.CheckInvariants());
+```
+
+**6. Overflow yield: division avant multiplication**
+
+**Règle:**
+```cpp
+// CORRECT (OBLIGATOIRE)
+int64_t daily = (note.amount / 10000) * R_annual / 365;
+
+// ❌ FORBIDDEN (overflow possible)
+int64_t daily = (note.amount * R_annual) / 10000 / 365;
+```
+
+**7. ProcessKHUTransaction: return bool et testé**
+
+**Règle:**
+```cpp
+// CORRECT (OBLIGATOIRE)
+if (!ProcessKHUTransaction(tx, state, view, validationState))
+    return false;  // Reject block immediately
+
+// ❌ FORBIDDEN (erreur ignorée)
+ProcessKHUTransaction(tx, state, view, validationState);  // return value ignored
+```
+
+---
+
+**FIN DES DÉCISIONS ARCHITECTURALES PHASE 1**
+
+Toute implémentation qui dévie de ces décisions constitue une **violation architecturale** et doit être rejetée en code review.
 
 ---
 
