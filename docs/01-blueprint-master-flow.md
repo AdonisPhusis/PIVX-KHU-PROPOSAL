@@ -541,59 +541,112 @@ assert(new_Ur == old_Ur - bonus_khu);
 
 ---
 
-### Phase 5: R% Governance (Masternode Ping Extension)
+### Phase 5: R% Governance (DOMC Commit-Reveal)
 
-**Objectif:** Masternodes votent R% annuel via extension ping (simple, gratuit).
+**Objectif:** Masternodes votent R% via commit-reveal avec calendrier fixe et préavis LP.
 
-**ARCHITECTURE:** Réutilisation infrastructure DAO PIVX
-- Extension `CMasternodePing` avec champ `nRProposal` (2 bytes)
-- Vote temps réel via pings masternodes existants
-- Aucun collateral requis (gratuit)
-- Cycle activation: 30 jours (superblock budget DAO)
+**ARCHITECTURE:** Commit-Reveal + Auto-Proposal DAO
+- Extension `CMasternodePing` avec 3 champs: `nRCommitment`, `nRProposal`, `nRSecret`
+- Vote caché (commit SHA256) pendant 2 semaines
+- Reveal automatique au bloc fixe (195360)
+- Auto-proposal création avec R_next (préavis 2 semaines)
+- Cycle complet: 215520 blocs (~4.5 mois)
+
+**CYCLE 4.5 MOIS (4 Phases):**
+1. **Phase 1 — ACTIF** (175200 blocs = 4 mois)
+   - R% verrouillé (garantie LP)
+   - Aucun changement possible
+
+2. **Phase 2 — COMMIT** (20160 blocs = 2 semaines)
+   - MN créent commitments SHA256(R_proposal || secret)
+   - Votes totalement cachés (privacy)
+
+3. **Phase 3 — REVEAL** (bloc 195360 fixe)
+   - Validation automatique reveals
+   - Consensus = moyenne(reveals_valides)
+   - Auto-proposal créée: "KHU_R_22.50_NEXT"
+
+4. **Phase 4 — PRÉAVIS** (20160 blocs = 2 semaines)
+   - R_next visible dans auto-proposal réseau
+   - LP adaptent stratégies (prévisibilité)
+
+5. **Activation** (bloc 215520)
+   - R_next activé → nouveau cycle Phase 1
 
 **Deliverables:**
-- [ ] Extension `CMasternodePing::nRProposal` (masternode.h)
-- [ ] RPC `masternode votekhu <R%>` (masternode.cpp)
-- [ ] Calcul consensus `GetRConsensus()` (masternodemanager.cpp)
-- [ ] RPC query `getkhurconsensus` (khu_rpc.cpp)
-- [ ] Activation superblock dans ConnectBlock (validation.cpp)
+- [ ] Extension `CMasternodePing` (nRCommitment, nRProposal, nRSecret)
+- [ ] RPC `masternode commitkhu <R%>` — Créer commitment SHA256
+- [ ] `ProcessKHUReveal()` — Validation reveals au bloc 195360
+- [ ] `CreateKHUAutoProposal()` — Création auto-proposal avec R_consensus
+- [ ] `GetKHURNextFromProposal()` — Lecture R_next depuis proposal
+- [ ] Activation automatique bloc 215520 (ConnectBlock)
+- [ ] RPC `getkhugovernance` — Status cycle complet
+- [ ] Constantes cycle (consensus/params.h)
 - [ ] Tests unitaires : test_khu_governance.cpp
 - [ ] Tests fonctionnels : khu_governance.py
 
 **Verification:**
 ```cpp
-// Vote valide (format XX.XX%)
-assert(R_new >= 0 && R_new <= 9999);  // 0.00% - 99.99%
-assert(R_new <= R_MAX_dynamic);       // Respect plafond
+// Commit valide (SHA256)
+CHashWriter ss(SER_GETHASH, 0);
+ss << R_proposal << secret;
+assert(ss.GetHash() == commitment);
 
-// Moyenne arithmétique
+// Reveal valide
+assert(R_proposal <= R_MAX_dynamic);
+assert(ValidateReveal());
+
+// Consensus (moyenne arithmétique)
 uint64_t sum = 0;
-for (uint16_t r : votes) sum += r;
-uint16_t average = sum / votes.size();
+for (uint16_t r : valid_reveals) sum += r;
+uint16_t R_consensus = sum / valid_reveals.size();
 
-// Egalite: DOMC ne gouverne QUE R%
-assert(reward_year == max(6 - year, 0));  // Emission inchangee
+// Cycle positions
+int pos = GetKHUCyclePosition(nHeight, nActivationHeight);
+assert(pos >= 0 && pos < KHU_R_CYCLE_BLOCKS);
+
+// Dates fixes (prévisibilité)
+assert(revealHeight == cycleStart + 175200 + 20160);
+assert(activationHeight == cycleStart + 215520);
 ```
 
 **Exemple usage:**
 ```bash
-# Masternode vote R%
-./pivx-cli masternode votekhu 25.55
-> "success"
-
-# Query consensus réseau
-./pivx-cli getkhurconsensus
+# PHASE 2 (Commit): MN vote R% (caché)
+./pivx-cli masternode commitkhu 22.50
 {
-  "R_annual": 23.45,
-  "votes_count": 150,
-  "total_masternodes": 200
+  "status": "committed",
+  "R_proposal": 2250,
+  "commitment": "a3f5b2c7d1e9...",
+  "reveal_height": 195360
 }
+
+# PHASE 3 (Reveal): Automatique au bloc 195360
+# → ProcessKHUReveal() valide tous les reveals
+# → Crée auto-proposal "KHU_R_22.70_NEXT"
+
+# PHASE 4 (Préavis): Query status cycle
+./pivx-cli getkhugovernance
+{
+  "cycle_position": 200000,
+  "phase": "notice",
+  "R_current": 25.00,
+  "R_next": 22.70,
+  "R_max": 29.00,
+  "reveal_height": 195360,
+  "activation_height": 215520,
+  "valid_commits": 350
+}
+
+# PHASE 1 (Actif): Nouveau cycle après activation
+# → R% = 22.70% verrouillé 4 mois
 ```
 
-**Complexité:** SIMPLE (~5 jours au lieu de 8j)
-- Pas de commit-reveal (vote transparent)
-- Réutilise ping MN existant
-- ~150 lignes code total
+**Complexité:** MOYENNE (~6-7 jours)
+- Commit-reveal logic (SHA256 + validation)
+- Auto-proposal création automatique
+- Cycle 4 phases (calendrier fixe)
+- ~300 lignes code total
 
 **Git:**
 - Branche: `khu-phase5-governance`

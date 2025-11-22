@@ -453,7 +453,7 @@ if (tied.size() > 1) {
 | 2 | MINT/REDEEM | 1100 | MOYENNE | 7 |
 | 3 | DAILY_YIELD | 600 | FAIBLE | 4 |
 | 4 | UNSTAKE bonus | 700 | MOYENNE | 5 |
-| 5 | **DOMC governance** | **800** | **MOYENNE** | **8** |
+| 5 | **DOMC commit-reveal** | **800** | **MOYENNE** | **6-7** ← Mis à jour |
 | 6 | SAFU (timelock) | 300 | FAIBLE | 3 |
 | 7 | **ZKHU STAKE/UNSTAKE** | **1500** | **FAIBLE-MOYENNE** | **8** ← Corrigé |
 | 8 | HTLC gateway | 400 | FAIBLE | 3 |
@@ -461,7 +461,7 @@ if (tied.size() > 1) {
 | 10 | Tests (unit + functional) | 2000 | MOYENNE | 15 |
 
 **Total:** ~9,000 lignes C++ + 2,000 lignes tests = **11,000 lignes**
-**Effort total:** ~64 jours-homme (3 mois avec 1 dev senior)
+**Effort total:** ~62-63 jours-homme (~3 mois avec 1 dev senior)
 
 ### Phase ZKHU Réévaluée: Wrapper Sapling (Phase 7)
 
@@ -496,16 +496,64 @@ src/khu/zkhu_db.h/cpp        ~400 lignes  // Namespace 'K'
 
 **Score Phase 7:** 95/100 (simple wrapper, risque faible)
 
-### Phase Moyenne: DOMC (Phase 5)
+### Phase Moyenne: DOMC Commit-Reveal (Phase 5)
 
-**Complexité:**
-1. Vote shielded (commit-reveal) ✅
-2. Calcul moyenne arithmétique ✅
-3. Tie-breaking ✅
-4. Cycle 40320 blocs (4 semaines) ✅
-5. Application 4 mois (175200 blocs) ✅
+**Complexité RÉELLE: MOYENNE** (6-7 jours)
 
-**Score Phase 5:** 85/100 (bien spécifié)
+**Raison:** Commit-Reveal + Auto-Proposal + Cycle 4 Phases
+1. ✅ Extension CMasternodePing (3 champs) — Infrastructure existante
+2. ✅ SHA256 commitment (standard crypto) — Librairie existante
+3. ✅ Auto-proposal DAO — Réutilisation budget manager PIVX
+4. ✅ Cycle 4 phases (calendrier fixe) — Logique déterministe simple
+
+**Breakdown effort:**
+- RPC commitkhu + commitment SHA256: 2 jours — Extension ping MN
+- ProcessKHUReveal (validation bloc fixe): 2 jours — Consensus + validation
+- CreateKHUAutoProposal (DAO integration): 1.5 jour — Budget manager
+- Activation + cycle helpers: 1 jour — Helpers GetKHUCyclePosition()
+- RPC getkhugovernance + tests: 1 jour — Query status + tests unitaires
+
+**Code existant réutilisé:**
+```cpp
+✅ CMasternodePing (src/masternode/)       // Extension 3 champs
+✅ CHashWriter (crypto/common.h)           // SHA256 commitment
+✅ CBudgetProposal (src/budget/)           // Auto-proposal DAO
+✅ Params().GetConsensus() (consensus/)    // Constantes cycle
+```
+
+**Nouveaux fichiers (~300 lignes):**
+```cpp
+consensus/params.h               ~50 lignes   // Constantes KHU_R_CYCLE_BLOCKS
+src/masternode/masternode.h      ~30 lignes   // Extension ping (3 champs)
+src/rpc/masternode.cpp           ~80 lignes   // RPC commitkhu
+src/validation.cpp               ~100 lignes  // ProcessKHUReveal + activation
+src/budget/budgetmanager.cpp     ~40 lignes   // CreateKHUAutoProposal
+```
+
+**Architecture:**
+1. **Phase COMMIT** (2 semaines = 20160 blocs)
+   - Votes cachés via SHA256(R_proposal || secret)
+   - Privacy complète (commit-reveal standard)
+
+2. **Phase REVEAL** (bloc 195360 fixe)
+   - Validation automatique reveals
+   - Consensus = moyenne arithmétique
+   - Auto-proposal "KHU_R_22.50_NEXT" créée
+
+3. **Phase PRÉAVIS** (2 semaines = 20160 blocs)
+   - R_next visible dans proposal réseau
+   - LP adaptent stratégies (prévisibilité)
+
+4. **Activation** (bloc 215520)
+   - R_next activé, verrouillé 4 mois
+
+**Cycle complet:** 215520 blocs (~4.5 mois)
+- Phase 1 ACTIF: 175200 blocs (4 mois) — R% verrouillé
+- Phase 2 COMMIT: 20160 blocs (2 semaines) — Votes cachés
+- Phase 3 REVEAL: 1 bloc (195360) — Consensus automatique
+- Phase 4 PRÉAVIS: 20160 blocs (2 semaines) — R_next visible
+
+**Score Phase 5:** 90/100 (bien spécifié, simple, déterministe)
 
 ---
 

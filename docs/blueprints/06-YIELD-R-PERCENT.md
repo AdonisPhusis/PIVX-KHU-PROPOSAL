@@ -467,36 +467,39 @@ R_MAX_dynamic (%)
     └────────────────────────────────> temps
 ```
 
-### 5.2 Vote R% via Masternode Ping (Infrastructure DAO PIVX)
+### 5.2 Vote R% via Commit-Reveal (Calendrier Fixe, Privacy Voting)
 
-**Masternodes votent R% en étendant le mécanisme de ping existant.**
+**Masternodes votent R% avec privacy (commit-reveal) + dates fixes + préavis 2 semaines.**
 
-**ARCHITECTURE: Réutilisation Infrastructure DAO PIVX**
+**ARCHITECTURE: Extension Ping MN + Commit-Reveal + Auto-Proposal**
 
-PIVX possède déjà un système de governance robuste (actif depuis 2015):
-- Masternodes pingent le réseau régulièrement (toutes les ~15 minutes)
-- Chaque ping est signé cryptographiquement
-- Les pings sont relayés sur tout le réseau P2P
-- Infrastructure éprouvée et mature
+Design optimal combinant:
+- ✅ **Privacy**: Votes cachés pendant commit (2 semaines)
+- ✅ **Dates fixes**: Calendrier prévisible (blocs fixes)
+- ✅ **Garantie 4 mois**: R% verrouillé après activation
+- ✅ **Préavis LP**: R_next visible 2 semaines avant activation
+- ✅ **Simple**: Extension ping MN + validation automatique
 
-**MODIFICATION MINIMALE: Extension Ping avec R%**
-
-On ajoute simplement un champ `nRProposal` au ping masternode existant:
+**CYCLE COMPLET: 215520 blocs (~4.5 mois)**
 
 ```cpp
 /**
- * Extension du Masternode Ping existant (masternode.h)
+ * Extension CMasternodePing avec commit-reveal
+ * Fichier: src/masternode/masternode.h
  */
 class CMasternodePing {
-    CTxIn vin;                  // Masternode identifier (existant)
-    uint256 blockHash;          // Block hash (existant)
-    int64_t sigTime;            // Signature timestamp (existant)
-    std::vector<unsigned char> vchSig;  // Signature (existant)
+    CTxIn vin;
+    uint256 blockHash;
+    int64_t sigTime;
+    std::vector<unsigned char> vchSig;
 
-    // ← NOUVEAU: R% préféré du masternode
-    uint16_t nRProposal;        // R% en centièmes (0-9999 = 0.00%-99.99%)
-                                // 0 = pas d'opinion / abstention
-                                // Ex: 2555 = 25.55%
+    // ← PHASE COMMIT: Vote caché
+    uint256 nRCommitment;       // SHA256(R_proposal || secret)
+                                // Non-zero = commitment actif
+
+    // ← PHASE REVEAL: Dévoilement au bloc fixe
+    uint16_t nRProposal;        // R% proposé (0-9999 = 0.00%-99.99%)
+    uint256 nRSecret;           // Secret 256-bit (révélé)
 
     ADD_SERIALIZE_METHODS;
     template <typename Stream, typename Operation>
@@ -506,270 +509,652 @@ class CMasternodePing {
         READWRITE(sigTime);
         READWRITE(vchSig);
 
-        // Rétrocompatibilité: seulement si version >= PROTOCOL_VERSION_KHU
-        if (s.GetVersion() >= PROTOCOL_VERSION_KHU)
+        if (s.GetVersion() >= PROTOCOL_VERSION_KHU) {
+            READWRITE(nRCommitment);
             READWRITE(nRProposal);
+            READWRITE(nRSecret);
+        }
+    }
+
+    /**
+     * Valider reveal (au bloc deadline)
+     */
+    bool ValidateReveal() const {
+        if (nRCommitment.IsNull()) return false;
+
+        // Vérifier: SHA256(R_proposal || secret) == commitment
+        CHashWriter ss(SER_GETHASH, 0);
+        ss << nRProposal << nRSecret;
+        return (ss.GetHash() == nRCommitment);
     }
 };
 ```
 
 **SPÉCIFICATIONS R% :**
-- **Vote public** (transparent) : Pas de commit-reveal nécessaire
+- **Vote caché** : Commitment SHA256 (invisible pendant 2 semaines)
 - **Format** : XX.XX% (2 decimals) — Ex: 25.55%, 20.20%
-- **Agrégation** : Moyenne arithmétique de tous les votes valides
-- **Durée application** : 30 jours (cycle budget DAO = 43200 blocs mainnet)
-- **Mise à jour** : Temps réel (MN peut changer vote à tout moment)
-- **Coût** : GRATUIT (utilise ping existant)
+- **Agrégation** : Moyenne arithmétique (reveals valides uniquement)
+- **Durée application** : 4 mois (175200 blocs = garantie LP)
+- **Cycle total** : 4.5 mois (215520 blocs)
+- **Préavis** : 2 semaines (R_next visible avant activation)
 
-**Processus vote (Simple, Temps Réel) :**
-
-```
-┌──────────────────────────────────────────────────────┐
-│ VOTE CONTINU (Temps réel via pings masternodes)     │
-├──────────────────────────────────────────────────────┤
-│ 1. Masternode choisit R_proposal (ex: 2555 = 25.55%)│
-│ 2. RPC: masternode votekhu 25.55                    │
-│ 3. Stockage local: activeMasternode.nRProposal = 2555│
-│ 4. Prochain ping inclut automatiquement nRProposal │
-│ 5. Ping broadcast réseau (comme d'habitude)        │
-│ 6. Tous les nodes collectent votes via pings       │
-│ 7. Calcul consensus temps réel (moyenne arith.)    │
-│                                                      │
-│ ✅ SIMPLE: Pas de commitment, pas de reveal        │
-│ ✅ GRATUIT: Aucun collateral requis                │
-│ ✅ TEMPS RÉEL: MN peut changer vote instantanément │
-└──────────────────────────────────────────────────────┘
-
-┌──────────────────────────────────────────────────────┐
-│ ACTIVATION (Cycle Budget DAO = 30 jours)            │
-├──────────────────────────────────────────────────────┤
-│ • Tous les 43200 blocs (mainnet) = 30 jours         │
-│ • Au superblock budget DAO:                         │
-│   1. Collecter tous pings masternodes actifs       │
-│   2. Filtrer MN avec nRProposal > 0                 │
-│   3. Calculer moyenne: R_new = Σ(nRProposal) / count│
-│   4. Si R_new > R_MAX_dynamic: clamp à R_MAX       │
-│   5. Activer: SetKhuAnnualRate(R_new)              │
-│   6. Application: 30 prochains jours                │
-│                                                      │
-│ ✅ DÉTERMINISTE: Hauteur de bloc uniquement        │
-│ ✅ CONSENSUS: Tous nodes calculent même résultat   │
-└──────────────────────────────────────────────────────┘
-```
-
-**Timeline complète (1 cycle = 30 jours) :**
+**TIMELINE COMPLÈTE (Cycle 4.5 mois) :**
 
 ```
-Bloc 0          │◄────────────── Vote continu (30 jours) ──────────────►│
-                │                                                        │
-                │  MN votent à tout moment (temps réel)                  │
-                │  Consensus calculé en continu                          │
-                │                                                        │
-Bloc 43200      │ ACTIVATION (superblock DAO)                           │
-(Mainnet)       │   → Calcul moyenne finale                             │
-                │   → R_annual = moyenne                                │
-                │                                                        │
-                │◄─────── R% appliqué (30 prochains jours) ────────────►│
+┌─────────────────────────────────────────────────────────────────┐
+│ PHASE 1 : R% ACTIF (VERROUILLÉ 4 MOIS = 175200 blocs)          │
+├─────────────────────────────────────────────────────────────────┤
+│ • R% = 25.00% GARANTI (aucun changement possible)              │
+│ • LP peuvent planifier avec certitude                          │
+│ • Période stable pour stratégies                               │
+│                                                                 │
+│ Blocs 0 ─────────────────────────────────► 175200              │
+│         └────── R% verrouillé = 25.00% ────┘                   │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ PHASE 2 : COMMIT (VOTE CACHÉ) — 2 SEMAINES = 20160 blocs       │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. MN choisit R_proposal (ex: 2250 = 22.50%)                   │
+│ 2. MN génère secret aléatoire (32 bytes)                       │
+│ 3. MN calcule commitment = SHA256(R_proposal || secret)        │
+│ 4. MN broadcast commitment via ping                            │
+│                                                                 │
+│ 🔒 VOTES TOTALEMENT CACHÉS (privacy complète)                  │
+│ 🔒 Personne ne peut voir les R% proposés                       │
+│ 🔒 Impossible de copier/influencer autres votes                │
+│                                                                 │
+│ Blocs 175200 ───────────────────────► 195360                   │
+│         └──── Commitments (cachés) ────┘                       │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ PHASE 3 : REVEAL AUTOMATIQUE (BLOC 195360 — DATE FIXE)         │
+├─────────────────────────────────────────────────────────────────┤
+│ • AU BLOC 195360 EXACTEMENT (deadline automatique):            │
+│   1. MN doivent reveal (R_proposal + secret)                   │
+│   2. Validation: SHA256(R_proposal || secret) == commitment    │
+│   3. Si valide → vote compté ✅                                 │
+│   4. Si invalide/absent → vote rejeté ❌                        │
+│                                                                 │
+│ • Consensus calculé immédiatement:                             │
+│   R_consensus = moyenne(reveals_valides)                       │
+│                                                                 │
+│ • Auto-proposal créée automatiquement:                         │
+│   Nom: "KHU_R_22.50_NEXT"                                      │
+│   Montant: 2250 (R% encodé)                                    │
+│   Activation: Bloc 215520                                      │
+│                                                                 │
+│ Bloc 195360 ← REVEAL DEADLINE (automatique)                    │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ PHASE 4 : PRÉAVIS PUBLIC (2 SEMAINES = 20160 blocs)            │
+├─────────────────────────────────────────────────────────────────┤
+│ • R_next = 22.50% VISIBLE dans auto-proposal réseau            │
+│ • LP peuvent voir nouveau R% 2 SEMAINES AVANT activation       │
+│ • Temps adaptation stratégies / rééquilibrage pools            │
+│ • Calendrier prévisible (bloc 215520 connu à l'avance)        │
+│                                                                 │
+│ 👁️ TRANSPARENCE TOTALE (après reveal)                          │
+│ 📅 DATE ACTIVATION FIXE (pas de surprise)                      │
+│                                                                 │
+│ Blocs 195360 ───────────────────────► 215520                   │
+│         └──── R_next = 22.50% visible ──┘                      │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ ACTIVATION AUTOMATIQUE (BLOC 215520 — DATE FIXE)                │
+├─────────────────────────────────────────────────────────────────┤
+│ • R% = 22.50% activé (verrouillé 4 mois)                       │
+│ • Nouveau cycle Phase 1 commence                                │
+│ • Prochain commit dans 175200 blocs (prévisible)               │
+└─────────────────────────────────────────────────────────────────┘
+
+CYCLE TOTAL: 215520 blocs (~4.5 mois) puis répétition infinie
+Calendrier prévisible: Activation tous les 215520 blocs
 ```
 
-### 5.3 Implémentation C++ — Infrastructure Simple
+### 5.3 Implémentation C++ — Commit-Reveal + Auto-Proposal
 
 **Fichiers à modifier:**
-- `src/masternode/masternode.h` — Extension CMasternodePing
-- `src/rpc/masternode.cpp` — Nouveau RPC `masternode votekhu`
-- `src/masternode/masternodemanager.cpp` — Calcul consensus
-- `src/validation.cpp` — Activation au superblock
+- `src/masternode/masternode.h` — Extension CMasternodePing (commit/reveal)
+- `src/rpc/masternode.cpp` — RPC `masternode commitkhu`
+- `src/masternode/masternodemanager.cpp` — Validation reveal + consensus
+- `src/budget/budgetmanager.cpp` — Création auto-proposal
+- `src/validation.cpp` — Réveal bloc fixe + activation
+- `src/consensus/params.h` — Constantes cycle
 
-#### 5.3.1 RPC Vote Masternode
+**CONSTANTES CYCLE (consensus/params.h):**
 
 ```cpp
 /**
- * RPC: masternode votekhu <R_percent>
- * Fichier: src/rpc/masternode.cpp
+ * Constantes cycle DOMC R%
  */
-UniValue masternode_votekhu(const JSONRPCRequest& request)
+const int KHU_R_CYCLE_BLOCKS = 215520;      // 4.5 mois total
+const int KHU_R_ACTIVE_BLOCKS = 175200;     // 4 mois R% verrouillé
+const int KHU_R_COMMIT_BLOCKS = 20160;      // 2 semaines commit (caché)
+const int KHU_R_NOTICE_BLOCKS = 20160;      // 2 semaines préavis (visible)
+
+/**
+ * Calculer position dans cycle
+ */
+int GetKHUCyclePosition(int nHeight, int nActivationHeight) {
+    return (nHeight - nActivationHeight) % KHU_R_CYCLE_BLOCKS;
+}
+
+/**
+ * Vérifier période commit (votes cachés)
+ */
+bool IsKHUCommitPeriod(int nHeight, int nActivationHeight) {
+    int pos = GetKHUCyclePosition(nHeight, nActivationHeight);
+    return (pos >= KHU_R_ACTIVE_BLOCKS &&
+            pos < KHU_R_ACTIVE_BLOCKS + KHU_R_COMMIT_BLOCKS);
+}
+
+/**
+ * Calculer hauteur reveal (bloc fixe)
+ */
+int GetKHURevealHeight(int nHeight, int nActivationHeight) {
+    int pos = GetKHUCyclePosition(nHeight, nActivationHeight);
+    int cycleStart = nHeight - pos;
+    return cycleStart + KHU_R_ACTIVE_BLOCKS + KHU_R_COMMIT_BLOCKS;
+}
+
+/**
+ * Calculer hauteur activation
+ */
+int GetKHUActivationHeight(int nHeight, int nActivationHeight) {
+    int pos = GetKHUCyclePosition(nHeight, nActivationHeight);
+    int cycleStart = nHeight - pos;
+    return cycleStart + KHU_R_CYCLE_BLOCKS;
+}
+```
+
+#### 5.3.1 RPC Commit (Phase 2 — Vote Caché)
+
+```cpp
+/**
+ * RPC: masternode commitkhu <R_percent>
+ * Fichier: src/rpc/masternode.cpp
+ *
+ * PHASE COMMIT uniquement (2 semaines)
+ * Crée commitment SHA256, broadcast dans prochain ping
+ */
+UniValue masternode_commitkhu(const JSONRPCRequest& request)
 {
     if (request.fHelp || request.params.size() != 2)
         throw std::runtime_error(
-            "masternode votekhu <R_percent>\n"
-            "\nVote for KHU annual yield rate (masternode only).\n"
+            "masternode commitkhu <R_percent>\n"
+            "\nCommit vote for KHU annual yield rate (masternode only).\n"
+            "Vote is HIDDEN via SHA256 commitment during 2-week commit period.\n"
             "\nArguments:\n"
             "1. R_percent    (numeric, required) Annual yield rate (0.00-99.99)\n"
             "                Example: 25.55 for 25.55%\n"
             "\nResult:\n"
-            "\"success\"      Vote preference saved, will broadcast in next ping\n"
+            "{\n"
+            "  \"status\": \"committed\",\n"
+            "  \"R_proposal\": 2555,\n"
+            "  \"commitment\": \"a3f5...\",\n"
+            "  \"reveal_height\": 195360\n"
+            "}\n"
             "\nExamples:\n"
-            + HelpExampleCli("masternode votekhu", "25.55")
-            + HelpExampleRpc("masternode", "\"votekhu\", 25.55")
+            + HelpExampleCli("masternode commitkhu", "25.55")
+            + HelpExampleRpc("masternode", "\"commitkhu\", 25.55")
         );
 
-    // Vérifier que c'est un masternode actif
-    if (!fMasterNode)
-        throw JSONRPCError(RPC_MISC_ERROR, "This is not a masternode");
+    // Vérifier période commit
+    int nHeight = chainActive.Height();
+    int nActivationHeight = Params().GetConsensus().vUpgrades[Consensus::UPGRADE_KHU].nActivationHeight;
+
+    if (!IsKHUCommitPeriod(nHeight, nActivationHeight))
+        throw JSONRPCError(RPC_MISC_ERROR,
+            "Not in commit period (must be during 2-week commit phase)");
+
+    // Vérifier masternode actif
+    if (!fMasterNode || !activeMasternode.vin.prevout.IsNull())
+        throw JSONRPCError(RPC_MISC_ERROR, "This is not an active masternode");
 
     // Parser R% (format XX.XX)
     double R_percent = request.params[1].get_real();
-
-    // Convertir en centièmes
-    uint16_t R_centimes = static_cast<uint16_t>(R_percent * 100.0);
+    uint16_t R_proposal = static_cast<uint16_t>(R_percent * 100.0);
 
     // Valider bornes
-    if (R_centimes > 9999)
+    if (R_proposal > 9999)
         throw JSONRPCError(RPC_INVALID_PARAMETER,
-                          "R% must be between 0.00 and 99.99");
+            "R% must be between 0.00 and 99.99");
 
     // Vérifier R_MAX_dynamic
-    uint16_t R_MAX = GetKhuRMax();
-    if (R_centimes > R_MAX)
+    uint16_t R_MAX = GetRMaxDynamic(nHeight, nActivationHeight);
+    if (R_proposal > R_MAX)
         throw JSONRPCError(RPC_INVALID_PARAMETER,
-                          strprintf("R% exceeds current R_MAX (%.2f%%)",
-                                   R_MAX / 100.0));
+            strprintf("R% exceeds current R_MAX (%.2f%%)", R_MAX / 100.0));
 
-    // Stocker préférence localement
-    activeMasternode.nRProposal = R_centimes;
+    // Générer secret aléatoire (256 bits)
+    uint256 secret = GetRandHash();
 
-    LogPrintf("Masternode R% vote: %.2f%% (will broadcast in next ping)\n",
-              R_percent);
+    // Calculer commitment = SHA256(R_proposal || secret)
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << R_proposal << secret;
+    uint256 commitment = ss.GetHash();
 
-    return "success";
-}
-```
+    // Stocker localement pour reveal ultérieur
+    activeMasternode.nRProposal = R_proposal;
+    activeMasternode.nRSecret = secret;
+    activeMasternode.nRCommitment = commitment;
 
-#### 5.3.2 Calcul Consensus Réseau
+    LogPrintf("KHU R% commitment created: %.2f%% (commitment=%s)\n",
+              R_percent, commitment.GetHex().substr(0, 8));
 
-```cpp
-/**
- * Calculer consensus R% depuis pings masternodes
- * Fichier: src/masternode/masternodemanager.cpp
- */
-uint16_t CMasternodeMan::GetRConsensus() const
-{
-    LOCK(cs);
+    // Broadcast dans prochain ping (automatique)
 
-    std::vector<uint16_t> R_values;
-
-    // Parcourir tous les masternodes
-    for (const auto& mnpair : mapMasternodes) {
-        const CMasternode& mn = mnpair.second;
-
-        // Filtrer masternodes actifs avec vote R%
-        if (mn.IsEnabled() && mn.lastPing.nRProposal > 0) {
-            R_values.push_back(mn.lastPing.nRProposal);
-        }
-    }
-
-    // Si aucun vote, garder R% actuel
-    if (R_values.empty()) {
-        LogPrint(BCLog::MASTERNODE,
-                "GetRConsensus: No R% votes, keeping current rate\n");
-        return GetCurrentRAnnual();
-    }
-
-    // Calcul moyenne arithmétique
-    uint64_t sum = 0;
-    for (uint16_t r : R_values)
-        sum += r;
-
-    uint16_t average = static_cast<uint16_t>(sum / R_values.size());
-
-    // Clamping à R_MAX_dynamic
-    uint16_t R_MAX = GetKhuRMax();
-    if (average > R_MAX) {
-        LogPrintf("R% consensus %.2f%% exceeds R_MAX %.2f%%, clamping\n",
-                 average / 100.0, R_MAX / 100.0);
-        average = R_MAX;
-    }
-
-    LogPrintf("R% consensus: %d votes, average = %.2f%%\n",
-             R_values.size(), average / 100.0);
-
-    return average;
-}
-```
-
-#### 5.3.3 RPC Query Consensus
-
-```cpp
-/**
- * RPC: getkhurconsensus
- * Fichier: src/rpc/blockchain.cpp (ou khu_rpc.cpp)
- */
-UniValue getkhurconsensus(const JSONRPCRequest& request)
-{
-    if (request.fHelp)
-        throw std::runtime_error(
-            "getkhurconsensus\n"
-            "\nGet current KHU R% consensus from masternode votes.\n"
-            "\nResult:\n"
-            "{\n"
-            "  \"R_annual\": xx.xx,        (numeric) Consensus R% annual\n"
-            "  \"R_centimes\": xxxx,       (numeric) R% in centimes\n"
-            "  \"votes_count\": n,         (numeric) Number of MN votes\n"
-            "  \"total_masternodes\": n,   (numeric) Total enabled MN\n"
-            "  \"R_current\": xx.xx,       (numeric) Currently active R%\n"
-            "  \"R_max\": xx.xx           (numeric) Maximum allowed R%\n"
-            "}\n"
-        );
-
-    uint16_t R_consensus = mnodeman.GetRConsensus();
-    uint16_t R_current = GetCurrentRAnnual();
-    uint16_t R_MAX = GetKhuRMax();
-
-    int votes_count = 0;
-    int total_mn = 0;
-
-    LOCK(mnodeman.cs);
-    for (const auto& mnpair : mnodeman.mapMasternodes) {
-        const CMasternode& mn = mnpair.second;
-        if (mn.IsEnabled()) {
-            total_mn++;
-            if (mn.lastPing.nRProposal > 0)
-                votes_count++;
-        }
-    }
+    int revealHeight = GetKHURevealHeight(nHeight, nActivationHeight);
 
     UniValue result(UniValue::VOBJ);
-    result.pushKV("R_annual", R_consensus / 100.0);
-    result.pushKV("R_centimes", R_consensus);
-    result.pushKV("votes_count", votes_count);
-    result.pushKV("total_masternodes", total_mn);
-    result.pushKV("R_current", R_current / 100.0);
-    result.pushKV("R_max", R_MAX / 100.0);
+    result.pushKV("status", "committed");
+    result.pushKV("R_proposal", R_proposal);
+    result.pushKV("commitment", commitment.GetHex().substr(0, 16) + "...");
+    result.pushKV("reveal_height", revealHeight);
 
     return result;
 }
 ```
 
-#### 5.3.4 Activation au Superblock
+#### 5.3.2 Reveal Automatique (Phase 3 — Bloc 195360 Fixe)
 
 ```cpp
 /**
- * Activation R% au superblock budget (30 jours)
+ * Validation reveals au bloc deadline (195360)
  * Fichier: src/validation.cpp (dans ConnectBlock)
  */
-bool ConnectBlock(const CBlock& block, CValidationState& state, ...)
+bool ProcessKHUReveal(int nHeight, int nActivationHeight)
 {
+    // Vérifier si c'est le bloc reveal
+    int revealHeight = GetKHURevealHeight(nHeight, nActivationHeight);
+    if (nHeight != revealHeight)
+        return true;  // Pas le bloc reveal
+
+    LogPrintf("KHU REVEAL HEIGHT %d: Processing masternode reveals...\n", nHeight);
+
+    std::vector<uint16_t> valid_reveals;
+
+    LOCK(mnodeman.cs);
+    for (const auto& mnpair : mnodeman.mapMasternodes) {
+        const CMasternode& mn = mnpair.second;
+
+        if (!mn.IsEnabled())
+            continue;
+
+        const CMasternodePing& ping = mn.lastPing;
+
+        // Skip si pas de commitment
+        if (ping.nRCommitment.IsNull())
+            continue;
+
+        // Valider reveal: SHA256(R_proposal || secret) == commitment
+        if (!ping.ValidateReveal()) {
+            LogPrint(BCLog::MASTERNODE,
+                "KHU Reveal INVALID for MN %s (commitment mismatch)\n",
+                mn.vin.prevout.ToStringShort());
+            continue;  // Rejeté
+        }
+
+        // Vérifier R_MAX_dynamic
+        uint16_t R_MAX = GetRMaxDynamic(nHeight, nActivationHeight);
+        if (ping.nRProposal > R_MAX) {
+            LogPrint(BCLog::MASTERNODE,
+                "KHU Reveal rejected for MN %s (R=%.2f%% > R_MAX=%.2f%%)\n",
+                mn.vin.prevout.ToStringShort(),
+                ping.nRProposal / 100.0,
+                R_MAX / 100.0);
+            continue;  // Rejeté
+        }
+
+        // ✅ Reveal valide
+        valid_reveals.push_back(ping.nRProposal);
+
+        LogPrint(BCLog::MASTERNODE,
+            "KHU Reveal VALID for MN %s: R=%.2f%%\n",
+            mn.vin.prevout.ToStringShort(),
+            ping.nRProposal / 100.0);
+    }
+
+    // Calculer consensus (moyenne arithmétique)
+    if (valid_reveals.empty()) {
+        LogPrintf("KHU Reveal: No valid reveals, keeping current R%\n");
+        return true;  // Pas de changement
+    }
+
+    uint64_t sum = 0;
+    for (uint16_t r : valid_reveals)
+        sum += r;
+
+    uint16_t R_consensus = static_cast<uint16_t>(sum / valid_reveals.size());
+
+    LogPrintf("KHU Reveal consensus: %d reveals, average = %.2f%%\n",
+             valid_reveals.size(), R_consensus / 100.0);
+
+    // Créer auto-proposal avec R_consensus
+    if (!CreateKHUAutoProposal(R_consensus, nHeight, nActivationHeight))
+        return error("ProcessKHUReveal: Failed to create auto-proposal");
+
+    return true;
+}
+```
+
+#### 5.3.3 Auto-Proposal Création (Phase 4 — Préavis 2 Semaines)
+
+```cpp
+/**
+ * Créer auto-proposal budget DAO avec R_next
+ * Fichier: src/budget/budgetmanager.cpp
+ */
+bool CreateKHUAutoProposal(uint16_t R_consensus, int nHeight, int nActivationHeight)
+{
+    // Calculer activation height (bloc 215520)
+    int activationHeight = GetKHUActivationHeight(nHeight, nActivationHeight);
+
+    // Nom proposal: "KHU_R_22.50_NEXT"
+    std::string proposalName = strprintf("KHU_R_%.2f_NEXT", R_consensus / 100.0);
+
+    // URL info (optionnel)
+    std::string url = "https://pivx.org/khu/governance";
+
+    // Montant = R% encodé (centièmes)
+    // Ex: 2250 centièmes = 22.50 PIVX symbolique
+    CAmount amount = R_consensus * COIN / 100;
+
+    // Paiement address (burn address, pas utilisé)
+    CTxDestination dest = DecodeDestination("D...");  // Burn address
+
+    // Créer proposal
+    CBudgetProposal proposal;
+    proposal.strProposalName = proposalName;
+    proposal.strURL = url;
+    proposal.nBlockStart = activationHeight;
+    proposal.nBlockEnd = activationHeight + KHU_R_ACTIVE_BLOCKS;  // 4 mois
+    proposal.address = dest;
+    proposal.nAmount = amount;
+    proposal.nTime = GetTime();
+
+    // Soumettre au réseau
+    std::string strError;
+    if (!budget.AddProposal(proposal, strError)) {
+        return error("CreateKHUAutoProposal: %s", strError);
+    }
+
+    LogPrintf("KHU Auto-Proposal created: %s (R=%.2f%%, activation=%d)\n",
+             proposalName, R_consensus / 100.0, activationHeight);
+
+    // Broadcast au réseau
+    proposal.Relay();
+
+    return true;
+}
+```
+
+#### 5.3.4 Activation Automatique (Phase 1 — Bloc 215520)
+
+```cpp
+/**
+ * Activation R_consensus au bloc fixe 215520
+ * Fichier: src/validation.cpp (dans ConnectBlock)
+ */
+bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pindex, ...)
+{
+    int nHeight = pindex->nHeight;
+    int nActivationHeight = Params().GetConsensus().vUpgrades[Consensus::UPGRADE_KHU].nActivationHeight;
+
     // ... code existant ...
 
-    // Activation KHU R% au superblock budget DAO
-    if (nHeight >= Params().GetConsensus().vUpgrades[Consensus::UPGRADE_KHU].nActivationHeight)
-    {
-        // Tous les 43200 blocs (mainnet) = 30 jours
-        if (nHeight % Params().GetConsensus().nBudgetCycleBlocks == 0)
-        {
-            // Calculer consensus R% depuis pings masternodes
-            uint16_t R_consensus = mnodeman.GetRConsensus();
+    // KHU R% Reveal processing (bloc 195360)
+    if (nHeight >= nActivationHeight) {
+        if (!ProcessKHUReveal(nHeight, nActivationHeight))
+            return state.Invalid(false, REJECT_INVALID, "khu-reveal-failed");
+    }
 
-            // Activer nouveau R%
-            SetKhuAnnualRate(R_consensus);
+    // KHU R% Activation (bloc 215520, puis tous les 215520 blocs)
+    if (nHeight >= nActivationHeight) {
+        int activationHeight = GetKHUActivationHeight(nHeight, nActivationHeight);
 
-            LogPrintf("KHU R% activated at height %d: %.2f%% (applied for next 30 days)\n",
-                     nHeight, R_consensus / 100.0);
+        if (nHeight == activationHeight) {
+            // Lire R_consensus depuis auto-proposal
+            uint16_t R_next = GetKHURNextFromProposal();
+
+            if (R_next == 0) {
+                LogPrintf("KHU Activation: No auto-proposal found, keeping current R%\n");
+                // Pas de changement
+            } else {
+                // Activer nouveau R%
+                SetKhuAnnualRate(R_next);
+
+                LogPrintf("KHU R% ACTIVATED at height %d: %.2f%% (locked for 4 months)\n",
+                         nHeight, R_next / 100.0);
+            }
         }
     }
 
     // ... suite code existant ...
 }
+
+/**
+ * Lire R_next depuis auto-proposal
+ */
+uint16_t GetKHURNextFromProposal()
+{
+    LOCK(budget.cs);
+
+    // Chercher proposal "KHU_R_*_NEXT"
+    for (const auto& proposal : budget.GetBudget()) {
+        if (proposal.strProposalName.find("KHU_R_") == 0 &&
+            proposal.strProposalName.find("_NEXT") != std::string::npos)
+        {
+            // Extraire R% du nom
+            // Ex: "KHU_R_22.50_NEXT" → 2250
+            std::string r_str = proposal.strProposalName.substr(6);  // Skip "KHU_R_"
+            r_str = r_str.substr(0, r_str.find("_"));  // Avant "_NEXT"
+
+            double r_double = std::stod(r_str);
+            return static_cast<uint16_t>(r_double * 100.0);
+        }
+    }
+
+    return 0;  // Pas trouvé
+}
+```
+
+#### 5.3.5 RPC Interrogation État
+
+```cpp
+/**
+ * RPC: getkhugovernance
+ * Fichier: src/rpc/blockchain.cpp
+ */
+UniValue getkhugovernance(const JSONRPCRequest& request)
+{
+    if (request.fHelp)
+        throw std::runtime_error(
+            "getkhugovernance\n"
+            "\nGet current KHU R% governance cycle status.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"cycle_position\": n,      (numeric) Position dans cycle (0-215519)\n"
+            "  \"phase\": \"active|commit|reveal|notice\",\n"
+            "  \"R_current\": xx.xx,       (numeric) R% actuellement actif\n"
+            "  \"R_next\": xx.xx,          (numeric) R% prochain (si visible)\n"
+            "  \"R_max\": xx.xx,           (numeric) R_MAX_dynamic actuel\n"
+            "  \"commit_height\": n,       (numeric) Hauteur début commit\n"
+            "  \"reveal_height\": n,       (numeric) Hauteur reveal (deadline)\n"
+            "  \"activation_height\": n,   (numeric) Hauteur activation R_next\n"
+            "  \"valid_commits\": n        (numeric) Nombre commitments valides\n"
+            "}\n"
+        );
+
+    int nHeight = chainActive.Height();
+    int nActivationHeight = Params().GetConsensus().vUpgrades[Consensus::UPGRADE_KHU].nActivationHeight;
+
+    int cyclePos = GetKHUCyclePosition(nHeight, nActivationHeight);
+    int revealHeight = GetKHURevealHeight(nHeight, nActivationHeight);
+    int activationHeight = GetKHUActivationHeight(nHeight, nActivationHeight);
+    int commitStart = activationHeight - KHU_R_CYCLE_BLOCKS + KHU_R_ACTIVE_BLOCKS;
+
+    // Déterminer phase
+    std::string phase;
+    if (cyclePos < KHU_R_ACTIVE_BLOCKS)
+        phase = "active";
+    else if (cyclePos < KHU_R_ACTIVE_BLOCKS + KHU_R_COMMIT_BLOCKS)
+        phase = "commit";
+    else if (nHeight == revealHeight)
+        phase = "reveal";
+    else
+        phase = "notice";
+
+    uint16_t R_current = GetCurrentRAnnual();
+    uint16_t R_next = GetKHURNextFromProposal();
+    uint16_t R_MAX = GetRMaxDynamic(nHeight, nActivationHeight);
+
+    // Compter commitments valides
+    int valid_commits = 0;
+    if (phase == "commit" || phase == "notice") {
+        LOCK(mnodeman.cs);
+        for (const auto& mnpair : mnodeman.mapMasternodes) {
+            if (mnpair.second.IsEnabled() &&
+                !mnpair.second.lastPing.nRCommitment.IsNull())
+            {
+                valid_commits++;
+            }
+        }
+    }
+
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("cycle_position", cyclePos);
+    result.pushKV("phase", phase);
+    result.pushKV("R_current", R_current / 100.0);
+
+    if (R_next > 0)
+        result.pushKV("R_next", R_next / 100.0);
+
+    result.pushKV("R_max", R_MAX / 100.0);
+    result.pushKV("commit_height", commitStart);
+    result.pushKV("reveal_height", revealHeight);
+    result.pushKV("activation_height", activationHeight);
+    result.pushKV("valid_commits", valid_commits);
+
+    return result;
+}
+```
+
+#### 5.3.6 Workflow Exemple Complet
+
+```cpp
+/**
+ * EXEMPLE COMPLET: Cycle DOMC Commit-Reveal
+ *
+ * Cycle #1: Blocs 0 → 215520
+ * =============================
+ *
+ * PHASE 1: ACTIF (0 → 175200)
+ * ---------------------------
+ * Bloc 0:
+ *   R% = 25.00% ACTIVÉ (verrouillé 4 mois)
+ *
+ * Blocs 1-175199:
+ *   R% = 25.00% GARANTI
+ *   Aucun changement possible
+ *   LP planifient avec certitude
+ *
+ * PHASE 2: COMMIT (175200 → 195360)
+ * ----------------------------------
+ * Bloc 175200:
+ *   Période commit commence ✅
+ *
+ * MN1 exécute:
+ *   $ masternode commitkhu 22.50
+ *   → R_proposal = 2250
+ *   → secret = a3f5b2...
+ *   → commitment = SHA256(2250 || a3f5b2...)
+ *                = 7d3e9c...
+ *   → Broadcast commitment via ping
+ *
+ * MN2 exécute:
+ *   $ masternode commitkhu 23.00
+ *   → commitment = 9f2a1b...
+ *
+ * ... (tous MN votent pendant 2 semaines)
+ *
+ * Blocs 175201-195359:
+ *   🔒 Votes CACHÉS (commitments SHA256 uniquement)
+ *   🔒 Personne ne peut voir les R% proposés
+ *
+ * PHASE 3: REVEAL (Bloc 195360)
+ * ------------------------------
+ * Bloc 195360 ATTEINT:
+ *   ProcessKHUReveal() exécuté automatiquement
+ *
+ *   MN1 ping contient:
+ *     nRCommitment = 7d3e9c...
+ *     nRProposal = 2250
+ *     nRSecret = a3f5b2...
+ *
+ *   Validation:
+ *     SHA256(2250 || a3f5b2...) == 7d3e9c... ✅ VALIDE
+ *
+ *   MN2 ping contient:
+ *     nRCommitment = 9f2a1b...
+ *     nRProposal = 2300
+ *     nRSecret = c7d1e9...
+ *
+ *   Validation:
+ *     SHA256(2300 || c7d1e9...) == 9f2a1b... ✅ VALIDE
+ *
+ *   ... (400 MN révèlent)
+ *
+ *   Reveals valides:
+ *     MN1: 2250 (22.50%)
+ *     MN2: 2300 (23.00%)
+ *     MN3: 2200 (22.00%)
+ *     ... (400 votes)
+ *
+ *   Consensus:
+ *     R_consensus = moyenne(2250, 2300, 2200, ...)
+ *                 = 2270 (22.70%)
+ *
+ *   Auto-Proposal créée:
+ *     Nom: "KHU_R_22.70_NEXT"
+ *     Montant: 22.70 PIVX (symbolique)
+ *     Activation: Bloc 215520
+ *
+ * PHASE 4: PRÉAVIS (195361 → 215520)
+ * -----------------------------------
+ * Bloc 195361:
+ *   R_next = 22.70% VISIBLE (auto-proposal réseau)
+ *
+ * Blocs 195362-215519:
+ *   👁️ R_next visible 2 semaines
+ *   👁️ LP adaptent stratégies
+ *   📅 Activation bloc 215520 (prévisible)
+ *
+ * ACTIVATION (Bloc 215520)
+ * ------------------------
+ * Bloc 215520 ATTEINT:
+ *   R% = 22.70% ACTIVÉ (verrouillé 4 mois)
+ *   Nouveau Cycle #2 commence (positions reset)
+ *
+ * CYCLE #2 COMMENCE
+ * =================
+ * Bloc 215520 → 431040 (prochain cycle)
+ *
+ * TIMELINE VISUELLE:
+ *
+ * 0─────────175200────195360────215520────────────────►
+ * │   ACTIF   │ COMMIT │ NOTICE │   ACTIF (cycle 2)
+ * │ R=25.00%  │(caché) │R_next  │   R=22.70%
+ * │ 4 mois    │2 sem   │2 sem   │   4 mois
+ * └───────────┴────────┴────────┴─────────────────────►
+ *                      ▲
+ *                   REVEAL
+ *                 (automatique)
+ */
 ```
 
 ---
