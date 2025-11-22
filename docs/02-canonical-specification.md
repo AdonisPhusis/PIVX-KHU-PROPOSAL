@@ -87,8 +87,8 @@ Toute opération qui modifie C, U, Cr, ou Ur doit garantir que les invariants re
 
 ```
 Input:  amount PIV (burned)
-Effect: C  += amount
-        U  += amount
+Effect: C  += amount  (atomique)
+        U  += amount  (atomique)
 Output: amount KHU_T (created)
 ```
 
@@ -97,12 +97,17 @@ Output: amount KHU_T (created)
 - KHU_T created in single UTXO to recipient.
 - INVARIANT_1 preserved.
 
+**Atomicity:**
+C and U must be updated **in the same ConnectBlock execution**.
+No intermediate state where C is modified but U is not (or vice versa).
+Both mutations confined to single function call under global state lock.
+
 ### 3.2 REDEEM
 
 ```
 Input:  amount KHU_T (spent)
-Effect: C  -= amount
-        U  -= amount
+Effect: C  -= amount  (atomique)
+        U  -= amount  (atomique)
 Output: amount PIV (created from collateral)
 ```
 
@@ -110,6 +115,11 @@ Output: amount PIV (created from collateral)
 - KHU_T UTXOs must exist and be spendable.
 - PIV created to recipient.
 - INVARIANT_1 preserved.
+
+**Atomicity:**
+C and U must be updated **in the same ConnectBlock execution**.
+No intermediate state where C is decremented but U is not (or vice versa).
+Both mutations confined to single function call under global state lock.
 
 ### 3.3 BURN
 
@@ -325,7 +335,16 @@ Privacy protection mandatory.
 
 ### 7.2.3 Atomicité du double flux (UNSTAKE)
 
-Lors d'un UNSTAKE, le protocole applique un **double flux atomique** sur l'état global.
+#### Principe fondamental
+
+Lors d'un UNSTAKE, le protocole applique un **double flux atomique** sur l'état global:
+
+1. **Flux descendant (reward → staker)**: Cr → Ur → KHU_T (bonus accumulé B)
+2. **Flux ascendant (principal → supply)**: ZKHU → KHU_T (principal P)
+
+Ces deux flux s'exécutent **atomiquement** dans un seul `ConnectBlock`. Échec partiel = rejet du bloc entier (pas de rollback partiel).
+
+#### Définition du double flux
 
 Soit `B` le montant de bonus (Ur accumulé pour la note stakée):
 
@@ -336,19 +355,92 @@ Cr' = Cr - B   (consommation du pool de rendement à hauteur de B)
 Ur' = Ur - B   (suppression des droits de rendement consommés)
 ```
 
-**Règle d'atomicité:**
+**Note critique:** Le principal `P` ne modifie PAS l'état global (C, U, Cr, Ur) car il était déjà compté dans U au moment du STAKE initial. Seul le bonus `B` crée un double flux.
 
-Ces quatre mises à jour doivent être effectuées **dans la même exécution de ConnectBlock**, sous le même verrou (voir doc 06-protocol-reference.md), et sont considérées comme une seule transition atomique.
+#### Ordre d'exécution atomique
 
-Toute exécution partielle (par exemple, décrémenter `Cr` sans incrémenter `C` ou `U`) viole les invariants et entraîne le rejet du bloc par `CheckInvariants()`.
+1. **Vérifications préalables** (AVANT toute mutation):
+   - Nullifier non dépensé
+   - Maturité (≥ 4320 blocs)
+   - Cr >= B et Ur >= B
 
-**Interdictions absolues:**
+2. **Double flux atomique** (ne peut être interrompu):
+   ```cpp
+   state.U  += B;   // Flux ascendant (création KHU_T)
+   state.C  += B;   // Flux ascendant (collatéralisation)
+   state.Cr -= B;   // Flux descendant (consommation pool)
+   state.Ur -= B;   // Flux descendant (consommation droits)
+   ```
 
-- ❌ Décrémenter Cr sans incrémenter C et U dans le même bloc
-- ❌ Décrémenter Ur sans décrémenter Cr
-- ❌ Incrémenter U ou C sans décrémenter Cr/Ur en face
-- ❌ Reporter une partie du flux à un bloc ultérieur
-- ✅ Toutes les mutations doivent être confinées à `ApplyKhuUnstake()` sous `cs_khu`
+3. **Vérification invariants IMMÉDIATE**:
+   - Si `!state.CheckInvariants()` → bloc rejeté
+   - Pas de rollback partiel autorisé
+
+4. **Création UTXO** (principal + bonus):
+   - `CreateKHUUTXO(P + B, recipientScript)`
+
+#### Règle d'atomicité
+
+Ces quatre mutations (étape 2) doivent s'exécuter:
+- **Sans interruption possible**
+- Dans le même appel de fonction
+- Sous le même verrou `cs_khu`
+- Dans le même `ConnectBlock`
+
+Toute exécution partielle viole les invariants et entraîne le rejet du bloc par `CheckInvariants()`.
+
+#### Interdictions absolues
+
+**1. Pas de rollback partiel:**
+
+❌ INTERDIT:
+```cpp
+state.U += B;
+state.C += B;
+if (state.Cr < B) {
+    state.U -= B;  // ❌ Rollback interdit
+    state.C -= B;
+    return false;
+}
+```
+
+✅ CORRECT:
+```cpp
+// Vérification AVANT mutation
+if (state.Cr < B || state.Ur < B)
+    return false;  // Rejet avant toute mutation
+
+// Mutation atomique (pas de rollback possible)
+state.U  += B;
+state.C  += B;
+state.Cr -= B;
+state.Ur -= B;
+```
+
+**2. Pas de mutation hors ConnectBlock:**
+
+❌ INTERDIT: Mutation dans `AcceptToMemoryPool`
+
+✅ CORRECT: Validation seule dans mempool, mutation uniquement dans `ConnectBlock`
+
+**3. Pas de yield compounding:**
+
+Le yield accumulé (`Ur_accumulated`) d'une note ZKHU **ne génère PAS lui-même de yield**.
+
+❌ INTERDIT: `daily = ((note.amount + note.Ur_accumulated) * R_annual) / 10000 / 365`
+
+✅ CORRECT: `daily = (note.amount * R_annual) / 10000 / 365`
+
+**4. Pas de funding externe du reward pool:**
+
+Toute injection de Cr/Ur provenant de sources **autres que l'émission de bloc** (`ApplyBlockReward`) est interdite.
+
+#### Propriétés garanties
+
+- **Atomicité**: Les 4 mutations réussissent toutes ou le bloc est rejeté (XOR logique)
+- **Conservation**: Cr == Ur maintenu avant et après UNSTAKE
+- **Pas de création de valeur**: Seul le reward pool finance le bonus B
+- **Ordre canonique**: Yield update AVANT UNSTAKE dans le même bloc (voir section 11.1)
 
 ### 7.3 Prohibited
 

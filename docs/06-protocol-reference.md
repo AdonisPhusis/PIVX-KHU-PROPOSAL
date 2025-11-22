@@ -321,7 +321,13 @@ bool ConnectBlock(const CBlock& block, CBlockIndex* pindex, CCoinsViewCache& vie
 bool ApplyKhuUnstake(const CTransaction& tx, KhuGlobalState& state,
                      CCoinsViewCache& view, CValidationState& validationState,
                      uint32_t nHeight) {
-    LOCK(cs_khu);  // Atomicity guarantee for double flux
+    // ============================================================
+    // ⚠️ CRITICAL LOCK: MUST hold cs_khu for entire function
+    // ============================================================
+    // This lock guarantees atomic execution of the 4-way state mutation
+    // (C, U, Cr, Ur) in the double flux below.
+    // NEVER release this lock before all 4 mutations are complete.
+    LOCK(cs_khu);
 
     // 1. Extract UNSTAKE payload
     CKHUUnstakePayload payload;
@@ -364,16 +370,26 @@ bool ApplyKhuUnstake(const CTransaction& tx, KhuGlobalState& state,
                                      strprintf("Cr=%d Ur=%d B=%d", state.Cr, state.Ur, B));
 
     // ============================================================
-    // 10. ATOMIC DOUBLE FLUX (critical section)
+    // 10. ATOMIC DOUBLE FLUX (CRITICAL SECTION - DO NOT MODIFY)
     // ============================================================
     // These four updates MUST execute atomically in ConnectBlock
-    // Partial execution violates invariants and MUST reject block
+    // under cs_khu lock, in this exact order, without interruption.
+    //
+    // FORBIDDEN:
+    // - Separate these 4 lines into different functions
+    // - Execute U+=B and C+=B in one block, Cr-=B and Ur-=B in another
+    // - Add ANY code between these 4 lines that could fail/return
+    // - Release cs_khu lock between these 4 lines
+    //
+    // If ANY of these 4 mutations fails, the ENTIRE block is rejected.
+    // No partial execution. No rollback. All-or-nothing.
 
-    state.U  += B;   // (1) Create B units of KHU_T for staker
-    state.C  += B;   // (2) Increase collateralization by B
-    state.Cr -= B;   // (3) Consume reward pool
-    state.Ur -= B;   // (4) Consume reward rights
+    state.U  += B;   // (1) Create B units of KHU_T for staker (flux ascendant)
+    state.C  += B;   // (2) Increase collateralization by B (flux ascendant)
+    state.Cr -= B;   // (3) Consume reward pool (flux descendant)
+    state.Ur -= B;   // (4) Consume reward rights (flux descendant)
 
+    // END OF ATOMIC SECTION
     // ============================================================
 
     // 11. Verify invariants after atomic mutation
@@ -432,6 +448,266 @@ bool ApplyKhuUnstake(const CTransaction& tx, KhuGlobalState& state,
 5. Multiple UNSTAKEs in same block
 6. UNSTAKE in same block as yield update
 7. Double-spend attempt (same nullifier twice)
+
+### 3.1.1 Edge Cases and Error Handling
+
+**Case 1: UNSTAKE with yield not yet applied**
+
+Scenario: Block N contains both yield update and UNSTAKE of a note benefiting from that yield.
+
+Correct order (guaranteed by ConnectBlock):
+```cpp
+// 1. Yield BEFORE transactions
+ApplyDailyYield(newState, N);
+// → note.Ur_accumulated += daily
+// → state.Ur += daily
+// → state.Cr += daily
+
+// 2. UNSTAKE uses updated yield
+ApplyKhuUnstake(tx, newState, ...);
+// → uses note.Ur_accumulated INCLUDING today's yield
+```
+
+If order reversed (BUG): UNSTAKE fails because `state.Ur < B` (yield not yet added).
+
+**Case 2: UNSTAKE with insufficient Ur**
+
+Scenario: Bug in yield calculation → `state.Ur < B`
+
+Behavior:
+```cpp
+if (state.Cr < B || state.Ur < B)
+    return validationState.Invalid("khu-unstake-insufficient-rewards");
+```
+
+Consequence: Block rejected, staker loses nothing (transaction remains in mempool).
+
+Diagnostic: Log error with `Cr`, `Ur`, `B`, `height` for audit.
+
+**Case 3: Double UNSTAKE in same block**
+
+Scenario: Block contains two UNSTAKEs of different notes.
+
+Sequential processing:
+```cpp
+for (const auto& tx : block.vtx) {
+    if (tx.nType == TxType::KHU_UNSTAKE) {
+        // First UNSTAKE
+        state.Ur -= B1;
+        state.Cr -= B1;
+
+        // Second UNSTAKE
+        state.Ur -= B2;
+        state.Cr -= B2;
+    }
+}
+
+// Invariants checked ONCE at end of block
+assert(state.CheckInvariants());
+```
+
+Safety: As long as `Ur >= B1 + B2` before block, both UNSTAKEs succeed.
+
+**Case 4: Invariant violation after UNSTAKE**
+
+Scenario: Logic bug → invariants broken after double flux.
+
+Behavior:
+```cpp
+if (!newState.CheckInvariants()) {
+    return state.Invalid(false, REJECT_INVALID, "khu-invariant-violation",
+                       strprintf("C=%d U=%d Cr=%d Ur=%d", C, U, Cr, Ur));
+}
+```
+
+Consequence:
+- Block rejected
+- Peer banned (score -100)
+- Detailed logs for investigation
+- **No automatic correction**
+
+Possible causes:
+- Overflow int64_t (impossible with current emission)
+- Bug in ApplyDailyYield
+- Memory corruption (detected by CheckInvariants)
+
+### 3.1.2 Yield Accumulation (Ur) Implementation
+
+**Daily update rule (every 1440 blocks):**
+
+```cpp
+void ApplyDailyYield(KhuGlobalState& state, uint32_t nHeight, CCoinsViewCache& view) {
+    // ⚠️ CRITICAL: This function MUST be called under cs_khu lock
+    // to guarantee atomic updates of Cr and Ur
+    AssertLockHeld(cs_khu);
+
+    if ((nHeight - state.last_yield_update_height) < BLOCKS_PER_DAY)
+        return;  // Not yet time
+
+    int64_t Ur_increment = 0;
+
+    // Calculate for each mature ZKHU note
+    for (const ZKHUNoteData& note : GetMatureZKHUNotes(view, nHeight)) {
+        // Maturity: staked for >= 4320 blocks
+        if ((nHeight - note.stakeStartHeight) < KHU_MATURITY_BLOCKS)
+            continue;
+
+        // Annual yield for this note
+        int64_t annual = (note.amount * state.R_annual) / 10000;
+        int64_t daily = annual / 365;
+
+        Ur_increment += daily;
+
+        // Update note data
+        note.Ur_accumulated += daily;
+        UpdateNoteData(note);
+    }
+
+    // ============================================================
+    // ATOMIC UPDATE: Ur and Cr MUST be updated together
+    // ============================================================
+    // These two updates are inseparable - if one fails, both fail
+    // No intermediate state where Ur is updated but Cr is not
+
+    state.Ur += Ur_increment;  // (1) Update reward rights
+    state.Cr += Ur_increment;  // (2) Update reward pool
+                               // INVARIANT_2: Cr == Ur (always)
+
+    state.last_yield_update_height = nHeight;
+
+    // Post-mutation verification
+    assert(state.CheckInvariants());
+}
+```
+
+**Atomicity guarantees:**
+
+1. **Lock protection:** Function MUST be called under `cs_khu` lock
+2. **Paired updates:** `Ur` and `Cr` updated in same function, same execution
+3. **No separation:** Never update `Ur` without updating `Cr` in same operation
+4. **Invariant preserved:** After each yield update, `Cr == Ur` (strict equality)
+
+**Critical:** Yield compounding forbidden - yield only calculated on `note.amount`, never on `note.Ur_accumulated`.
+
+---
+
+## 3.2 ATOMICITY ENFORCEMENT RULES
+
+**All state mutations (C, U, Cr, Ur) MUST follow these rules:**
+
+### 3.2.1 MINT Operations
+
+```cpp
+bool ApplyKhuMint(const CTransaction& tx, KhuGlobalState& state, ...) {
+    LOCK(cs_khu);  // Required
+
+    int64_t amount = GetMintAmount(tx);
+
+    // Atomic paired update
+    state.C += amount;  // MUST be immediately followed by:
+    state.U += amount;  // No code between these two lines
+
+    assert(state.CheckInvariants());
+    return true;
+}
+```
+
+**Rule:** C and U MUST be updated in same function, under same lock, in same ConnectBlock.
+
+### 3.2.2 REDEEM Operations
+
+```cpp
+bool ApplyKhuRedeem(const CTransaction& tx, KhuGlobalState& state, ...) {
+    LOCK(cs_khu);  // Required
+
+    int64_t amount = GetRedeemAmount(tx);
+
+    // Atomic paired update
+    state.C -= amount;  // MUST be immediately followed by:
+    state.U -= amount;  // No code between these two lines
+
+    assert(state.CheckInvariants());
+    return true;
+}
+```
+
+**Rule:** C and U MUST be updated in same function, under same lock, in same ConnectBlock.
+
+### 3.2.3 Yield Update Operations
+
+See section 3.1.2 for complete ApplyDailyYield implementation.
+
+**Rule:** Cr and Ur MUST be updated together, under cs_khu lock, every 1440 blocks.
+
+**Pattern:**
+```cpp
+state.Ur += daily_increment;  // MUST be immediately followed by:
+state.Cr += daily_increment;  // No code between these two lines
+```
+
+### 3.2.4 UNSTAKE Operations (Double Flux)
+
+See section 3.1 for complete ApplyKhuUnstake implementation.
+
+**Rule:** All 4 mutations (U, C, Cr, Ur) MUST execute atomically under cs_khu lock.
+
+**Pattern:**
+```cpp
+state.U  += B;  // Line 1
+state.C  += B;  // Line 2 (immediately after line 1)
+state.Cr -= B;  // Line 3 (immediately after line 2)
+state.Ur -= B;  // Line 4 (immediately after line 3)
+```
+
+**No code allowed between these 4 lines. No exceptions.**
+
+### 3.2.5 Forbidden Patterns
+
+❌ **NEVER do this:**
+
+```cpp
+// BAD: Separate C and U updates
+state.C += amount;
+DoSomethingElse();  // ❌ Code between mutations
+state.U += amount;
+
+// BAD: C and U in different functions
+void UpdateC(int64_t amount) { state.C += amount; }  // ❌
+void UpdateU(int64_t amount) { state.U += amount; }  // ❌
+
+// BAD: Updates in different blocks
+if (height % 2 == 0)
+    state.C += amount;  // ❌ C in one block
+else
+    state.U += amount;  // ❌ U in another block
+
+// BAD: Conditional updates
+state.C += amount;
+if (some_condition)  // ❌ Conditional between mutations
+    state.U += amount;
+
+// BAD: Try-catch separation
+state.C += amount;
+try {
+    DoSomething();  // ❌ May throw
+    state.U += amount;
+} catch (...) {}
+```
+
+### 3.2.6 Enforcement Checklist
+
+For every function that modifies C, U, Cr, or Ur:
+
+1. ✅ Function holds `cs_khu` lock (use `AssertLockHeld(cs_khu)`)
+2. ✅ Paired variables updated consecutively (no code between)
+3. ✅ All mutations in same function (no cross-function splits)
+4. ✅ All mutations in same ConnectBlock execution
+5. ✅ `CheckInvariants()` called after mutations
+6. ✅ No early returns between paired updates
+7. ✅ No exceptions thrown between paired updates
+8. ✅ No conditional logic between paired updates
+
+**Violation of ANY of these rules = consensus failure.**
 
 ---
 

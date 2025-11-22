@@ -329,7 +329,14 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
 
 ---
 
-> ⚠️ **ATOMICITÉ DU DOUBLE FLUX UNSTAKE**
+> ⚠️ **ATOMICITÉ CRITIQUE — RÈGLE FONDAMENTALE**
+>
+> **Toute modification de C/U (MINT/REDEEM) ou C/U/Cr/Ur (UNSTAKE/Yield) doit être atomique et intrabloc.**
+>
+> **MINT:** `C += amount` et `U += amount` dans le même bloc/opération.
+> **REDEEM:** `C -= amount` et `U -= amount` dans le même bloc/opération.
+> **UNSTAKE:** Les 4 mises à jour (`C+=B`, `U+=B`, `Cr-=B`, `Ur-=B`) sont une transition atomique dans le même `ConnectBlock()`.
+> **Yield:** `Cr += Δ` et `Ur += Δ` ensemble dans `ApplyDailyYield()`.
 >
 > L'implémentation de `ApplyKHUUnstake()` doit appliquer les quatre mises à jour (`C`, `U`, `Cr`, `Ur`) sous un même lock (`cs_khu`) et en une seule séquence, dans `ConnectBlock`.
 >
@@ -337,10 +344,12 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
 > - Séparer ces mises à jour dans plusieurs fonctions indépendantes non atomiques
 > - Faire `Ur -= B` dans un bloc et `C += B` dans un autre
 > - Laisser un bloc persister un état intermédiaire où `Cr != Ur` ou `C != U`
+> - Modifier C sans modifier U en même temps (et vice versa)
+> - Modifier Cr sans modifier Ur en même temps (et vice versa)
 >
-> **Toutes les mutations de `C/U/Cr/Ur` liées à l'UNSTAKE doivent être confinées à `ApplyKHUUnstake()` pour garantir l'atomicité.**
+> **Toutes les mutations de `C/U/Cr/Ur` doivent être confinées aux fonctions atomiques appropriées pour garantir l'atomicité.**
 >
-> Voir docs/blueprints/09-DOUBLE-FLUX-ATOME.md pour détails complets.
+> Voir docs/02-canonical-specification.md sections 3.1, 3.2, 7.2.3 et docs/06-protocol-reference.md sections 3, 3.1 pour détails complets.
 
 ### 4.3 ApplyKHUTransaction
 
