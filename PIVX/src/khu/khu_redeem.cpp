@@ -140,6 +140,9 @@ bool ApplyKHURedeem(const CTransaction& tx, KhuGlobalState& state, CCoinsViewCac
     }
 
     // 3. Vérifier collateral suffisant
+    // ✅ NOTE VULN-KHU-2025-001: This check also serves as underflow protection.
+    // By ensuring state.C >= amount and state.U >= amount before subtraction,
+    // we prevent signed integer underflow (which is also undefined behavior).
     if (state.C < amount || state.U < amount) {
         return error("ApplyKHURedeem: Insufficient C/U (C=%d U=%d amount=%d)",
                      state.C, state.U, amount);

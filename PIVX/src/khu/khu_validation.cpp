@@ -108,6 +108,16 @@ bool ProcessKHUBlock(const CBlock& block,
             // This happens at KHU activation height
             prevState.SetNull();
             prevState.nHeight = nHeight - 1;
+        } else {
+            // ✅ FIX CVE-KHU-2025-002: Vérifier les invariants de l'état chargé
+            // CRITICAL: Without this check, a corrupted DB with invalid state (C != U)
+            // would be loaded and used as the base for all future blocks, permanently
+            // breaking the sacred invariants.
+            if (!prevState.CheckInvariants()) {
+                return validationState.Error(strprintf(
+                    "khu-corrupted-prev-state: Previous state at height %d has invalid invariants (C=%d U=%d Cr=%d Ur=%d)",
+                    nHeight - 1, prevState.C, prevState.U, prevState.Cr, prevState.Ur));
+            }
         }
     } else {
         // Genesis block

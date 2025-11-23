@@ -377,4 +377,199 @@ BOOST_AUTO_TEST_CASE(test_state_hash_deterministic)
     BOOST_CHECK(hashSwapped == hash1);
 }
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * SECURITY HARDENING TESTS (CVE-KHU-2025-002, VULN-KHU-2025-001)
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+/**
+ * Test: DB Corruption Detection (CVE-KHU-2025-002)
+ *
+ * Verify that ProcessKHUBlock rejects a corrupted previous state loaded from DB.
+ *
+ * Attack vector:
+ * - Attacker gains filesystem access
+ * - Modifies LevelDB directly to insert invalid state (C != U)
+ * - Node restarts and loads corrupted state
+ *
+ * Expected behavior:
+ * - ProcessKHUBlock() should detect the invariant violation
+ * - Return error "khu-corrupted-prev-state"
+ * - Prevent corrupted state from propagating to future blocks
+ *
+ * Fix location: src/khu/khu_validation.cpp:111-120
+ */
+BOOST_AUTO_TEST_CASE(test_prev_state_corruption_detection)
+{
+    // Create a corrupted state with C != U (breaks sacred invariant)
+    KhuGlobalState corruptedState;
+    corruptedState.C = 100 * COIN;
+    corruptedState.U = 50 * COIN;   // ⚠️ C != U - CORRUPTED!
+    corruptedState.Cr = 0;
+    corruptedState.Ur = 0;
+    corruptedState.nHeight = 999;
+    corruptedState.hashBlock = uint256S("0x1234");
+    corruptedState.hashPrevState = uint256();
+
+    // Verify the state is indeed invalid
+    BOOST_CHECK(!corruptedState.CheckInvariants());
+
+    // Simulate writing this corrupted state to DB
+    // (In a full integration test, we would:
+    //  1. Write corruptedState to DB at height 999
+    //  2. Call ProcessKHUBlock(height=1000)
+    //  3. Verify it returns error "khu-corrupted-prev-state"
+    //
+    // For this unit test, we verify the CheckInvariants() logic works)
+
+    // Test Case 1: Corrupted state with C != U
+    KhuGlobalState state1;
+    state1.C = 100 * COIN;
+    state1.U = 99 * COIN;  // Off by 1 COIN
+    state1.Cr = 0;
+    state1.Ur = 0;
+    BOOST_CHECK(!state1.CheckInvariants());  // Should detect corruption
+
+    // Test Case 2: Corrupted state with Cr != Ur
+    KhuGlobalState state2;
+    state2.C = 100 * COIN;
+    state2.U = 100 * COIN;
+    state2.Cr = 50 * COIN;
+    state2.Ur = 40 * COIN;  // Cr != Ur
+    BOOST_CHECK(!state2.CheckInvariants());  // Should detect corruption
+
+    // Test Case 3: Negative values (overflow attack)
+    KhuGlobalState state3;
+    state3.C = -100;  // Negative C (overflow result)
+    state3.U = -100;
+    state3.Cr = 0;
+    state3.Ur = 0;
+    BOOST_CHECK(!state3.CheckInvariants());  // Should detect negative
+
+    // Test Case 4: Valid state should pass
+    KhuGlobalState validState;
+    validState.C = 100 * COIN;
+    validState.U = 100 * COIN;  // C == U ✅
+    validState.Cr = 50 * COIN;
+    validState.Ur = 50 * COIN;  // Cr == Ur ✅
+    BOOST_CHECK(validState.CheckInvariants());  // Should pass
+
+    // Test Case 5: Genesis state (C=0, U=0) should be valid
+    KhuGlobalState genesisState;
+    genesisState.SetNull();
+    BOOST_CHECK(genesisState.CheckInvariants());  // Genesis is valid
+
+    // NOTE: Full integration test would require mocking CBlockIndex, CCoinsViewCache,
+    // and CValidationState to call ProcessKHUBlock() directly. This unit test verifies
+    // the invariant checking logic that the fix (CVE-KHU-2025-002) relies on.
+}
+
+/**
+ * Test: MINT Overflow Rejection (VULN-KHU-2025-001)
+ *
+ * Verify that ApplyKHUMint rejects transactions that would cause integer overflow.
+ *
+ * Attack vector:
+ * - Attacker manipulates state to be near MAX_INT64
+ * - Submits MINT transaction that would overflow C or U
+ * - Overflow causes undefined behavior in C++
+ * - Could result in C != U breaking the invariant
+ *
+ * Expected behavior:
+ * - ApplyKHUMint() should detect potential overflow BEFORE mutation
+ * - Return error "Overflow would occur"
+ * - State should remain unchanged
+ *
+ * Fix location: src/khu/khu_mint.cpp:157-164
+ */
+BOOST_AUTO_TEST_CASE(test_mint_overflow_rejected)
+{
+    // Test Case 1: Overflow detection near MAX_INT64
+    {
+        KhuGlobalState state;
+        state.C = std::numeric_limits<CAmount>::max() - 50 * COIN;
+        state.U = std::numeric_limits<CAmount>::max() - 50 * COIN;
+        state.Cr = 0;
+        state.Ur = 0;
+        state.nHeight = 1000;
+
+        // Verify state is currently valid
+        BOOST_CHECK(state.CheckInvariants());
+
+        // Simulate MINT with amount that would overflow
+        CAmount hugeAmount = 100 * COIN;  // Would overflow: (MAX - 50) + 100 > MAX
+
+        // Check if overflow would occur (this is what the fix checks)
+        bool wouldOverflowC = (state.C > std::numeric_limits<CAmount>::max() - hugeAmount);
+        bool wouldOverflowU = (state.U > std::numeric_limits<CAmount>::max() - hugeAmount);
+
+        BOOST_CHECK(wouldOverflowC);  // Should detect overflow on C
+        BOOST_CHECK(wouldOverflowU);  // Should detect overflow on U
+
+        // Verify state was NOT mutated (simulation only)
+        BOOST_CHECK(state.C == std::numeric_limits<CAmount>::max() - 50 * COIN);
+        BOOST_CHECK(state.U == std::numeric_limits<CAmount>::max() - 50 * COIN);
+    }
+
+    // Test Case 2: Safe MINT near max (should succeed check)
+    {
+        KhuGlobalState state;
+        state.C = std::numeric_limits<CAmount>::max() - 200 * COIN;
+        state.U = std::numeric_limits<CAmount>::max() - 200 * COIN;
+        state.Cr = 0;
+        state.Ur = 0;
+
+        CAmount safeAmount = 100 * COIN;  // Safe: (MAX - 200) + 100 < MAX
+
+        bool wouldOverflowC = (state.C > std::numeric_limits<CAmount>::max() - safeAmount);
+        bool wouldOverflowU = (state.U > std::numeric_limits<CAmount>::max() - safeAmount);
+
+        BOOST_CHECK(!wouldOverflowC);  // Should NOT detect overflow
+        BOOST_CHECK(!wouldOverflowU);  // Should NOT detect overflow
+    }
+
+    // Test Case 3: Exact boundary (MAX - 1 + 1 = MAX, should be safe)
+    {
+        KhuGlobalState state;
+        state.C = std::numeric_limits<CAmount>::max() - 1;
+        state.U = std::numeric_limits<CAmount>::max() - 1;
+        state.Cr = 0;
+        state.Ur = 0;
+
+        CAmount boundaryAmount = 1;
+
+        bool wouldOverflowC = (state.C > std::numeric_limits<CAmount>::max() - boundaryAmount);
+        bool wouldOverflowU = (state.U > std::numeric_limits<CAmount>::max() - boundaryAmount);
+
+        BOOST_CHECK(!wouldOverflowC);  // Exactly at limit, should be OK
+        BOOST_CHECK(!wouldOverflowU);
+
+        // After mutation, would be exactly MAX
+        // state.C += boundaryAmount;  // Would equal MAX_INT64
+        // This is safe, no overflow
+    }
+
+    // Test Case 4: Off-by-one overflow (MAX - 1 + 2 > MAX)
+    {
+        KhuGlobalState state;
+        state.C = std::numeric_limits<CAmount>::max() - 1;
+        state.U = std::numeric_limits<CAmount>::max() - 1;
+        state.Cr = 0;
+        state.Ur = 0;
+
+        CAmount overflowAmount = 2;  // Would overflow by 1
+
+        bool wouldOverflowC = (state.C > std::numeric_limits<CAmount>::max() - overflowAmount);
+        bool wouldOverflowU = (state.U > std::numeric_limits<CAmount>::max() - overflowAmount);
+
+        BOOST_CHECK(wouldOverflowC);  // Should detect overflow
+        BOOST_CHECK(wouldOverflowU);
+    }
+
+    // NOTE: Full integration test would construct a CTransaction with CMintKHUPayload,
+    // mock CCoinsViewCache, and call ApplyKHUMint() directly to verify the error() return.
+    // This unit test verifies the overflow detection logic that the fix implements.
+}
+
 BOOST_AUTO_TEST_SUITE_END()

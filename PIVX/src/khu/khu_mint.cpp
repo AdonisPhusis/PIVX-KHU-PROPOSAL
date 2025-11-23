@@ -149,8 +149,22 @@ bool ApplyKHUMint(const CTransaction& tx, KhuGlobalState& state, CCoinsViewCache
     //                       PAS D'INSTRUCTIONS ENTRE LES DEUX
     //    Source: docs/blueprints/03-MINT-REDEEM.md section 4.1
     // ═════════════════════════════════════════════════════════
-    state.C += amount;  // Augmenter collateral
-    state.U += amount;  // Augmenter supply
+
+    // ✅ FIX VULN-KHU-2025-001: Vérifier overflow AVANT mutation
+    // CRITICAL: Signed integer overflow in C++ is undefined behavior (UB).
+    // Without this check, overflow could lead to unpredictable results where
+    // C and U might end up with different values, breaking the C==U invariant.
+    if (state.C > (std::numeric_limits<CAmount>::max() - amount)) {
+        return error("ApplyKHUMint: Overflow would occur on C (C=%d amount=%d)",
+                     state.C, amount);
+    }
+    if (state.U > (std::numeric_limits<CAmount>::max() - amount)) {
+        return error("ApplyKHUMint: Overflow would occur on U (U=%d amount=%d)",
+                     state.U, amount);
+    }
+
+    state.C += amount;  // Augmenter collateral - Safe: overflow checked above
+    state.U += amount;  // Augmenter supply - Safe: overflow checked above
 
     // 4. Vérifier invariants APRÈS mutation
     if (!state.CheckInvariants()) {
