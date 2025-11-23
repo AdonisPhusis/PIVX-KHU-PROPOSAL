@@ -831,10 +831,10 @@ bool VerifyKHUStateDB() {
 
 **Documentation:**
 - `docs/reports/RAPPORT_PHASE3_SECURITY_HARDENING.md` (ce document)
-- `RAPPORT_RED_TEAM_FINAL.md` (audit initial)
-- `ATTAQUE_OVERFLOW.md` (analyse overflow)
-- `ATTAQUE_REORG.md` (analyse reorg/DB)
-- `ATTAQUE_MALFORMED.md` (analyse malformed tx)
+- `docs/security/RAPPORT_RED_TEAM_FINAL.md` (audit initial)
+- `docs/security/ATTAQUE_OVERFLOW.md` (analyse overflow)
+- `docs/security/ATTAQUE_REORG.md` (analyse reorg/DB)
+- `docs/security/ATTAQUE_MALFORMED.md` (analyse malformed tx)
 
 **Total:** +223 lignes de code/tests, 5 documents
 
@@ -1061,12 +1061,12 @@ Total: 314ms
 
 ### B.2 Documents Liés
 
-- [RAPPORT_RED_TEAM_FINAL.md](../../RAPPORT_RED_TEAM_FINAL.md) - Audit initial
-- [ATTAQUE_OVERFLOW.md](../../ATTAQUE_OVERFLOW.md) - Analyse overflow détaillée
-- [ATTAQUE_REORG.md](../../ATTAQUE_REORG.md) - Analyse DB corruption
-- [ATTAQUE_MALFORMED.md](../../ATTAQUE_MALFORMED.md) - Analyse malformed tx
-- [SECURITY_AUDIT_KHU_V6.md](./SECURITY_AUDIT_KHU_V6.md) - Audit sécurité V6.0
-- [AUDIT_INTEGRATION_PHASES_1_2_3.md](./AUDIT_INTEGRATION_PHASES_1_2_3.md) - Audit intégration
+- [RAPPORT_RED_TEAM_FINAL.md](../security/RAPPORT_RED_TEAM_FINAL.md) - Audit initial
+- [ATTAQUE_OVERFLOW.md](../security/ATTAQUE_OVERFLOW.md) - Analyse overflow détaillée
+- [ATTAQUE_REORG.md](../security/ATTAQUE_REORG.md) - Analyse DB corruption
+- [ATTAQUE_MALFORMED.md](../security/ATTAQUE_MALFORMED.md) - Analyse malformed tx
+- [SECURITY_AUDIT_KHU_V6.md](../audit/SECURITY_AUDIT_KHU_V6.md) - Audit sécurité V6.0
+- [AUDIT_INTEGRATION_PHASES_1_2_3.md](../audit/AUDIT_INTEGRATION_PHASES_1_2_3.md) - Audit intégration
 
 ### B.3 Code Source
 
