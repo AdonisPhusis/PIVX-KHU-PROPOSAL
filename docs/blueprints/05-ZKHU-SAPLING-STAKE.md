@@ -17,6 +17,25 @@ Décrire précisément l'utilisation minimale de Sapling pour :
 
 ---
 
+## ⚠️ PHASE 4 vs PHASE 5 : BONUS YIELD
+
+**PHASE 4 (Staking sans yield) :**
+- R% = 0 (pas de yield actif)
+- Ur_accumulated = 0 pour toutes les notes
+- Bonus B = 0 pour tous les UNSTAKE
+- **Effet net : C/U numériquement inchangés** (mais code applique déjà double flux C+=B, U+=B avec B=0)
+- **Structure code déjà prête pour Phase 5**
+
+**PHASE 5+ (Yield R% actif) :**
+- R% > 0 (voté par DOMC)
+- Ur_accumulated croît quotidiennement (1440 blocs)
+- Bonus B > 0 pour UNSTAKE après maturity
+- **Effet net : C/U augmentent, Cr/Ur diminuent** (double flux actif)
+
+**Ce blueprint décrit la structure GÉNÉRALE (B>=0), Phase 4 est le cas particulier B=0.**
+
+---
+
 ## 1. PRIMITIVES SAPLING UTILISÉES
 
 ZKHU réutilise les primitives Sapling **SANS MODIFICATION** :
@@ -114,18 +133,18 @@ ZKHU utilise un namespace séparé avec préfixe `'K'` :
 // ✅ Aucun chevauchement — isolation complète
 ```
 
-**Structure ZKHUNoteData:**
+**Structure ZKHUNoteData (CORRIGÉ):**
 
 ```cpp
 struct ZKHUNoteData {
     int64_t amount;              // KHU amount (satoshis)
     uint32_t nStakeStartHeight;  // Stake start height
-    int64_t Ur_at_stake;         // Ur snapshot à STAKE
+    int64_t Ur_accumulated;      // ✅ CORRIGÉ: Accumulated reward (per-note)
     uint256 nullifier;           // Nullifier (dépense unique)
     uint256 cm;                  // Commitment
 
     SERIALIZE_METHODS(ZKHUNoteData, obj) {
-        READWRITE(obj.amount, obj.nStakeStartHeight, obj.Ur_at_stake);
+        READWRITE(obj.amount, obj.nStakeStartHeight, obj.Ur_accumulated);
         READWRITE(obj.nullifier, obj.cm);
     }
 };
@@ -152,7 +171,7 @@ bool ProcessSTAKE(const CTransaction& tx, KhuGlobalState& state) {
     ZKHUNote zkhu_note;
     zkhu_note.amount = input_utxo.amount;
     zkhu_note.nStakeStartHeight = nHeight;
-    zkhu_note.Ur_at_stake = state.Ur;  // Snapshot Ur
+    zkhu_note.Ur_accumulated = 0;  // ✅ Phase 4: no yield yet (Phase 5: will increment)
 
     // 3. Générer commitment et nullifier (Sapling standard)
     zkhu_note.cm = ComputeCommitment(zkhu_note);
@@ -202,24 +221,29 @@ bool ProcessUNSTAKE(const CTransaction& tx, KhuGlobalState& state) {
                            "UNSTAKE requires 4320 blocks maturity");
     }
 
-    // 4. Calculer bonus (Ur_now - Ur_at_stake)
-    int64_t bonus = state.Ur - zkhu_note.Ur_at_stake;
+    // 4. ✅ CORRIGÉ: Calculer bonus (per-note Ur_accumulated)
+    int64_t bonus = zkhu_note.Ur_accumulated;  // Phase 4: =0, Phase 5+: >0
     if (bonus < 0) {
-        return error("Negative bonus (Ur decreased)");
+        return error("Negative bonus");
     }
 
     // 5. Créer output KHU_T avec bonus
     int64_t total_output = zkhu_note.amount + bonus;
     CreateKHUUTXO(total_output, new_address);  // getnewaddress
 
-    // 6. Mettre à jour état global
+    // 6. ✅ CORRIGÉ: DOUBLE FLUX (canonique)
+    // Supply et collateral augmentent (création KHU + PIV)
+    state.U += bonus;    // Supply KHU increases
+    state.C += bonus;    // Collateral PIV increases
+
+    // Pool et rights diminuent (consommation reward)
     state.Cr -= bonus;   // Consume reward pool
     state.Ur -= bonus;   // Consume rights
 
     // 7. Marquer nullifier comme dépensé
     MarkNullifierSpent(zkhu_note.nullifier);
 
-    // ✅ Vérifier invariants
+    // 8. ✅ Vérifier invariants (CRITICAL)
     if (!state.CheckInvariants()) {
         return error("Invariants violated after UNSTAKE");
     }
@@ -228,18 +252,24 @@ bool ProcessUNSTAKE(const CTransaction& tx, KhuGlobalState& state) {
 }
 ```
 
-**Invariants UNSTAKE:**
+**Invariants UNSTAKE (CORRIGÉ):**
 ```cpp
 // Avant UNSTAKE:
+C == U               // Collateralization
 Cr == Ur             // Pool cohérent
 
-// Après UNSTAKE:
-Cr_after == Cr_before - bonus
-Ur_after == Ur_before - bonus
-Cr_after == Ur_after // ✅ Invariant préservé
+// Après UNSTAKE (bonus B):
+U_after  == U_before  + B   // ✅ Supply increases
+C_after  == C_before  + B   // ✅ Collateral increases
+Cr_after == Cr_before - B   // ✅ Pool decreases
+Ur_after == Ur_before - B   // ✅ Rights decrease
 
-C_after == C_before  // Aucun changement collateral
-U_after == U_before  // Aucun changement supply
+// Invariants préservés:
+C_after == U_after          // ✅ (C+B) == (U+B)
+Cr_after == Ur_after        // ✅ (Cr-B) == (Ur-B)
+
+// Phase 4: B=0 → effet net nul, mais structure déjà correcte
+// Phase 5+: B>0 → double flux actif
 ```
 
 ---
@@ -254,8 +284,8 @@ struct ZKHUMemo {
     uint8_t version;             // 1
     uint32_t nStakeStartHeight;  // Stake start height
     int64_t amount;              // KHU amount (satoshis)
-    int64_t Ur_at_stake;         // Ur snapshot
-    uint8_t padding[491];        // Zeros (reserved)
+    int64_t Ur_accumulated;      // ✅ CORRIGÉ: Accumulated reward (per-note)
+    uint8_t padding[487];        // Zeros (reserved)
 };
 ```
 
@@ -277,8 +307,8 @@ std::array<unsigned char, 512> SerializeZKHUMemo(const ZKHUNote& note) {
     // Amount (8 bytes)
     WriteLE64(&memo[9], note.amount);
 
-    // Ur snapshot (8 bytes)
-    WriteLE64(&memo[17], note.Ur_at_stake);
+    // ✅ CORRIGÉ: Ur_accumulated (per-note, NOT global snapshot)
+    WriteLE64(&memo[17], note.Ur_accumulated);
 
     return memo;
 }
