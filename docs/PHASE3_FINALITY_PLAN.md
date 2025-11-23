@@ -510,11 +510,15 @@ struct KHUStateSignatureMessage {
 
 ---
 
-## 10. NEXT STEPS
+## 10. NEXT STEPS (ROADMAP CANONIQUE)
 
-**Phase 4:** TBD
-**Phase 5:** Daily Yield (Cr/Ur mutations)
-**Phase 6+:** STAKE/UNSTAKE, ZKHU, HTLC, DOMC
+**Phase 4:** SAPLING (STAKE/UNSTAKE) - ZKHU privacy staking
+**Phase 5:** YIELD Cr/Ur (Moteur DOMC) - Daily yield + R% system
+**Phase 6:** DOMC (Gouvernance R%) - Decentralized monetary creation
+**Phase 7:** HTLC Cross-Chain - Gateway compatibility
+**Phase 8:** Wallet / RPC - Complete UI
+**Phase 9:** Testnet Long - Stability testing
+**Phase 10:** Mainnet - Production deployment
 
 ---
 
@@ -522,3 +526,5 @@ struct KHUStateSignatureMessage {
 
 **Status:** 📋 **PLANNING COMPLETE**
 **Next:** 🚀 **IMPLEMENTATION**
+
+**Source:** docs/05-roadmap.md (Canonical Roadmap)
