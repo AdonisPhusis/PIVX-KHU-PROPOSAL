@@ -121,6 +121,7 @@ BITCOIN_TESTS =\
   test/khu_phase1_tests.cpp \
   test/khu_emission_v6_tests.cpp \
   test/khu_phase2_tests.cpp \
+  test/khu_phase3_tests.cpp \
   test/dbwrapper_tests.cpp \
   test/validation_tests.cpp \
   test/main_tests.cpp \
