@@ -171,7 +171,9 @@ bool DisconnectKHUBlock(CBlockIndex* pindex,
         return validationState.Error("khu-db-not-initialized");
     }
 
-    // PHASE 3: Check cryptographic finality via commitments
+    // PHASE 3: Check cryptographic finality via commitments (V6_0+ only)
+    // NOTE: DisconnectKHUBlock is only called if NetworkUpgradeActive(V6_0) in validation.cpp
+    // but we double-check here for clarity and safety
     CKHUCommitmentDB* commitmentDB = GetKHUCommitmentDB();
     if (commitmentDB) {
         uint32_t latestFinalized = commitmentDB->GetLatestFinalizedHeight();

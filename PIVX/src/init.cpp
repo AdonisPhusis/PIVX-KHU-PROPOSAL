@@ -1479,6 +1479,12 @@ bool AppInitMain()
                     return false;
                 }
 
+                // KHU: Initialize KHU commitment database (Phase 3 - Masternode Finality)
+                if (!InitKHUCommitmentDB(1 << 20, fReindex)) { // 1 MB cache
+                    UIError(_("Failed to initialize KHU commitment database"));
+                    return false;
+                }
+
                 InitTierTwoPreChainLoad(fReindex);
 
                 if (fReset) {
