@@ -831,10 +831,10 @@ bool VerifyKHUStateDB() {
 
 **Documentation:**
 - `docs/reports/RAPPORT_PHASE3_SECURITY_HARDENING.md` (ce document)
-- `docs/security/RAPPORT_RED_TEAM_FINAL.md` (audit initial)
-- `docs/security/ATTAQUE_OVERFLOW.md` (analyse overflow)
-- `docs/security/ATTAQUE_REORG.md` (analyse reorg/DB)
-- `docs/security/ATTAQUE_MALFORMED.md` (analyse malformed tx)
+- `docs/audit/RAPPORT_RED_TEAM_FINAL.md` (audit initial)
+- `docs/audit/ATTAQUE_OVERFLOW.md` (analyse overflow)
+- `docs/audit/ATTAQUE_REORG.md` (analyse reorg/DB)
+- `docs/audit/ATTAQUE_MALFORMED.md` (analyse malformed tx)
 
 **Total:** +223 lignes de code/tests, 5 documents
 
