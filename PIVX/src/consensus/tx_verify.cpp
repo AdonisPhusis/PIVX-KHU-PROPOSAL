@@ -143,5 +143,18 @@ bool ContextualCheckTransaction(const CTransactionRef& tx, CValidationState& sta
         return false; // Failure reason has been set in validation state object
     }
 
+    // KHU: Reject KHU transactions before V6.0 activation
+    // CRITICAL: Without this check, KHU_MINT/KHU_REDEEM transactions could be
+    // accepted in blocks before V6.0, causing state corruption when V6.0 activates
+    const bool isKHUTx = (tx->nType == CTransaction::TxType::KHU_MINT ||
+                          tx->nType == CTransaction::TxType::KHU_REDEEM);
+    if (isKHUTx) {
+        const Consensus::Params& consensus = chainparams.GetConsensus();
+        if (!consensus.NetworkUpgradeActive(nHeight, Consensus::UPGRADE_V6_0)) {
+            return state.DoS(100, false, REJECT_INVALID, "khu-tx-before-v6-activation",
+                           false, strprintf("KHU transactions not allowed before V6.0 activation (height %d)", nHeight));
+        }
+    }
+
     return true;
 }
