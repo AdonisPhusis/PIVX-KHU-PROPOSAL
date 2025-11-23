@@ -50,21 +50,25 @@ bool ProcessKHUBlock(const CBlock& block,
 /**
  * DisconnectKHUBlock - Rollback KHU state during reorg
  *
- * PHASE 1 IMPLEMENTATION:
- * - Simply erases state at this height
+ * PHASE 1-4 IMPLEMENTATION:
+ * - Validate reorg depth (<= 12 blocks)
+ * - Iterate transactions in REVERSE order
+ * - Call UndoKHUStake / UndoKHUUnstake for each tx
+ * - Erase state at this height
  * - Previous state remains intact
  *
- * FUTURE PHASES:
- * - Reverse MINT/REDEEM operations
- * - Reverse daily yield
- * - Validate reorg depth (<= 12 blocks)
- *
+ * @param block Block to disconnect (needed for tx undo)
  * @param pindex Block index to disconnect
  * @param state Validation state
+ * @param view Coins view cache
+ * @param khuState KHU global state (for undo mutations)
  * @return true if disconnect succeeded
  */
-bool DisconnectKHUBlock(CBlockIndex* pindex,
-                       CValidationState& state);
+bool DisconnectKHUBlock(const CBlock& block,
+                       CBlockIndex* pindex,
+                       CValidationState& state,
+                       CCoinsViewCache& view,
+                       KhuGlobalState& khuState);
 
 /**
  * InitKHUStateDB - Initialize the KHU state database

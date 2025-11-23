@@ -29,6 +29,8 @@
 #include "interfaces/handler.h"
 #include "invalid.h"
 #include "kernel.h"
+#include "khu/khu_state.h"
+#include "khu/khu_statedb.h"
 #include "khu/khu_validation.h"
 #include "legacy/validation_zerocoin_legacy.h"
 #include "llmq/quorums_chainlocks.h"
@@ -1418,12 +1420,24 @@ DisconnectResult DisconnectBlock(CBlock& block, const CBlockIndex* pindex, CCoin
         CacheAccChecksum(pindex, false);
     }
 
-    // KHU: Disconnect KHU state (Phase 1 - Foundation only)
-    // TODO: Add UPGRADE_KHU to consensus/params.h when ready
+    // KHU: Disconnect KHU state (Phase 4: Undo STAKE/UNSTAKE operations)
     if (consensus.NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_V6_0)) {
-        CValidationState khuState;
-        if (!DisconnectKHUBlock(const_cast<CBlockIndex*>(pindex), khuState)) {
-            error("%s: DisconnectKHUBlock failed for %s", __func__, pindex->GetBlockHash().ToString());
+        CValidationState validationState;
+
+        // Load current KHU state at this height (to be disconnected)
+        // The Undo functions will reverse mutations, resulting in state matching height-1
+        KhuGlobalState khuGlobalState;
+        CKHUStateDB* khuDB = GetKHUStateDB();
+        if (khuDB && !khuDB->ReadKHUState(pindex->nHeight, khuGlobalState)) {
+            // If state doesn't exist at this height, initialize empty state
+            // This can happen during reorg of early KHU blocks
+            khuGlobalState.SetNull();
+            khuGlobalState.nHeight = pindex->nHeight;
+        }
+
+        if (!DisconnectKHUBlock(block, const_cast<CBlockIndex*>(pindex), validationState, view, khuGlobalState)) {
+            error("%s: DisconnectKHUBlock failed for %s: %s", __func__,
+                  pindex->GetBlockHash().ToString(), validationState.GetRejectReason());
             return DISCONNECT_FAILED;
         }
     }

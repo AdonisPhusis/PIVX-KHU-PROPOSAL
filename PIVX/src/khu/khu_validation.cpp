@@ -10,8 +10,10 @@
 #include "khu/khu_commitmentdb.h"
 #include "khu/khu_mint.h"
 #include "khu/khu_redeem.h"
+#include "khu/khu_stake.h"
 #include "khu/khu_state.h"
 #include "khu/khu_statedb.h"
+#include "khu/khu_unstake.h"
 #include "primitives/block.h"
 #include "sync.h"
 #include "util/system.h"
@@ -133,13 +135,15 @@ bool ProcessKHUBlock(const CBlock& block,
     newState.hashBlock = hashBlock;
     newState.hashPrevState = prevState.GetHash();
 
-    // PHASE 2: Process MINT/REDEEM transactions
+    // PHASE 2-4: Process KHU transactions
     // Ordre canonique immuable (cf. blueprints):
-    // 1. ApplyDailyYieldIfNeeded() — Phase 3 (non implémenté)
+    // 1. ApplyDailyYieldIfNeeded() — Phase 5 (non implémenté, no-op Phase 4)
     // 2. ProcessKHUTransactions() — Phase 2 (MINT/REDEEM)
-    // 3. ApplyBlockReward() — Future
-    // 4. CheckInvariants()
-    // 5. PersistState()
+    // 3. ProcessKHUStake() — Phase 4 (STAKE)
+    // 4. ProcessKHUUnstake() — Phase 4 (UNSTAKE)
+    // 5. ApplyBlockReward() — Future
+    // 6. CheckInvariants()
+    // 7. PersistState()
 
     for (const auto& tx : block.vtx) {
         if (tx->nType == CTransaction::TxType::KHU_MINT) {
@@ -149,6 +153,16 @@ bool ProcessKHUBlock(const CBlock& block,
         } else if (tx->nType == CTransaction::TxType::KHU_REDEEM) {
             if (!ApplyKHURedeem(*tx, newState, view, nHeight)) {
                 return validationState.Error(strprintf("Failed to apply KHU REDEEM at height %d", nHeight));
+            }
+        } else if (tx->nType == CTransaction::TxType::KHU_STAKE) {
+            // Phase 4: KHU_T → ZKHU (state unchanged: C, U, Cr, Ur)
+            if (!ApplyKHUStake(*tx, view, newState, nHeight)) {
+                return validationState.Error(strprintf("Failed to apply KHU STAKE at height %d", nHeight));
+            }
+        } else if (tx->nType == CTransaction::TxType::KHU_UNSTAKE) {
+            // Phase 4: ZKHU → KHU_T + bonus (double flux: C+, U+, Cr-, Ur-)
+            if (!ApplyKHUUnstake(*tx, view, newState, nHeight)) {
+                return validationState.Error(strprintf("Failed to apply KHU UNSTAKE at height %d", nHeight));
             }
         }
     }
@@ -169,8 +183,11 @@ bool ProcessKHUBlock(const CBlock& block,
     return true;
 }
 
-bool DisconnectKHUBlock(CBlockIndex* pindex,
-                       CValidationState& validationState)
+bool DisconnectKHUBlock(const CBlock& block,
+                       CBlockIndex* pindex,
+                       CValidationState& validationState,
+                       CCoinsViewCache& view,
+                       KhuGlobalState& khuState)
 {
     LOCK(cs_khu);
 
@@ -214,7 +231,37 @@ bool DisconnectKHUBlock(CBlockIndex* pindex,
         }
     }
 
-    // Erase state at this height
+    // PHASE 4: Undo KHU transactions in REVERSE order
+    // This restores the exact state by reversing all mutations from ProcessKHUBlock
+    for (int i = block.vtx.size() - 1; i >= 0; i--) {
+        const auto& tx = block.vtx[i];
+
+        if (tx->nType == CTransaction::TxType::KHU_UNSTAKE) {
+            // Reverse double flux: C-, U-, Cr+, Ur+ (opposite of Apply)
+            if (!UndoKHUUnstake(*tx, view, khuState, nHeight)) {
+                return validationState.Invalid(false, REJECT_INVALID, "khu-undo-unstake-failed",
+                    strprintf("Failed to undo KHU UNSTAKE at height %d (tx %s)",
+                              nHeight, tx->GetHash().ToString()));
+            }
+        } else if (tx->nType == CTransaction::TxType::KHU_STAKE) {
+            // Restore KHU_T UTXO, erase ZKHU note (state unchanged: C, U, Cr, Ur)
+            if (!UndoKHUStake(*tx, view, khuState, nHeight)) {
+                return validationState.Invalid(false, REJECT_INVALID, "khu-undo-stake-failed",
+                    strprintf("Failed to undo KHU STAKE at height %d (tx %s)",
+                              nHeight, tx->GetHash().ToString()));
+            }
+        }
+        // Note: MINT/REDEEM undo logic handled elsewhere (Phase 2 compatibility)
+    }
+
+    // Verify invariants after UNDO operations (CRITICAL: ensures state integrity)
+    if (!khuState.CheckInvariants()) {
+        return validationState.Invalid(false, REJECT_INVALID, "khu-undo-invariant-failed",
+            strprintf("KHU invariants violated after undo at height %d (C=%d U=%d Cr=%d Ur=%d)",
+                      nHeight, khuState.C, khuState.U, khuState.Cr, khuState.Ur));
+    }
+
+    // Erase state at this height (previous state remains intact)
     if (!db->EraseKHUState(nHeight)) {
         return validationState.Error(strprintf("Failed to erase KHU state at height %d", nHeight));
     }
@@ -227,7 +274,7 @@ bool DisconnectKHUBlock(CBlockIndex* pindex,
         }
     }
 
-    LogPrint(BCLog::KHU, "KHU: Disconnected block %d\n", nHeight);
+    LogPrint(BCLog::KHU, "KHU: Disconnected block %d (undone %zu transactions)\n", nHeight, block.vtx.size());
 
     return true;
 }
