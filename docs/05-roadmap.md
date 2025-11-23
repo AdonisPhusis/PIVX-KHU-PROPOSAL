@@ -7,6 +7,9 @@ Aucune notion inutile. Aucun audit. Juste : SI TESTNET OK → MAINNET OK.
 
 ## 1. PHASE 1 — CONSENSUS DE BASE
 
+**STATUT : ✅ COMPLETED**
+*Référence : voir docs/reports/phase1/ pour les rapports d'implémentation détaillés*
+
 ### Objectifs
 - Activer l'infrastructure KHU dans PIVX-V6.
 - Ajouter l'état global : C, U, Cr, Ur.
@@ -32,6 +35,9 @@ Socle économique stable prêt pour SAPLING et DOMC.
 
 ## 2. PHASE 2 — PIPELINE KHU (MODE TRANSPARENT)
 
+**STATUT : ✅ COMPLETED**
+*Référence : voir docs/reports/phase2/ pour les rapports d'implémentation et tests*
+
 ### Objectifs
 Pipeline minimal garanti :
 PIV → MINT → KHU_T → REDEEM → PIV.
@@ -44,6 +50,10 @@ KHU fonctionne comme actif collatéralisé 1:1.
 ---------------------------------------
 
 ## 3. PHASE 3 — FINALITÉ MASTERNODE
+
+**STATUT : ✅ COMPLETED & VALIDATED**
+*Référence : voir docs/reports/phase3/RAPPORT_FINAL_PHASE3_V6_ACTIVATION.md*
+*Tests : 52/52 PASS (100% success) | Sécurité : 20/20 vecteurs d'attaque bloqués*
 
 ### Objectifs
 - Finalité BLS via masternodes.
@@ -62,12 +72,23 @@ KHU fonctionne comme actif collatéralisé 1:1.
   - Stockage : LevelDB clé `'K' + 'C' + height`
 
 ### Résultat
-Invariants CD et CDr deviennent impossibles à briser.
-Finality garantit que l'état KHU est irréversible après 12 blocs signés.
+✅ **IMPLÉMENTÉ ET VALIDÉ**
+- Invariants CD et CDr impossibles à briser (garantie mathématique)
+- Finality opérationnelle : état KHU irréversible après 12 blocs signés
+- Structure KhuStateCommitment avec BLS signatures fonctionnelle
+- Database LevelDB opérationnelle (préfixe 'K'+'C')
+- Seuil quorum ≥60% implémenté
+- Protection double couche : limite 12 blocs + finalité cryptographique
+- RPC getkhustatecommitment fonctionnel
+- Tous les CVE critiques résolus (CVE-KHU-2025-002, VULN-KHU-2025-001)
 
 ---------------------------------------
 
 ## 4. PHASE 4 — SAPLING (STAKE / UNSTAKE)
+
+**STATUT : ⏳ PLANNED**
+*Durée estimée : ~8 jours d'implémentation (complexité LOW-MEDIUM)*
+*Approche : Wrapper autour du Sapling PIVX existant (pas de nouvelle crypto)*
 
 ### Objectifs
 - STAKE : KHU_T → ZKHU.
@@ -83,6 +104,10 @@ Staking privé ZK opérationnel.
 ---------------------------------------
 
 ## 5. PHASE 5 — YIELD Cr/Ur (MOTEUR DOMC)
+
+**STATUT : ⏳ PLANNED**
+*Durée estimée : ~7 jours d'implémentation*
+*Axiome confirmé : KHUPoolInjection = 0 (aucune injection externe)*
 
 ### Fonctionnement
 - R% voté annuellement par DOMC.
@@ -114,6 +139,8 @@ Rendement généré uniquement par DOMC.
 
 ## 6. PHASE 6 — DOMC (GOUVERNANCE DE R%)
 
+**STATUT : ⏳ PLANNED**
+
 ### Objectifs
 - Vote commit/reveal.
 - Cycle exprimé en blocs.
@@ -126,6 +153,10 @@ Création monétaire programmable & décentralisée.
 ---------------------------------------
 
 ## 7. PHASE 7 — HTLC CROSS-CHAIN (GATEWAY COMPATIBLE)
+
+**STATUT : ⏳ PLANNED**
+*Note importante : Utilise les scripts HTLC Bitcoin standards (pas d'implémentation KHU spéciale)*
+*Gateway : Off-chain, KHU comme unité de compte uniquement*
 
 ### Objectifs
 - Implémentation HTLC compatibles Gateway :
@@ -176,6 +207,8 @@ Interopérabilité UTXO-chain avec Gateway off-chain compatible.
 
 ## 8. PHASE 8 — WALLET / RPC
 
+**STATUT : ⏳ PLANNED**
+
 ### Objectifs
 - RPC complet : MINT, REDEEM, STAKE, UNSTAKE, DOMC, finalité.
 - UI complète.
@@ -184,6 +217,8 @@ Interopérabilité UTXO-chain avec Gateway off-chain compatible.
 ---------------------------------------
 
 ## 9. PHASE 9 — TESTNET LONG
+
+**STATUT : ⏳ PLANNED**
 
 ### Objectifs
 Tester :
@@ -200,6 +235,8 @@ SI TESTNET OK → MAINNET.
 ---------------------------------------
 
 ## 10. PHASE 10 — MAINNET
+
+**STATUT : ⏳ PLANNED**
 
 Activation du système complet :
 - Emission PIVX 6→0 active.

@@ -6,6 +6,23 @@
 
 ---
 
+## ⚠️ CLARIFICATION CRITIQUE
+
+**HTLC KHU = HTLC BITCOIN STANDARD (AUCUN CODE SPÉCIAL !)**
+
+```
+✅ PIVX supporte DÉJÀ les scripts HTLC (Bitcoin-compatible)
+✅ KHU utilise les MÊMES scripts HTLC que PIV/BTC
+❌ AUCUNE implémentation HTLC spéciale nécessaire pour KHU
+❌ User N'A PAS besoin de wallet KHU pour faire des swaps
+✅ KHU = Unité de compte INVISIBLE (comme le mètre)
+✅ Gateway = Off-chain (matching, price discovery)
+```
+
+**Lisez la section "RÉVÉLATION ARCHITECTURALE FONDAMENTALE" ci-dessous pour comprendre.**
+
+---
+
 ## OBJECTIF
 
 Ce sous-blueprint définit l'architecture **HTLC** (Hash Time Lock Contracts) pour KHU et l'architecture **Gateway** (atomic swaps cross-chain).
