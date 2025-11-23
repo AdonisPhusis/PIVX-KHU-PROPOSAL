@@ -213,19 +213,38 @@ state.U += amount;  // Ligne 153
 
 **Payload Malformé:**
 ```
-amount = 0xFFFFFFFFFFFFFFFF0000  // 80 bits
+amount = 0xFFFFFFFFFFFFFFFF0000  // 80 bits au lieu de 64
 ```
 
-**Désérialisation:**
+**✅ VÉRIFICATION EFFECTUÉE (2025-11-23):**
+
+**Analyse sérialisation:**
 ```cpp
-payload.amount = (CAmount) raw_data;  // Truncation à 64 bits?
+// src/amount.h:12
+typedef int64_t CAmount;  // Exactement 64 bits (garanti par C++)
+
+// src/khu/khu_mint.h:34
+SERIALIZE_METHODS(CMintKHUPayload, obj) {
+    READWRITE(obj.amount);  // Lit exactement 8 octets pour int64_t
+}
 ```
 
-**Résultat:** Montant tronqué, incohérence
+**Comportement avec payload malformé:**
+```
+Payload > 64 bits:
+  READWRITE(amount) lit 8 octets → OK
+  Octets restants vont à scriptPubKey → Parsing échoue → TX REJETÉE
 
-**Défense:** Dépend de la sérialisation CAmount
-- Si protocole limite à 64 bits → ✅ SAFE
-- Si pas de limite → ⚠️ POTENTIEL
+Payload < 64 bits:
+  READWRITE(amount) tente lire 8 octets → End of stream → TX REJETÉE
+```
+
+**Résultat:** ✅ **BLOQUÉ** - Types à taille fixe garantissent protection
+
+**Défense:** Protocole Bitcoin sérialisation stricte
+- int64_t = **exactement** 64 bits (standard C++)
+- READWRITE lit/écrit taille fixe (8 octets)
+- Payload malformé → parsing échoue → transaction rejetée **AVANT** validation
 
 ---
 
@@ -233,14 +252,14 @@ payload.amount = (CAmount) raw_data;  // Truncation à 64 bits?
 
 | Vecteur | Bloquée | Défense | Sévérité |
 |---------|---------|---------|----------|
-| Montant payload > brûlé | ❓ UNKNOWN | À vérifier | **CRITIQUE** |
+| Montant payload > brûlé | ✅ OUI | CheckKHUMint ligne 103 (vérifié) | LOW |
 | Double OP_RETURN | ✅ OUI | Loop sur tx, pas outputs | LOW |
 | MINT+REDEEM même tx | ✅ OUI | nType unique | LOW |
-| Montant négatif | ❓ UNKNOWN | À vérifier ValidateKHUMint | **HAUTE** |
-| Sans inputs | ❓ UNKNOWN | À vérifier ValidateKHUMint | **CRITIQUE** |
+| Montant négatif | ✅ OUI | CheckKHUMint ligne 67 | LOW |
+| Sans inputs | ✅ OUI | CheckKHUMint ligne 83 | LOW |
 | Replay attack | ✅ OUI | UTXO protection | LOW |
 | Modification mémoire | ✅ OUI | Variable locale | LOW |
-| Integer truncation | ❓ UNKNOWN | Dépend sérialisation | MOYENNE |
+| Integer truncation | ✅ OUI | Sérialisation Bitcoin (vérifié) | LOW |
 
 ---
 
