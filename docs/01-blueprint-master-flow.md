@@ -52,10 +52,21 @@ CDr == 1                  (reward pool diversification)
 #### 1.3.2 Operations Autorisees
 
 ```
-MINT      : C+, U+        (preserve C==U)
-REDEEM    : C-, U-        (preserve C==U, destroy KHU)
-DAILY_YIELD: Cr+, Ur+     (preserve Cr==Ur)
-UNSTAKE   : Cr-, Ur-      (preserve Cr==Ur, bonus KHU)
+MINT      : C+, U+              (preserve C==U)
+REDEEM    : C-, U-              (preserve C==U, destroy KHU)
+DAILY_YIELD: Cr+, Ur+           (preserve Cr==Ur)
+UNSTAKE   : C+, U+, Cr-, Ur-    (preserve C==U AND Cr==Ur, double flux avec bonus B)
+```
+
+**UNSTAKE détail (bonus B) :**
+```
+U  += B    (supply increases)
+C  += B    (collateral increases)
+Cr -= B    (pool decreases)
+Ur -= B    (rights decrease)
+
+Invariants préservés : C==U (car C+B == U+B) et Cr==Ur (car Cr-B == Ur-B)
+Phase 4: B=0 (no yield) → effet net nul, mais structure déjà correcte
 ```
 
 Aucune autre operation ne doit modifier C, U, Cr, Ur.
@@ -516,24 +527,36 @@ assert(new_Ur == old_Ur + daily_yield);
 
 ---
 
-### Phase 4: UNSTAKE Bonus
+### Phase 4: SAPLING ZKHU STAKE/UNSTAKE
 
-**Objectif:** Implementer retrait anticipe avec bonus KHU.
+**Objectif:** Implementer staking privé ZKHU avec structure prête pour yield Phase 5.
 
 **Deliverables:**
-- [ ] OP_UNSTAKE : Retrait anticipe (Cr-, Ur-)
-- [ ] Bonus KHU vers nouvelle adresse (getnewaddress)
-- [ ] Validation consensus
-- [ ] Tests unitaires : test_khu_unstake.cpp
-- [ ] Tests fonctionnels : khu_unstake.py
+- [ ] STAKE (T→Z) : KHU_T → ZKHU (Sapling note, namespace 'K')
+- [ ] UNSTAKE (Z→T) : ZKHU → KHU_T + bonus (double flux C+, U+, Cr-, Ur-)
+- [ ] ZKHUNoteData avec Ur_accumulated (per-note, Phase 4: =0)
+- [ ] Maturity 4320 blocs enforced
+- [ ] Validation consensus (CheckKHUStake, CheckKHUUnstake)
+- [ ] Tests unitaires : test_khu_phase4_tests.cpp (7 tests)
+- [ ] Tests fonctionnels : khu_stake.py, khu_unstake.py
 
-**Verification:**
+**Verification (CRITIQUE):**
 ```cpp
-// Apres UNSTAKE:
-assert(Cr == Ur);
-assert(new_Cr == old_Cr - bonus_khu);
-assert(new_Ur == old_Ur - bonus_khu);
-// Output KHU vers NOUVELLE adresse (privacy)
+// Phase 4: bonus B = 0 (no yield yet)
+CAmount bonus = note.Ur_accumulated;  // 0 en Phase 4
+
+// UNSTAKE applique DOUBLE FLUX (même si B=0):
+new_U  == old_U  + bonus;  // Supply increases
+new_C  == old_C  + bonus;  // Collateral increases
+new_Cr == old_Cr - bonus;  // Pool decreases
+new_Ur == old_Ur - bonus;  // Rights decrease
+
+// Invariants préservés:
+assert(new_C == new_U);    // C==U always
+assert(new_Cr == new_Ur);  // Cr==Ur always
+
+// Phase 4: bonus=0 → effet net nul numériquement
+// Mais structure code PRÊTE pour Phase 5 (bonus>0)
 ```
 
 **Git:**

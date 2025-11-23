@@ -1643,10 +1643,11 @@ height < ACTIVATION_HEIGHT
 - Voting enabled
 ```
 
-### Phase 4: HTLC (Block ACTIVATION_HEIGHT + Y)
+### Phase 7: HTLC (Block ACTIVATION_HEIGHT + Y)
 ```
-- HTLC enabled
+- HTLC enabled (Bitcoin standard scripts)
 - Cross-chain swaps active
+- Gateway off-chain operational
 ```
 
 ---
