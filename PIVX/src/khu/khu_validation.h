@@ -12,6 +12,7 @@ class CBlockIndex;
 class CCoinsViewCache;
 class CValidationState;
 class CKHUStateDB;
+class CKHUCommitmentDB;
 struct KhuGlobalState;
 
 namespace Consensus {
@@ -90,5 +91,25 @@ CKHUStateDB* GetKHUStateDB();
  * @return true if state loaded successfully
  */
 bool GetCurrentKHUState(KhuGlobalState& state);
+
+/**
+ * InitKHUCommitmentDB - Initialize the KHU commitment database
+ *
+ * PHASE 3: Called during node startup. Creates the commitment DB.
+ *
+ * @param nCacheSize DB cache size
+ * @param fReindex If true, wipe and recreate DB
+ * @return true on success
+ */
+bool InitKHUCommitmentDB(size_t nCacheSize, bool fReindex);
+
+/**
+ * GetKHUCommitmentDB - Get global KHU commitment database instance
+ *
+ * PHASE 3: Returns the commitment DB for state finality operations.
+ *
+ * @return Pointer to KHU commitment DB (may be nullptr if not initialized)
+ */
+CKHUCommitmentDB* GetKHUCommitmentDB();
 
 #endif // PIVX_KHU_VALIDATION_H

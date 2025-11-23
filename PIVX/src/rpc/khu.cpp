@@ -6,6 +6,8 @@
 
 #include "chain.h"
 #include "chainparams.h"
+#include "khu/khu_commitment.h"
+#include "khu/khu_commitmentdb.h"
 #include "khu/khu_state.h"
 #include "rpc/server.h"
 #include "sync.h"
@@ -101,11 +103,98 @@ static UniValue getkhustate(const JSONRPCRequest& request)
     return result;
 }
 
+/**
+ * getkhustatecommitment - Get KHU state commitment at a block height
+ *
+ * PHASE 3: Masternode Finality
+ *
+ * Returns the LLMQ-signed commitment for KHU state at the specified height.
+ * Commitments provide cryptographic finality for KHU state, preventing
+ * state divergence across the network.
+ *
+ * Usage:
+ *   getkhustatecommitment height
+ *
+ * Arguments:
+ * 1. height    (numeric, required) The block height
+ *
+ * Returns:
+ * {
+ *   "height": n,             (numeric) Block height
+ *   "hashState": "hash",     (string) State hash (SHA256 of C, U, Cr, Ur, height)
+ *   "quorumHash": "hash",    (string) LLMQ quorum identifier
+ *   "signature": "hex",      (string) BLS aggregate signature
+ *   "signers": n,            (numeric) Number of masternodes who signed
+ *   "quorumSize": n,         (numeric) Total quorum members
+ *   "finalized": true|false, (boolean) Has quorum threshold (>= 60%)
+ *   "commitmentHash": "hash" (string) Hash of the commitment itself
+ * }
+ */
+static UniValue getkhustatecommitment(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 1) {
+        throw std::runtime_error(
+            "getkhustatecommitment height\n"
+            "\nReturns KHU state commitment for a given block height (Phase 3: Masternode Finality).\n"
+            "\nArguments:\n"
+            "1. height    (numeric, required) The block height\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"height\": n,             (numeric) Block height\n"
+            "  \"hashState\": \"hash\",     (string) State hash (SHA256 of C, U, Cr, Ur, height)\n"
+            "  \"quorumHash\": \"hash\",    (string) LLMQ quorum identifier\n"
+            "  \"signature\": \"hex\",      (string) BLS aggregate signature\n"
+            "  \"signers\": n,            (numeric) Number of masternodes who signed\n"
+            "  \"quorumSize\": n,         (numeric) Total quorum members\n"
+            "  \"finalized\": true|false, (boolean) Has quorum threshold (>= 60%)\n"
+            "  \"commitmentHash\": \"hash\" (string) Hash of the commitment itself\n"
+            "}\n"
+            "\nExamples:\n"
+            + HelpExampleCli("getkhustatecommitment", "1000000")
+            + HelpExampleRpc("getkhustatecommitment", "1000000")
+        );
+    }
+
+    uint32_t nHeight = request.params[0].get_int();
+
+    CKHUCommitmentDB* commitmentDB = GetKHUCommitmentDB();
+    if (!commitmentDB) {
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "KHU commitment database not initialized");
+    }
+
+    KhuStateCommitment commitment;
+    if (!commitmentDB->ReadCommitment(nHeight, commitment)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                          strprintf("No commitment found at height %d", nHeight));
+    }
+
+    // Count signers
+    int signerCount = 0;
+    for (bool signer : commitment.signers) {
+        if (signer) {
+            signerCount++;
+        }
+    }
+
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("height", (int)commitment.nHeight);
+    result.pushKV("hashState", commitment.hashState.GetHex());
+    result.pushKV("quorumHash", commitment.quorumHash.GetHex());
+    result.pushKV("signature", commitment.sig.ToString());
+    result.pushKV("signers", signerCount);
+    result.pushKV("quorumSize", (int)commitment.signers.size());
+    result.pushKV("finalized", commitment.HasQuorum());
+    result.pushKV("commitmentHash", commitment.GetHash().GetHex());
+
+    return result;
+}
+
 // RPC command table (to be registered in rpc/register.cpp)
 static const CRPCCommand commands[] = {
-    //  category    name                actor (function)        argNames
-    //  ----------- ----------------    ------------------      ----------
-    { "khu",        "getkhustate",      &getkhustate,           {} },
+    //  category    name                      actor (function)            argNames
+    //  ----------- ------------------------  ------------------------    ----------
+    { "khu",        "getkhustate",            &getkhustate,               {} },
+    { "khu",        "getkhustatecommitment",  &getkhustatecommitment,     {"height"} },
 };
 
 void RegisterKHURPCCommands(CRPCTable& t)

@@ -6,6 +6,8 @@
 
 #include "chain.h"
 #include "consensus/params.h"
+#include "khu/khu_commitment.h"
+#include "khu/khu_commitmentdb.h"
 #include "khu/khu_mint.h"
 #include "khu/khu_redeem.h"
 #include "khu/khu_state.h"
@@ -19,6 +21,9 @@
 
 // Global KHU state database
 static std::unique_ptr<CKHUStateDB> pkhustatedb;
+
+// Global KHU commitment database (Phase 3: Masternode Finality)
+static std::unique_ptr<CKHUCommitmentDB> pkhucommitmentdb;
 
 // KHU state lock (protects state transitions)
 static RecursiveMutex cs_khu;
@@ -40,6 +45,26 @@ bool InitKHUStateDB(size_t nCacheSize, bool fReindex)
 CKHUStateDB* GetKHUStateDB()
 {
     return pkhustatedb.get();
+}
+
+bool InitKHUCommitmentDB(size_t nCacheSize, bool fReindex)
+{
+    LOCK(cs_khu);
+
+    try {
+        pkhucommitmentdb.reset();
+        pkhucommitmentdb = std::make_unique<CKHUCommitmentDB>(nCacheSize, false, fReindex);
+        LogPrint(BCLog::KHU, "KHU: Initialized commitment database (Phase 3 Finality)\n");
+        return true;
+    } catch (const std::exception& e) {
+        LogPrintf("ERROR: Failed to initialize KHU commitment database: %s\n", e.what());
+        return false;
+    }
+}
+
+CKHUCommitmentDB* GetKHUCommitmentDB()
+{
+    return pkhucommitmentdb.get();
 }
 
 bool GetCurrentKHUState(KhuGlobalState& state)
@@ -146,33 +171,51 @@ bool DisconnectKHUBlock(CBlockIndex* pindex,
         return validationState.Error("khu-db-not-initialized");
     }
 
-    // PHASE 1 MANDATORY: Validate reorg depth (LLMQ finality)
-    // This is a CONSENSUS RULE, not a Phase 2 feature
-    // Without this check, nodes can diverge on deep reorgs even with empty KHU state
+    // PHASE 3: Check cryptographic finality via commitments
+    CKHUCommitmentDB* commitmentDB = GetKHUCommitmentDB();
+    if (commitmentDB) {
+        uint32_t latestFinalized = commitmentDB->GetLatestFinalizedHeight();
+
+        // Cannot reorg finalized blocks with quorum commitments
+        if (nHeight <= latestFinalized) {
+            LogPrint(BCLog::KHU, "KHU: Rejecting reorg of finalized block %d (latest finalized: %d)\n",
+                     nHeight, latestFinalized);
+            return validationState.Error(strprintf(
+                "khu-reorg-finalized: Cannot reorg block %d (finalized at %d with LLMQ commitment)",
+                nHeight, latestFinalized));
+        }
+    }
+
+    // PHASE 1/3: Validate reorg depth (12 blocks maximum)
+    // This is a CONSENSUS RULE for KHU state integrity
     const int KHU_FINALITY_DEPTH = 12;  // LLMQ finality depth
 
     CBlockIndex* pindexTip = chainActive.Tip();
     if (pindexTip) {
         int reorgDepth = pindexTip->nHeight - nHeight;
         if (reorgDepth > KHU_FINALITY_DEPTH) {
-            LogPrint(BCLog::NET, "KHU: Rejecting reorg depth %d (max %d blocks)\n",
+            LogPrint(BCLog::KHU, "KHU: Rejecting reorg depth %d (max %d blocks)\n",
                      reorgDepth, KHU_FINALITY_DEPTH);
-            return validationState.Error(strprintf("KHU reorg depth %d exceeds maximum %d blocks (LLMQ finality)",
-                         reorgDepth, KHU_FINALITY_DEPTH));
+            return validationState.Error(strprintf(
+                "khu-reorg-too-deep: KHU reorg depth %d exceeds maximum %d blocks",
+                reorgDepth, KHU_FINALITY_DEPTH));
         }
     }
 
-    // PHASE 1: Simply erase state at this height
-    // Previous state remains intact, no need to restore
-    // Future phases will add:
-    // - Reverse MINT/REDEEM operations
-    // - Reverse daily yield
-
+    // Erase state at this height
     if (!db->EraseKHUState(nHeight)) {
         return validationState.Error(strprintf("Failed to erase KHU state at height %d", nHeight));
     }
 
-    LogPrint(BCLog::NET, "KHU: Disconnected block %d\n", nHeight);
+    // Phase 3: Also erase commitment if present (non-finalized)
+    if (commitmentDB && commitmentDB->HaveCommitment(nHeight)) {
+        if (!commitmentDB->EraseCommitment(nHeight)) {
+            LogPrint(BCLog::KHU, "KHU: Warning - failed to erase commitment at height %d during reorg\n", nHeight);
+            // Non-fatal - continue with reorg
+        }
+    }
+
+    LogPrint(BCLog::KHU, "KHU: Disconnected block %d\n", nHeight);
 
     return true;
 }

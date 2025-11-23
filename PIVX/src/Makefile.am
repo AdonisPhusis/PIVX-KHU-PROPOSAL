@@ -239,6 +239,8 @@ BITCOIN_CORE_H = \
   budget/finalizedbudgetvote.h \
   budget/budgetutil.h \
   khu/khu_coins.h \
+  khu/khu_commitment.h \
+  khu/khu_commitmentdb.h \
   khu/khu_mint.h \
   khu/khu_redeem.h \
   khu/khu_state.h \
@@ -556,6 +558,8 @@ libbitcoin_common_a_SOURCES = \
   budget/finalizedbudget.cpp \
   budget/finalizedbudgetvote.cpp \
   budget/budgetutil.cpp \
+  khu/khu_commitment.cpp \
+  khu/khu_commitmentdb.cpp \
   khu/khu_mint.cpp \
   khu/khu_redeem.cpp \
   khu/khu_state.cpp \
