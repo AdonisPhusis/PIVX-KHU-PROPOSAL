@@ -19,6 +19,7 @@
 #include "consensus/consensus.h"
 #include "consensus/merkle.h"
 #include "consensus/tx_verify.h"
+#include "consensus/upgrades.h"
 #include "consensus/validation.h"
 #include "consensus/zerocoin_verify.h"
 #include "evo/evodb.h"
@@ -816,8 +817,25 @@ double ConvertBitsToDouble(unsigned int nBits)
 
 CAmount GetBlockValue(int nHeight)
 {
+    const Consensus::Params& consensus = Params().GetConsensus();
+
+    // KHU V6.0 NEW EMISSION: 6→0 per year (Phase 1-Emission)
+    // Formula: reward_year = max(6 - year, 0) where year = (height - activation) / 525600
+    // Distribution: staker=reward_year, MN=reward_year, DAO=reward_year
+    // Total emission per block = 3 * reward_year
+    if (NetworkUpgradeActive(nHeight, consensus, Consensus::UPGRADE_V6_0)) {
+        const int nActivationHeight = consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight;
+        const int64_t year = (nHeight - nActivationHeight) / Consensus::Params::BLOCKS_PER_YEAR;
+        const int64_t reward_year = std::max(6LL - year, 0LL);
+        // Block value = reward_year (staker compartment only)
+        // MN payment separate via GetMasternodePayment()
+        // DAO payment via budget system (future/existing)
+        return reward_year * COIN;
+    }
+
+    // LEGACY PIVX EMISSION (pre-V6.0)
     // Set V5.5 upgrade block for regtest as well as testnet and mainnet
-    const int nLast = Params().GetConsensus().vUpgrades[Consensus::UPGRADE_V5_5].nActivationHeight;
+    const int nLast = consensus.vUpgrades[Consensus::UPGRADE_V5_5].nActivationHeight;
 
     // Regtest block reward reduction schedule
     if (Params().IsRegTestNet()) {
@@ -831,7 +849,7 @@ CAmount GetBlockValue(int nHeight)
         return 250000 * COIN;
     }
     // Mainnet/Testnet block reward reduction schedule
-    const int nZerocoinV2 = Params().GetConsensus().vUpgrades[Consensus::UPGRADE_ZC_V2].nActivationHeight;
+    const int nZerocoinV2 = consensus.vUpgrades[Consensus::UPGRADE_ZC_V2].nActivationHeight;
     if (nHeight > nLast) return 10 * COIN;
     if (nHeight > nZerocoinV2) return 5 * COIN;
     if (nHeight > 648000) return 4.5 * COIN;
@@ -852,12 +870,23 @@ CAmount GetBlockValue(int nHeight)
 
 int64_t GetMasternodePayment(int nHeight)
 {
-    if (nHeight > Params().GetConsensus().vUpgrades[Consensus::UPGRADE_V5_5].nActivationHeight) {
-        return Params().GetConsensus().nNewMNBlockReward;
+    const Consensus::Params& consensus = Params().GetConsensus();
+
+    // KHU V6.0: Masternode reward = reward_year
+    if (NetworkUpgradeActive(nHeight, consensus, Consensus::UPGRADE_V6_0)) {
+        const int nActivationHeight = consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight;
+        const int64_t year = (nHeight - nActivationHeight) / Consensus::Params::BLOCKS_PER_YEAR;
+        const int64_t reward_year = std::max(6LL - year, 0LL);
+        return reward_year * COIN;
+    }
+
+    // LEGACY: V5.5 MN reward
+    if (nHeight > consensus.vUpgrades[Consensus::UPGRADE_V5_5].nActivationHeight) {
+        return consensus.nNewMNBlockReward;
     }
 
     // Future: refactor function callers to use this line directly.
-    return Params().GetConsensus().nMNBlockReward;
+    return consensus.nMNBlockReward;
 }
 
 bool IsInitialBlockDownload()

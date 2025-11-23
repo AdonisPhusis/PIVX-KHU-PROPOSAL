@@ -185,6 +185,10 @@ struct Params {
     int nMNCollateralMinConf;
     CAmount nMNBlockReward;
     CAmount nNewMNBlockReward;
+
+    // KHU V6 emission: 6→0 per year (Phase 1-Emission)
+    static constexpr int BLOCKS_PER_YEAR = 525600;  // 365 days * 1440 blocks/day
+    static constexpr CAmount MAX_REWARD_YEAR = 6 * COIN;  // Year 0 max reward per compartment
     int64_t nProposalEstablishmentTime;
     int nStakeMinAge;
     int nStakeMinDepth;
