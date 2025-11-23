@@ -243,10 +243,15 @@ BITCOIN_CORE_H = \
   khu/khu_commitmentdb.h \
   khu/khu_mint.h \
   khu/khu_redeem.h \
+  khu/khu_stake.h \
   khu/khu_state.h \
   khu/khu_statedb.h \
+  khu/khu_unstake.h \
   khu/khu_utxo.h \
   khu/khu_validation.h \
+  khu/zkhu_db.h \
+  khu/zkhu_memo.h \
+  khu/zkhu_note.h \
   mapport.h \
   memusage.h \
   masternode.h \
@@ -562,10 +567,14 @@ libbitcoin_common_a_SOURCES = \
   khu/khu_commitmentdb.cpp \
   khu/khu_mint.cpp \
   khu/khu_redeem.cpp \
+  khu/khu_stake.cpp \
   khu/khu_state.cpp \
   khu/khu_statedb.cpp \
+  khu/khu_unstake.cpp \
   khu/khu_utxo.cpp \
   khu/khu_validation.cpp \
+  khu/zkhu_db.cpp \
+  khu/zkhu_memo.cpp \
   chainparams.cpp \
   consensus/upgrades.cpp \
   coins.cpp \

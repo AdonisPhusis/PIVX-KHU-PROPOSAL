@@ -260,6 +260,8 @@ public:
         LLMQCOMM = 5,
         KHU_MINT = 6,      // Phase 2: PIV → KHU_T (1:1 ratio)
         KHU_REDEEM = 7,    // Phase 2: KHU_T → PIV (1:1 ratio)
+        KHU_STAKE = 8,     // Phase 4: KHU_T → ZKHU (Sapling private staking)
+        KHU_UNSTAKE = 9,   // Phase 4: ZKHU → KHU_T + bonus (maturity 4320 blocks)
     };
 
     static const int16_t CURRENT_VERSION = TxVersion::LEGACY;

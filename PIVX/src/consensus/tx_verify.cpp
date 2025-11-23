@@ -144,10 +144,12 @@ bool ContextualCheckTransaction(const CTransactionRef& tx, CValidationState& sta
     }
 
     // KHU: Reject KHU transactions before V6.0 activation
-    // CRITICAL: Without this check, KHU_MINT/KHU_REDEEM transactions could be
+    // CRITICAL: Without this check, KHU_MINT/KHU_REDEEM/KHU_STAKE/KHU_UNSTAKE transactions could be
     // accepted in blocks before V6.0, causing state corruption when V6.0 activates
     const bool isKHUTx = (tx->nType == CTransaction::TxType::KHU_MINT ||
-                          tx->nType == CTransaction::TxType::KHU_REDEEM);
+                          tx->nType == CTransaction::TxType::KHU_REDEEM ||
+                          tx->nType == CTransaction::TxType::KHU_STAKE ||
+                          tx->nType == CTransaction::TxType::KHU_UNSTAKE);
     if (isKHUTx) {
         const Consensus::Params& consensus = chainparams.GetConsensus();
         if (!consensus.NetworkUpgradeActive(nHeight, Consensus::UPGRADE_V6_0)) {
