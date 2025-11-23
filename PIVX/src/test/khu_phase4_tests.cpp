@@ -28,8 +28,10 @@
 #include "khu/khu_unstake.h"
 #include "khu/khu_state.h"
 #include "khu/khu_utxo.h"
+#include "khu/khu_validation.h"
 #include "khu/zkhu_db.h"
 #include "primitives/transaction.h"
+#include "sapling/sapling_transaction.h"
 #include "script/standard.h"
 #include "sync.h"
 #include "validation.h"
@@ -41,7 +43,23 @@
 static RecursiveMutex cs_khu_test;
 #define cs_khu cs_khu_test
 
-BOOST_FIXTURE_TEST_SUITE(khu_phase4_tests, BasicTestingSetup)
+// Custom test fixture that initializes ZKHU DB using production Init function
+// Inherits from TestingSetup (not BasicTestingSetup) to ensure pcoinsTip is initialized
+struct KHUPhase4TestingSetup : public TestingSetup {
+    KHUPhase4TestingSetup() : TestingSetup() {
+        // Initialize ZKHU DB for tests using production function
+        // This initializes the global pzkhudb that GetZKHUDB() returns
+        if (!InitZKHUDB(1 << 20, false)) {
+            throw std::runtime_error("Failed to initialize ZKHU DB for tests");
+        }
+    }
+
+    ~KHUPhase4TestingSetup() {
+        // Cleanup is handled by the production pzkhudb unique_ptr
+    }
+};
+
+BOOST_FIXTURE_TEST_SUITE(khu_phase4_tests, KHUPhase4TestingSetup)
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -57,9 +75,15 @@ static CTransactionRef CreateStakeTx(CAmount amount, const COutPoint& khuInput)
     // Input: KHU_T UTXO being consumed
     mtx.vin.emplace_back(khuInput);
 
-    // Phase 4: Minimal mock - STAKE logic doesn't require full Sapling structures yet
-    // Sapling data would be added here in full implementation
-    // For unit tests, ApplyKHUStake checks tx type and consumes UTXO
+    // Phase 5: Add minimal Sapling output for ApplyKHUStake to extract commitment
+    SaplingTxData sapData;
+
+    // Create mock Sapling output with random commitment
+    OutputDescription saplingOut;
+    saplingOut.cmu = GetRandHash();  // Mock commitment (will be note ID)
+    sapData.vShieldedOutput.push_back(saplingOut);
+
+    mtx.sapData = sapData;
 
     return MakeTransactionRef(mtx);
 }
@@ -72,8 +96,15 @@ static CTransactionRef CreateUnstakeTx(CAmount amount, const CScript& dest,
     mtx.nVersion = CTransaction::TxVersion::SAPLING;
     mtx.nType = CTransaction::TxType::KHU_UNSTAKE;
 
-    // Phase 4: Minimal mock - nullifier would be in Sapling spend
-    // For unit tests, we focus on state logic not Sapling validation
+    // Phase 5: Add minimal Sapling spend for ApplyKHUUnstake to extract nullifier
+    SaplingTxData sapData;
+
+    // Create mock Sapling spend with provided nullifier
+    SpendDescription saplingSpend;
+    saplingSpend.nullifier = nullifier;
+    sapData.vShieldedSpend.push_back(saplingSpend);
+
+    mtx.sapData = sapData;
 
     // Output: KHU_T UTXO (amount determined by Apply logic including bonus)
     mtx.vout.emplace_back(amount, dest);
@@ -81,16 +112,16 @@ static CTransactionRef CreateUnstakeTx(CAmount amount, const CScript& dest,
     return MakeTransactionRef(mtx);
 }
 
-// Helper: Setup initial KHU state with known values
+// Helper: Setup initial KHU state with known values (in COIN units)
 static void SetupKHUState(KhuGlobalState& state, int height,
                           int64_t C, int64_t U, int64_t Cr, int64_t Ur)
 {
     state.SetNull();
     state.nHeight = height;
-    state.C = C;
-    state.U = U;
-    state.Cr = Cr;
-    state.Ur = Ur;
+    state.C = C * COIN;   // Convert to satoshis
+    state.U = U * COIN;   // Convert to satoshis
+    state.Cr = Cr * COIN; // Convert to satoshis
+    state.Ur = Ur * COIN; // Convert to satoshis
     state.hashBlock = GetRandHash();
     state.hashPrevState = GetRandHash();
 }
@@ -105,19 +136,24 @@ static void AddKHUCoinToView(CCoinsViewCache& view, const COutPoint& outpoint, C
     view.AddCoin(outpoint, std::move(coin), false);
 }
 
-// Helper: Create mock ZKHU note in database
+// Helper: Create mock ZKHU note in database (Phase 4: Ur_accumulated=0)
 static void AddZKHUNoteToMockDB(const uint256& cm, const uint256& nullifier,
                                 CAmount amount, int nHeight)
 {
-    // In Phase 4 tests, we mock the ZKHU DB
-    // Real implementation would write to CZKHUDatabase
-    // For unit tests, we just verify the note data structure is correct
-    ZKHUNoteData noteData;
-    noteData.cm = cm;
-    noteData.nullifier = nullifier;
-    noteData.amount = amount;
-    noteData.Ur_accumulated = 0; // Will be set by Apply logic
-    // Note: nHeight stored separately in DB, not in ZKHUNoteData struct
+    // Phase 4: Represents a STAKE with Ur_accumulated=0
+    ZKHUNoteData noteData(
+        amount,
+        nHeight,
+        0,  // Phase 4: always 0 at STAKE time
+        nullifier,
+        cm
+    );
+
+    CZKHUTreeDB* zkhuDB = GetZKHUDB();
+    if (zkhuDB) {
+        zkhuDB->WriteNote(cm, noteData);
+        zkhuDB->WriteNullifierMapping(nullifier, cm);
+    }
 }
 
 // ============================================================================
@@ -258,8 +294,18 @@ BOOST_AUTO_TEST_CASE(test_unstake_with_bonus_phase5_ready)
     uint256 nullifier = GetRandHash();
     uint256 cm = uint256S("0000000000000000000000000000000000000000000000000000000000000002");
 
-    // Mock: note.Ur_accumulated = bonus (set during STAKE in Phase 5)
-    AddZKHUNoteToMockDB(cm, nullifier, amount, 5000);
+    // Phase 5: Manually create note with accumulated yield (NOT via helper)
+    ZKHUNoteData noteWithBonus(
+        amount,
+        5000,               // nStakeStartHeight
+        bonus,              // Ur_accumulated - simulated Phase 5 yield
+        nullifier,
+        cm
+    );
+
+    CZKHUTreeDB* zkhuDB = GetZKHUDB();
+    zkhuDB->WriteNote(cm, noteWithBonus);
+    zkhuDB->WriteNullifierMapping(nullifier, cm);
 
     // 3. Build UNSTAKE transaction
     CScript dest = GetScriptForDestination(CKeyID(uint160()));
@@ -380,8 +426,16 @@ BOOST_AUTO_TEST_CASE(test_multiple_unstake_isolation)
     uint256 nullifier2 = GetRandHash();
     uint256 cm2 = uint256S("0000000000000000000000000000000000000000000000000000000000000022");
 
-    AddZKHUNoteToMockDB(cm1, nullifier1, amount1, 5000);
-    AddZKHUNoteToMockDB(cm2, nullifier2, amount2, 5000);
+    // Phase 5: Manually create notes with different bonuses
+    CZKHUTreeDB* zkhuDB = GetZKHUDB();
+
+    ZKHUNoteData note1(amount1, 5000, bonus1, nullifier1, cm1);
+    zkhuDB->WriteNote(cm1, note1);
+    zkhuDB->WriteNullifierMapping(nullifier1, cm1);
+
+    ZKHUNoteData note2(amount2, 5000, bonus2, nullifier2, cm2);
+    zkhuDB->WriteNote(cm2, note2);
+    zkhuDB->WriteNullifierMapping(nullifier2, cm2);
 
     CScript dest = GetScriptForDestination(CKeyID(uint160()));
 
@@ -430,13 +484,17 @@ BOOST_AUTO_TEST_CASE(test_reorg_unstake)
 
     CCoinsViewCache view(pcoinsTip.get());
 
-    // 2. Create ZKHU note
+    // 2. Create ZKHU note with bonus (Phase 5)
     CAmount amount = 20 * COIN;
     CAmount bonus = 5 * COIN;
     uint256 nullifier = GetRandHash();
     uint256 cm = uint256S("0000000000000000000000000000000000000000000000000000000000000004");
 
-    AddZKHUNoteToMockDB(cm, nullifier, amount, 1000);
+    // Phase 5: Manually create note with bonus
+    CZKHUTreeDB* zkhuDB = GetZKHUDB();
+    ZKHUNoteData noteWithBonus(amount, 1000, bonus, nullifier, cm);
+    zkhuDB->WriteNote(cm, noteWithBonus);
+    zkhuDB->WriteNullifierMapping(nullifier, cm);
 
     CScript dest = GetScriptForDestination(CKeyID(uint160()));
     CTransactionRef unstakeTx = CreateUnstakeTx(amount + bonus, dest, nullifier, 5000);
@@ -491,6 +549,8 @@ BOOST_AUTO_TEST_CASE(test_invariants_after_unstake)
     CScript dest = GetScriptForDestination(CKeyID(uint160()));
 
     // Perform 5 sequential UNSTAKEs
+    CZKHUTreeDB* zkhuDB = GetZKHUDB();
+
     for (int i = 0; i < 5; i++) {
         CAmount amount = (10 + i * 5) * COIN;
         CAmount bonus = i * COIN; // Varying bonuses
@@ -498,7 +558,10 @@ BOOST_AUTO_TEST_CASE(test_invariants_after_unstake)
         uint256 nullifier = GetRandHash();
         uint256 cm = GetRandHash();
 
-        AddZKHUNoteToMockDB(cm, nullifier, amount, 5000 + i * 100);
+        // Phase 5: Manually create note with varying bonus
+        ZKHUNoteData note(amount, 5000 + i * 100, bonus, nullifier, cm);
+        zkhuDB->WriteNote(cm, note);
+        zkhuDB->WriteNullifierMapping(nullifier, cm);
 
         CTransactionRef unstakeTx = CreateUnstakeTx(amount + bonus, dest, nullifier, 10000 + i);
 

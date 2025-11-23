@@ -7,11 +7,14 @@
 #include "coins.h"
 #include "consensus/params.h"
 #include "consensus/validation.h"
+#include "hash.h"
 #include "khu/khu_utxo.h"
+#include "khu/khu_validation.h"
 #include "khu/zkhu_db.h"
 #include "khu/zkhu_memo.h"
 #include "khu/zkhu_note.h"
 #include "logging.h"
+#include "primitives/transaction.h"
 #include "sapling/incrementalmerkletree.h"
 
 bool CheckKHUStake(
@@ -87,53 +90,83 @@ bool ApplyKHUStake(
     KhuGlobalState& state,
     int nHeight)
 {
-    // TODO: AssertLockHeld(cs_khu);
+    // TODO Phase 6: AssertLockHeld(cs_khu);
 
-    // 1. SpendKHUCoin(view, prevout)
-    // TODO: Implement
-    // SpendKHUCoin(view, tx.vin[0].prevout);
+    // 1. Validate transaction has Sapling data
+    if (!tx.sapData) {
+        return error("%s: STAKE tx missing Sapling data", __func__);
+    }
 
-    // 2. Extraire la note ZKHU (commitment + nullifier)
-    // TODO: Extract from tx.vShieldedOutput[0]
-    // const OutputDescription& out = tx.vShieldedOutput[0];
-    // uint256 cm = out.cmu;
-    // uint256 nullifier = CalculateNullifier(...);  // Sapling nullifier derivation
+    if (tx.sapData->vShieldedOutput.empty()) {
+        return error("%s: STAKE tx has no shielded outputs", __func__);
+    }
 
-    // 3. Construire ZKHUNoteData (Ur_accumulated = 0 Phase 4)
-    // TODO: Get amount from input UTXO
-    // CAmount amount = ...;
-    // ZKHUNoteData noteData(
-    //     amount,
-    //     nHeight,  // nStakeStartHeight
-    //     0,        // Ur_accumulated = 0 (Phase 4)
-    //     nullifier,
-    //     cm
-    // );
+    // 2. Spend input KHU_T UTXO
+    if (tx.vin.empty()) {
+        return error("%s: STAKE tx has no inputs", __func__);
+    }
 
-    // 4. WriteNote(cm, noteData) dans DB ZKHU
-    // TODO: Access global zkhuDB and write
-    // if (!zkhuDB.WriteNote(cm, noteData)) {
-    //     return error("%s: failed to write note", __func__);
-    // }
+    const COutPoint& prevout = tx.vin[0].prevout;
+    const Coin& coin = view.AccessCoin(prevout);
+    if (coin.IsSpent()) {
+        return error("%s: input already spent", __func__);
+    }
 
-    // 5. zkhuTree.append(cm) + WriteAnchor(root, zkhuTree)
-    // TODO: Access global zkhuTree and append
+    CAmount amount = coin.out.nValue;
+    view.SpendCoin(prevout);  // Consume the KHU_T UTXO
+
+    // 3. Extract Sapling output (commitment)
+    const OutputDescription& saplingOut = tx.sapData->vShieldedOutput[0];
+    uint256 cm = saplingOut.cmu;  // Commitment = noteId
+
+    // 4. Calculate deterministic nullifier (Phase 5 simplification)
+    // Phase 6+: Use real Sapling nullifier derivation
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << cm;
+    ss << std::string("ZKHU-NULLIFIER-V1");
+    uint256 nullifier = ss.GetHash();
+
+    // 5. Create ZKHU note data (Ur_accumulated = 0 in Phase 5)
+    ZKHUNoteData noteData(
+        amount,
+        nHeight,      // nStakeStartHeight
+        0,            // Ur_accumulated = 0 (Phase 5: no yield yet)
+        nullifier,
+        cm
+    );
+
+    // 6. Write to ZKHU database
+    CZKHUTreeDB* zkhuDB = GetZKHUDB();
+    if (!zkhuDB) {
+        return error("%s: ZKHU database not initialized", __func__);
+    }
+
+    if (!zkhuDB->WriteNote(cm, noteData)) {
+        return error("%s: failed to write note to DB", __func__);
+    }
+
+    // 7. Write nullifier → cm mapping (for UNSTAKE lookup)
+    if (!zkhuDB->WriteNullifierMapping(nullifier, cm)) {
+        return error("%s: failed to write nullifier mapping", __func__);
+    }
+
+    // TODO Phase 6: Update Merkle tree
     // zkhuTree.append(cm);
     // uint256 newRoot = zkhuTree.root();
-    // if (!zkhuDB.WriteAnchor(newRoot, zkhuTree)) {
+    // if (!zkhuDB->WriteAnchor(newRoot, zkhuTree)) {
     //     return error("%s: failed to write anchor", __func__);
     // }
 
-    // 6. ✅ CRITICAL: Ne pas toucher à state.C/U/Cr/Ur
-    // Phase 4: STAKE is pure form conversion (T→Z), no economic effect
+    // 8. ✅ CRITICAL: Ne pas toucher à state.C/U/Cr/Ur
+    // Phase 4/5: STAKE is pure form conversion (T→Z), no economic effect
 
     // Verify invariants (should still hold since state unchanged)
     if (!state.CheckInvariants()) {
         return error("%s: invariant violation after STAKE", __func__);
     }
 
-    LogPrint(BCLog::KHU, "%s: Applied STAKE (height=%d, TODO: full implementation)\n",
-             __func__, nHeight);
+    LogPrint(BCLog::KHU, "%s: Applied STAKE at height %d (cm=%s, amount=%d)\n",
+             __func__, nHeight, cm.ToString(), amount);
 
     return true;
 }
@@ -144,28 +177,58 @@ bool UndoKHUStake(
     KhuGlobalState& state,
     int nHeight)
 {
-    // TODO: AssertLockHeld(cs_khu);
+    // TODO Phase 6: AssertLockHeld(cs_khu);
 
-    // 1. Recréer l'UTXO KHU_T initial (AddKHUCoin)
-    // TODO: Implement
-    // AddKHUCoin(view, tx.vin[0].prevout, amount);
+    // 1. Validate transaction structure
+    if (!tx.sapData || tx.sapData->vShieldedOutput.empty()) {
+        return error("%s: invalid STAKE tx in undo", __func__);
+    }
 
-    // 2. Supprimer la note ZKHU (EraseNote)
-    // TODO: Extract cm from tx.vShieldedOutput[0]
-    // uint256 cm = tx.vShieldedOutput[0].cmu;
-    // if (!zkhuDB.EraseNote(cm)) {
-    //     return error("%s: failed to erase note", __func__);
-    // }
+    if (tx.vin.empty()) {
+        return error("%s: STAKE tx has no inputs in undo", __func__);
+    }
 
-    // 3. Ne pas toucher à C/U/Cr/Ur
-    // (No state mutations to undo)
+    // 2. Extract commitment (note ID)
+    uint256 cm = tx.sapData->vShieldedOutput[0].cmu;
+
+    // 3. Read note to get amount (for UTXO recreation)
+    CZKHUTreeDB* zkhuDB = GetZKHUDB();
+    if (!zkhuDB) {
+        return error("%s: ZKHU database not initialized", __func__);
+    }
+
+    ZKHUNoteData noteData;
+    if (!zkhuDB->ReadNote(cm, noteData)) {
+        return error("%s: failed to read note for undo", __func__);
+    }
+
+    // 4. Recreate the KHU_T UTXO (undo the spend)
+    const COutPoint& prevout = tx.vin[0].prevout;
+    CScript scriptPubKey;  // TODO Phase 6: Extract from original UTXO
+    Coin coin;
+    coin.out = CTxOut(noteData.amount, scriptPubKey);
+    coin.nHeight = nHeight - 1;
+    view.AddCoin(prevout, std::move(coin), false);
+
+    // 5. Erase ZKHU note from database
+    if (!zkhuDB->EraseNote(cm)) {
+        return error("%s: failed to erase note", __func__);
+    }
+
+    // 6. Erase nullifier mapping
+    if (!zkhuDB->EraseNullifierMapping(noteData.nullifier)) {
+        return error("%s: failed to erase nullifier mapping", __func__);
+    }
+
+    // 7. Ne pas toucher à C/U/Cr/Ur (no state mutations to undo)
 
     // Verify invariants
     if (!state.CheckInvariants()) {
         return error("%s: invariant violation after undo STAKE", __func__);
     }
 
-    LogPrint(BCLog::KHU, "%s: Undone STAKE (TODO: full implementation)\n", __func__);
+    LogPrint(BCLog::KHU, "%s: Undone STAKE at height %d (cm=%s)\n",
+             __func__, nHeight, cm.ToString());
 
     return true;
 }

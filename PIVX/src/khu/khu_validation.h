@@ -13,6 +13,7 @@ class CCoinsViewCache;
 class CValidationState;
 class CKHUStateDB;
 class CKHUCommitmentDB;
+class CZKHUTreeDB;
 struct KhuGlobalState;
 
 namespace Consensus {
@@ -115,5 +116,26 @@ bool InitKHUCommitmentDB(size_t nCacheSize, bool fReindex);
  * @return Pointer to KHU commitment DB (may be nullptr if not initialized)
  */
 CKHUCommitmentDB* GetKHUCommitmentDB();
+
+/**
+ * InitZKHUDB - Initialize the ZKHU database
+ *
+ * PHASE 4/5: Called during node startup. Creates the ZKHU DB for Sapling notes.
+ * Stores: anchors, nullifiers, notes, nullifier→cm mappings.
+ *
+ * @param nCacheSize DB cache size
+ * @param fReindex If true, wipe and recreate DB
+ * @return true on success
+ */
+bool InitZKHUDB(size_t nCacheSize, bool fReindex);
+
+/**
+ * GetZKHUDB - Get global ZKHU database instance
+ *
+ * PHASE 4/5: Returns the ZKHU DB for Sapling operations (STAKE/UNSTAKE).
+ *
+ * @return Pointer to ZKHU DB (may be nullptr if not initialized)
+ */
+CZKHUTreeDB* GetZKHUDB();
 
 #endif // PIVX_KHU_VALIDATION_H

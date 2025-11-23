@@ -14,6 +14,7 @@
 #include "khu/khu_state.h"
 #include "khu/khu_statedb.h"
 #include "khu/khu_unstake.h"
+#include "khu/zkhu_db.h"
 #include "primitives/block.h"
 #include "sync.h"
 #include "util/system.h"
@@ -26,6 +27,9 @@ static std::unique_ptr<CKHUStateDB> pkhustatedb;
 
 // Global KHU commitment database (Phase 3: Masternode Finality)
 static std::unique_ptr<CKHUCommitmentDB> pkhucommitmentdb;
+
+// Global ZKHU database (Phase 4/5: Sapling notes, nullifiers, anchors)
+static std::unique_ptr<CZKHUTreeDB> pzkhudb;
 
 // KHU state lock (protects state transitions)
 static RecursiveMutex cs_khu;
@@ -67,6 +71,26 @@ bool InitKHUCommitmentDB(size_t nCacheSize, bool fReindex)
 CKHUCommitmentDB* GetKHUCommitmentDB()
 {
     return pkhucommitmentdb.get();
+}
+
+bool InitZKHUDB(size_t nCacheSize, bool fReindex)
+{
+    LOCK(cs_khu);
+
+    try {
+        pzkhudb.reset();
+        pzkhudb = std::make_unique<CZKHUTreeDB>(nCacheSize, false, fReindex);
+        LogPrint(BCLog::KHU, "KHU: Initialized ZKHU database (Phase 4/5 Sapling)\n");
+        return true;
+    } catch (const std::exception& e) {
+        LogPrintf("ERROR: Failed to initialize ZKHU database: %s\n", e.what());
+        return false;
+    }
+}
+
+CZKHUTreeDB* GetZKHUDB()
+{
+    return pzkhudb.get();
 }
 
 bool GetCurrentKHUState(KhuGlobalState& state)

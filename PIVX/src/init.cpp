@@ -1485,6 +1485,12 @@ bool AppInitMain()
                     return false;
                 }
 
+                // KHU: Initialize ZKHU database (Phase 4/5 - Sapling Staking)
+                if (!InitZKHUDB(1 << 20, fReindex)) { // 1 MB cache
+                    UIError(_("Failed to initialize ZKHU database"));
+                    return false;
+                }
+
                 InitTierTwoPreChainLoad(fReindex);
 
                 if (fReset) {

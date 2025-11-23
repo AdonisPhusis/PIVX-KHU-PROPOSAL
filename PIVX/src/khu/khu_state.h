@@ -6,6 +6,7 @@
 #define PIVX_KHU_STATE_H
 
 #include "amount.h"
+#include "logging.h"
 #include "serialize.h"
 #include "uint256.h"
 
@@ -101,6 +102,12 @@ struct KhuGlobalState
 
         // Cr/Ur invariant: either both 0 (genesis) or Cr == Ur
         bool crur_ok = (Ur == 0 && Cr == 0) || (Cr == Ur);
+
+        // ALARM: Log invariant violations for debugging
+        if (!cu_ok || !crur_ok) {
+            LogPrintf("KHU INVARIANT VIOLATION: C=%lld U=%lld Cr=%lld Ur=%lld\n",
+                      (long long)C, (long long)U, (long long)Cr, (long long)Ur);
+        }
 
         return cu_ok && crur_ok;
     }
