@@ -82,20 +82,21 @@ static UniValue getkhustate(const JSONRPCRequest& request)
 
     UniValue result(UniValue::VOBJ);
 
-    result.pushKV("height", state.nHeight);
+    result.pushKV("height", (int64_t)state.nHeight);
     result.pushKV("blockhash", state.hashBlock.GetHex());
     result.pushKV("C", ValueFromAmount(state.C));
     result.pushKV("U", ValueFromAmount(state.U));
     result.pushKV("Cr", ValueFromAmount(state.Cr));
     result.pushKV("Ur", ValueFromAmount(state.Ur));
-    result.pushKV("R_annual", state.R_annual);
+    result.pushKV("T", ValueFromAmount(state.T));
+    result.pushKV("R_annual", (int64_t)state.R_annual);
     result.pushKV("R_annual_pct", state.R_annual / 100.0);
-    result.pushKV("R_MAX_dynamic", state.R_MAX_dynamic);
-    result.pushKV("last_yield_update_height", state.last_yield_update_height);
-    result.pushKV("last_domc_height", state.last_domc_height);
-    result.pushKV("domc_cycle_start", state.domc_cycle_start);
-    result.pushKV("domc_cycle_length", state.domc_cycle_length);
-    result.pushKV("domc_phase_length", state.domc_phase_length);
+    result.pushKV("R_MAX_dynamic", (int64_t)state.R_MAX_dynamic);
+    result.pushKV("last_yield_update_height", (int64_t)state.last_yield_update_height);
+    result.pushKV("domc_cycle_start", (int64_t)state.domc_cycle_start);
+    result.pushKV("domc_cycle_length", (int64_t)state.domc_cycle_length);
+    result.pushKV("domc_commit_phase_start", (int64_t)state.domc_commit_phase_start);
+    result.pushKV("domc_reveal_deadline", (int64_t)state.domc_reveal_deadline);
     result.pushKV("invariants_ok", state.CheckInvariants());
     result.pushKV("hashState", state.GetHash().GetHex());
     result.pushKV("hashPrevState", state.hashPrevState.GetHex());
