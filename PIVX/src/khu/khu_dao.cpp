@@ -8,6 +8,7 @@
 #include "logging.h"
 
 #include <boost/multiprecision/cpp_int.hpp>
+#include <limits>
 
 using namespace boost::multiprecision;
 
@@ -39,7 +40,8 @@ CAmount CalculateDAOBudget(const KhuGlobalState& state)
     // budget = total × 5 / 1000 = 0.5%
     int128_t budget = (total * 5) / 1000;
 
-    if (budget < 0 || budget > MAX_MONEY) {
+    // Check if budget exceeds CAmount limits
+    if (budget < 0 || budget > std::numeric_limits<CAmount>::max()) {
         LogPrintf("ERROR: CalculateDAOBudget: overflow budget=%s (U=%lld Ur=%lld)\n",
                   budget.str().c_str(), (long long)state.U, (long long)state.Ur);
         return 0;
@@ -71,7 +73,7 @@ bool AccumulateDaoTreasuryIfNeeded(
     // Add budget to T
     int128_t new_T = static_cast<int128_t>(state.T) + static_cast<int128_t>(budget);
 
-    if (new_T < 0 || new_T > MAX_MONEY) {
+    if (new_T < 0 || new_T > std::numeric_limits<CAmount>::max()) {
         LogPrintf("ERROR: AccumulateDaoTreasury overflow: T=%lld, budget=%lld\n",
                   (long long)state.T, (long long)budget);
         return false;

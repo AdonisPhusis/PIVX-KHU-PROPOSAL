@@ -8,6 +8,7 @@
 #include "consensus/params.h"
 #include "khu/khu_commitment.h"
 #include "khu/khu_commitmentdb.h"
+#include "khu/khu_dao.h"
 #include "khu/khu_mint.h"
 #include "khu/khu_redeem.h"
 #include "khu/khu_stake.h"
@@ -159,16 +160,22 @@ bool ProcessKHUBlock(const CBlock& block,
     newState.hashBlock = hashBlock;
     newState.hashPrevState = prevState.GetHash();
 
-    // PHASE 2-4: Process KHU transactions
-    // Ordre canonique immuable (cf. blueprints):
-    // 1. ApplyDailyYieldIfNeeded() — Phase 5 (non implémenté, no-op Phase 4)
-    // 2. ProcessKHUTransactions() — Phase 2 (MINT/REDEEM)
-    // 3. ProcessKHUStake() — Phase 4 (STAKE)
-    // 4. ProcessKHUUnstake() — Phase 4 (UNSTAKE)
-    // 5. ApplyBlockReward() — Future
-    // 6. CheckInvariants()
-    // 7. PersistState()
+    // PHASE 6: Canonical order (CONSENSUS CRITICAL)
+    // STEP 1: DOMC cycle boundary — Phase 6.2 (TODO)
+    // STEP 2: DAO Treasury — Phase 6.3 (CURRENT)
+    // STEP 3: Daily Yield — Phase 6.1 (TODO)
+    // STEP 4: KHU Transactions — Phase 2-4 (MINT/REDEEM/STAKE/UNSTAKE)
+    // STEP 5: Block Reward — Future
+    // STEP 6: CheckInvariants()
+    // STEP 7: PersistState()
 
+    // STEP 2: DAO Treasury accumulation (Phase 6.3)
+    // Budget calculated on INITIAL state (before yield/transactions)
+    if (!khu_dao::AccumulateDaoTreasuryIfNeeded(newState, nHeight, consensusParams)) {
+        return validationState.Error("dao-treasury-failed");
+    }
+
+    // STEP 4: Process KHU transactions
     for (const auto& tx : block.vtx) {
         if (tx->nType == CTransaction::TxType::KHU_MINT) {
             if (!ApplyKHUMint(*tx, newState, view, nHeight)) {
@@ -276,6 +283,13 @@ bool DisconnectKHUBlock(const CBlock& block,
             }
         }
         // Note: MINT/REDEEM undo logic handled elsewhere (Phase 2 compatibility)
+    }
+
+    // PHASE 6: Undo DAO Treasury (Phase 6.3)
+    // Must be undone AFTER transactions (reverse order of Connect)
+    if (!khu_dao::UndoDaoTreasuryIfNeeded(khuState, nHeight, consensusParams)) {
+        return validationState.Invalid(false, REJECT_INVALID, "undo-dao-treasury-failed",
+            strprintf("Failed to undo DAO treasury at height %d", nHeight));
     }
 
     // Verify invariants after UNDO operations (CRITICAL: ensures state integrity)
