@@ -21,6 +21,7 @@
  * INVARIANTS (SACRED):
  * - C == U (collateral equals supply, except genesis where both are 0)
  * - Cr == Ur (reward collateral equals unstake rights, except genesis where both are 0)
+ * - T >= 0 (DAO Treasury must be non-negative)
  *
  * These invariants MUST be preserved after every block operation.
  */
@@ -34,21 +35,25 @@ struct KhuGlobalState
     CAmount Cr;  // Reward collateral (pool for staking rewards)
     CAmount Ur;  // Unstake rights (total accumulated yield across all stakers)
 
+    // DAO Treasury (Phase 6.3)
+    CAmount T;   // DAO Treasury internal pool
+
     // Governance parameters
-    uint16_t R_annual;        // Annual yield rate (centièmes: 2555 = 25.55%)
-    uint16_t R_MAX_dynamic;   // Maximum allowed R% voted by DOMC
+    uint32_t R_annual;        // Annual yield rate (basis points: 1500 = 15.00%)
+    uint32_t R_MAX_dynamic;   // Maximum allowed R% voted by DOMC (basis points)
+    uint32_t last_yield_update_height;  // Last block where daily yield was applied
 
-    // DOMC state tracking
-    int64_t last_domc_height;       // Last block where DOMC cycle completed
-    int32_t domc_cycle_start;       // Start block of current DOMC cycle
-    int32_t domc_cycle_length;      // Length of DOMC cycle (172800 blocks = 4 months)
-    int32_t domc_phase_length;      // Length of each DOMC phase (20160 blocks = 2 weeks)
+    // DOMC Governance (Phase 6.2) - Scalaires uniquement
+    uint32_t domc_cycle_start;           // Height where current DOMC cycle started
+    uint32_t domc_cycle_length;          // 172800 blocks (constant)
+    uint32_t domc_commit_phase_start;    // cycle_start + 132480
+    uint32_t domc_reveal_deadline;       // cycle_start + 152640
 
-    // Yield tracking
-    int64_t last_yield_update_height;  // Last block where daily yield was applied
+    // NOTE: DOMC votes (commits/reveals) sont dans CKHUDomcDB (pas ici)
+    // NOTE: Staked notes sont dans DB ZKHU (pas ici)
 
     // Block linkage
-    int nHeight;           // Block height of this state
+    uint32_t nHeight;      // Block height of this state
     uint256 hashBlock;     // Block hash for this state
     uint256 hashPrevState; // Hash of previous state (for chain validation)
 
@@ -63,13 +68,14 @@ struct KhuGlobalState
         U = 0;
         Cr = 0;
         Ur = 0;
+        T = 0;
         R_annual = 0;
         R_MAX_dynamic = 0;
-        last_domc_height = 0;
+        last_yield_update_height = 0;
         domc_cycle_start = 0;
         domc_cycle_length = 0;
-        domc_phase_length = 0;
-        last_yield_update_height = 0;
+        domc_commit_phase_start = 0;
+        domc_reveal_deadline = 0;
         nHeight = 0;
         hashBlock.SetNull();
         hashPrevState.SetNull();
@@ -86,14 +92,15 @@ struct KhuGlobalState
      * RULES:
      * 1. C == U (except genesis where both are 0)
      * 2. Cr == Ur (except genesis where both are 0)
-     * 3. All amounts must be non-negative
+     * 3. T >= 0 (DAO Treasury must be non-negative)
+     * 4. All amounts must be non-negative
      *
      * @return true if all invariants hold, false otherwise
      */
     bool CheckInvariants() const
     {
-        // All amounts must be non-negative
-        if (C < 0 || U < 0 || Cr < 0 || Ur < 0) {
+        // All amounts must be non-negative (including T)
+        if (C < 0 || U < 0 || Cr < 0 || Ur < 0 || T < 0) {
             return false;
         }
 
@@ -105,8 +112,8 @@ struct KhuGlobalState
 
         // ALARM: Log invariant violations for debugging
         if (!cu_ok || !crur_ok) {
-            LogPrintf("KHU INVARIANT VIOLATION: C=%lld U=%lld Cr=%lld Ur=%lld\n",
-                      (long long)C, (long long)U, (long long)Cr, (long long)Ur);
+            LogPrintf("KHU INVARIANT VIOLATION: C=%lld U=%lld Cr=%lld Ur=%lld T=%lld\n",
+                      (long long)C, (long long)U, (long long)Cr, (long long)Ur, (long long)T);
         }
 
         return cu_ok && crur_ok;
@@ -126,13 +133,14 @@ struct KhuGlobalState
         READWRITE(obj.U);
         READWRITE(obj.Cr);
         READWRITE(obj.Ur);
+        READWRITE(obj.T);
         READWRITE(obj.R_annual);
         READWRITE(obj.R_MAX_dynamic);
-        READWRITE(obj.last_domc_height);
+        READWRITE(obj.last_yield_update_height);
         READWRITE(obj.domc_cycle_start);
         READWRITE(obj.domc_cycle_length);
-        READWRITE(obj.domc_phase_length);
-        READWRITE(obj.last_yield_update_height);
+        READWRITE(obj.domc_commit_phase_start);
+        READWRITE(obj.domc_reveal_deadline);
         READWRITE(obj.nHeight);
         READWRITE(obj.hashBlock);
         READWRITE(obj.hashPrevState);
