@@ -747,8 +747,8 @@ bool CheckHTLCClaim(const CTransaction& tx, ...) {
 5. Bob voit P, claim sur PIVX avant timelock
 6. **C'est le comportement attendu (atomicité)**
 
-**Protection Gateway:**
-- Gateway watchers surveillent les deux chaînes
+**Responsabilité participants:**
+- Chaque participant surveille sa propre transaction
 - Si preimage révélé sur une chaîne, claim immédiatement sur l'autre
 - Pas de protection mempool (inutile, le preimage sera on-chain de toute façon)
 

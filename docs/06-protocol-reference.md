@@ -1,6 +1,6 @@
 # 06 — PIVX-V6-KHU PROTOCOL REFERENCE
 
-Version: 1.0.0
+Version: 1.1.0
 Status: IMPLEMENTATION GUIDE
 Target: PIVX Core v6.0+
 
@@ -38,6 +38,9 @@ struct KhuGlobalState {
     int64_t Cr;                     // Reward pool (satoshis)
     int64_t Ur;                     // Reward rights (satoshis)
 
+    // DAO Treasury (Phase 6)
+    int64_t T;                      // DAO Treasury Pool (satoshis)
+
     // DOMC parameters
     uint16_t R_annual;              // Basis points (0-3000)
     uint16_t R_MAX_dynamic;         // max(400, 3000 - year*100)
@@ -58,15 +61,18 @@ struct KhuGlobalState {
 
     // Methods
     bool CheckInvariants() const {
+        if (C < 0 || U < 0 || Cr < 0 || Ur < 0 || T < 0)
+            return false;
         bool cd_ok = (U == 0 || C == U);
         bool cdr_ok = (Ur == 0 || Cr == Ur);
+        // T >= 0 (verified above)
         return cd_ok && cdr_ok;
     }
 
     uint256 GetHash() const;
 
     SERIALIZE_METHODS(KhuGlobalState, obj) {
-        READWRITE(obj.C, obj.U, obj.Cr, obj.Ur);
+        READWRITE(obj.C, obj.U, obj.Cr, obj.Ur, obj.T);
         READWRITE(obj.R_annual, obj.R_MAX_dynamic, obj.last_domc_height);
         READWRITE(obj.domc_cycle_start, obj.domc_cycle_length, obj.domc_phase_length);
         READWRITE(obj.last_yield_update_height);
@@ -856,18 +862,21 @@ bool ConnectBlock(const CBlock& block, CBlockIndex* pindex, CCoinsViewCache& vie
         KhuGlobalState prevState = LoadKhuState(pindex->pprev);
         KhuGlobalState newState = prevState;
 
-        // STEP 3: Apply yield (if needed)
+        // STEP 3: Accumulate DAO Treasury (if needed) - Phase 6
+        AccumulateDaoTreasuryIfNeeded(newState, pindex->nHeight);
+
+        // STEP 4: Apply yield (if needed)
         ApplyDailyYieldIfNeeded(newState, pindex->nHeight);
 
-        // STEP 4: Process transactions
+        // STEP 5: Process transactions
         for (const auto& tx : block.vtx) {
             ProcessKHUTransaction(tx, newState, view, state);
         }
 
-        // STEP 5: Check invariants
+        // STEP 6: Check invariants
         newState.CheckInvariants();
 
-        // STEP 6: Persist state
+        // STEP 7: Persist state
         pKHUStateDB->WriteKHUState(newState);
 
         // Lock released automatically at end of scope
@@ -978,9 +987,9 @@ HTLC security relies on:
 
 Mempool does NOT need HTLC-aware logic.
 
-**Gateway responsibility:**
+**Off-chain responsibility:**
 
-Secret protection is handled **off-chain** by Gateway watchers, NOT by PIVX Core mempool.
+Secret protection is the responsibility of swap participants, NOT PIVX Core mempool.
 
 ---
 
@@ -1225,14 +1234,16 @@ bool DisconnectKHUBlock(
 
     // 3. Reverse KHU transactions (INVERSE ORDER of ConnectBlock)
     //    ConnectBlock order:
-    //      1. ApplyDailyYieldIfNeeded()
-    //      2. ProcessKHUTransactions()
-    //      3. ApplyBlockReward()
+    //      1. AccumulateDaoTreasuryIfNeeded() (Phase 6)
+    //      2. ApplyDailyYieldIfNeeded()
+    //      3. ProcessKHUTransactions()
+    //      4. ApplyBlockReward()
     //
     //    DisconnectBlock order (REVERSE):
     //      1. Reverse ApplyBlockReward() if applicable
     //      2. Reverse ProcessKHUTransactions()
     //      3. Reverse ApplyDailyYieldIfNeeded() if applicable
+    //      4. Reverse AccumulateDaoTreasuryIfNeeded() if applicable (Phase 6)
 
     // 3.1 Reverse block reward (no-op for KHU state)
     //     Block reward doesn't modify C/U/Cr/Ur directly
@@ -1767,6 +1778,128 @@ class CMainParams : public CChainParams {
 - DAO funds go to existing treasury system
 - No new payout mechanism needed
 
+### 14.1 DAO TREASURY POOL (PHASE 6)
+
+**File:** `src/khu/khu_dao.h`, `src/khu/khu_dao.cpp`
+
+**Purpose:** Internal treasury pool T that accumulates 0.5% × (U + Ur) every 172800 blocks (4 months).
+
+**Architecture:** T is an INTERNAL field in KhuGlobalState, NOT an external address/payment.
+
+**Constants:**
+
+```cpp
+// src/khu/khu_dao.h
+static const uint32_t DAO_CYCLE_LENGTH = 172800;  // 4 months (4 × 43200 DOMC cycle)
+```
+
+**Cycle Detection:**
+
+```cpp
+bool IsDaoCycleBoundary(uint32_t nHeight, uint32_t nActivationHeight)
+{
+    if (nHeight <= nActivationHeight) {
+        return false;
+    }
+
+    uint32_t blocks_since_activation = nHeight - nActivationHeight;
+    return (blocks_since_activation % DAO_CYCLE_LENGTH) == 0;
+}
+```
+
+**Budget Calculation:**
+
+```cpp
+CAmount CalculateDAOBudget(const KhuGlobalState& state)
+{
+    // DAO_budget = (U + Ur) × 0.5% = (U + Ur) × 5 / 1000
+
+    __int128 total = (__int128)state.U + (__int128)state.Ur;
+    __int128 budget = (total * 5) / 1000;
+
+    // Overflow protection
+    if (budget < 0 || budget > MAX_MONEY) {
+        LogPrintf("WARNING: CalculateDAOBudget overflow (U=%lld, Ur=%lld)\n",
+                  state.U, state.Ur);
+        return 0;
+    }
+
+    return (CAmount)budget;
+}
+```
+
+**Accumulation (called in ConnectBlock before ApplyDailyYield):**
+
+```cpp
+void AccumulateDaoTreasuryIfNeeded(KhuGlobalState& state, uint32_t nHeight,
+                                   uint32_t nActivationHeight)
+{
+    AssertLockHeld(cs_khu);
+
+    if (!IsDaoCycleBoundary(nHeight, nActivationHeight)) {
+        return;  // Not a DAO cycle boundary
+    }
+
+    CAmount budget = CalculateDAOBudget(state);
+
+    if (budget <= 0) {
+        return;  // No accumulation if budget is 0
+    }
+
+    // Accumulate to T (internal pool)
+    state.T += budget;
+
+    // Overflow protection
+    if (state.T < 0 || state.T > MAX_MONEY) {
+        throw std::runtime_error(strprintf(
+            "DAO Treasury overflow at height %d (T=%lld)",
+            nHeight, state.T));
+    }
+
+    LogPrint(BCLog::KHU, "DAO Treasury: Accumulated %lld PIV, T=%lld (U=%lld, Ur=%lld)\n",
+             budget, state.T, state.U, state.Ur);
+}
+```
+
+**Undo (called in DisconnectBlock):**
+
+```cpp
+void UndoDaoTreasuryIfNeeded(KhuGlobalState& state, uint32_t nHeight,
+                             uint32_t nActivationHeight)
+{
+    AssertLockHeld(cs_khu);
+
+    if (!IsDaoCycleBoundary(nHeight, nActivationHeight)) {
+        return;  // Not a DAO cycle boundary
+    }
+
+    // Rollback T by subtracting budget
+    CAmount budget = CalculateDAOBudget(state);
+    state.T -= budget;
+
+    // Safety: clamp to 0 if negative
+    if (state.T < 0) {
+        LogPrintf("WARNING: T negative after DAO undo at height %d (T=%lld), clamping to 0\n",
+                  nHeight, state.T);
+        state.T = 0;
+    }
+
+    LogPrint(BCLog::KHU, "DAO: Undone treasury accumulation at height %d (T=%lld)\n",
+             nHeight, state.T);
+}
+```
+
+**Dual DAO Systems:**
+
+```
+System 1 (Years 0-6):   Block reward DAO = 6→0 PIV/bloc (section 14)
+System 2 (Perpetual):   Treasury Pool T = 0.5% × (U+Ur) / 4 mois (section 14.1)
+```
+
+These systems run **IN PARALLEL** and are **INDEPENDENT**.
+
+**Phase 7 (Future):** Proposals will be able to spend from T (with MN vote approval).
+
 ---
 
 ## 15. YIELD PRECISION (INT64)
@@ -1870,14 +2003,13 @@ bool CheckHTLCClaim(const CTransaction& tx, CValidationState& state, const CCoin
 
 **Mempool visibility:**
 - Preimage visible in mempool when HTLC_CLAIM broadcast
-- Gateway watchers monitor both chains
 - No special mempool isolation needed
 - Standard RBF (Replace-By-Fee) rules apply
 
 **Security:**
 - HTLC security relies on timelock enforcement (consensus)
 - Not on mempool privacy (impossible to achieve)
-- Gateway watchers handle race conditions
+- Participants monitor their transactions
 
 **Mempool rules:** No special handling (see section 4).
 

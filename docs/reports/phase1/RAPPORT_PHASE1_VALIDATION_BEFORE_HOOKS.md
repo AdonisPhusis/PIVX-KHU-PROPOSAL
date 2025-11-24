@@ -591,7 +591,7 @@ L'ordre actuel est:
 - Pas de ping parsing pour commit/reveal
 - Pas de mise à jour `R_annual`
 
-❌ **HTLC (Gateway)**:
+❌ **HTLC (Optional)**:
 - Pas de parsing HTLC
 - Pas de timelock/hashlock logic
 

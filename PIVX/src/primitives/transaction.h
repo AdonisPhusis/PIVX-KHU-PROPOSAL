@@ -258,10 +258,12 @@ public:
         PROUPREG = 3,
         PROUPREV = 4,
         LLMQCOMM = 5,
-        KHU_MINT = 6,      // Phase 2: PIV → KHU_T (1:1 ratio)
-        KHU_REDEEM = 7,    // Phase 2: KHU_T → PIV (1:1 ratio)
-        KHU_STAKE = 8,     // Phase 4: KHU_T → ZKHU (Sapling private staking)
-        KHU_UNSTAKE = 9,   // Phase 4: ZKHU → KHU_T + bonus (maturity 4320 blocks)
+        KHU_MINT = 6,        // Phase 2: PIV → KHU_T (1:1 ratio)
+        KHU_REDEEM = 7,      // Phase 2: KHU_T → PIV (1:1 ratio)
+        KHU_STAKE = 8,       // Phase 4: KHU_T → ZKHU (Sapling private staking)
+        KHU_UNSTAKE = 9,     // Phase 4: ZKHU → KHU_T + bonus (maturity 4320 blocks)
+        KHU_DOMC_COMMIT = 10, // Phase 6.2: DOMC commit vote (Hash(R || salt))
+        KHU_DOMC_REVEAL = 11, // Phase 6.2: DOMC reveal vote (R + salt)
     };
 
     static const int16_t CURRENT_VERSION = TxVersion::LEGACY;

@@ -1,6 +1,6 @@
 # 02 — PIVX-V6-KHU CANONICAL SPECIFICATION
 
-Version: 1.0.0
+Version: 1.1.0
 Status: FINAL
 Style: Core Consensus Rules
 
@@ -8,10 +8,19 @@ Style: Core Consensus Rules
 
 ## 1. ASSETS
 
+### 1.1 Définition
+
+**KHU = Knowledge Hedge Unit**
+
+KHU est un **colored coin collatéralisé 1:1** par PIV. Ce n'est PAS un stablecoin (pas de peg USD/EUR).
+C'est une unité de couverture de connaissance — une représentation tokenisée de PIV avec des propriétés étendues (staking privé, yield gouverné).
+
+### 1.2 Types d'actifs
+
 ```
 PIV     : Native asset (existing)
-KHU_T   : Transparent UTXO (colored coin, internal tracking)
-ZKHU    : Sapling note (staking only)
+KHU_T   : Knowledge Hedge Unit - Transparent UTXO (colored coin, internal tracking)
+ZKHU    : Knowledge Hedge Unit - Sapling note (staking only, private)
 ```
 
 ---
@@ -22,7 +31,7 @@ ZKHU    : Sapling note (staking only)
 
 La structure KhuGlobalState représente l'état économique global du système KHU à un height donné.
 
-Elle contient **14 champs**, définis comme suit :
+Elle contient **15 champs**, définis comme suit :
 
 ```cpp
 struct KhuGlobalState {
@@ -30,6 +39,7 @@ struct KhuGlobalState {
     int64_t  U;      // Supply totale KHU_T
     int64_t  Cr;     // Collatéral réservé au pool de reward
     int64_t  Ur;     // Reward accumulé (droits de reward)
+    int64_t  T;      // DAO Treasury Pool (Phase 6: accumulation automatique)
 
     uint16_t R_annual;        // Paramètre DOMC (basis points, ex: 500 = 5.00%)
     uint16_t R_MAX_dynamic;   // Limite supérieure votable dynamique
@@ -48,7 +58,7 @@ struct KhuGlobalState {
     // Invariant verification
     bool CheckInvariants() const {
         // Verify non-negativity
-        if (C < 0 || U < 0 || Cr < 0 || Ur < 0)
+        if (C < 0 || U < 0 || Cr < 0 || Ur < 0 || T < 0)
             return false;
 
         // INVARIANT 1: Collateralization
@@ -56,6 +66,9 @@ struct KhuGlobalState {
 
         // INVARIANT 2: Reward Collateralization
         bool cdr_ok = (Ur == 0 || Cr == Ur);
+
+        // INVARIANT 3: Treasury Non-Negative (T can grow independently)
+        // T >= 0 (verified above)
 
         return cd_ok && cdr_ok;
     }
@@ -65,7 +78,7 @@ struct KhuGlobalState {
 };
 ```
 
-**Note:** Ces 14 champs constituent le KhuGlobalState canonique. Toute implémentation doit refléter EXACTEMENT cette structure.
+**Note:** Ces 15 champs constituent le KhuGlobalState canonique. Toute implémentation doit refléter EXACTEMENT cette structure.
 
 > ⚠️ **ANTI-DÉRIVE: CHECKSUM DE STRUCTURE (doc 02 ↔ doc 03)**
 >
@@ -73,16 +86,16 @@ struct KhuGlobalState {
 >
 > La structure `KhuGlobalState` doit être **IDENTIQUE** dans docs 02 et 03.
 >
-> **CHECKSUM DE STRUCTURE (14 champs) :**
+> **CHECKSUM DE STRUCTURE (15 champs) :**
 > ```
-> SHA256("int64_t C | int64_t U | int64_t Cr | int64_t Ur | uint16_t R_annual | uint16_t R_MAX_dynamic | uint32_t last_domc_height | uint32_t domc_cycle_start | uint32_t domc_cycle_length | uint32_t domc_phase_length | uint32_t last_yield_update_height | uint32_t nHeight | uint256 hashPrevState | uint256 hashBlock")
-> = 0x4a7b8c9e...  (fixed reference checksum)
+> SHA256("int64_t C | int64_t U | int64_t Cr | int64_t Ur | int64_t T | uint16_t R_annual | uint16_t R_MAX_dynamic | uint32_t last_domc_height | uint32_t domc_cycle_start | uint32_t domc_cycle_length | uint32_t domc_phase_length | uint32_t last_yield_update_height | uint32_t nHeight | uint256 hashPrevState | uint256 hashBlock")
+> = 0x7d3e2a1f...  (fixed reference checksum - UPDATED for Phase 6)
 > ```
 >
 > **RÈGLES DE SYNCHRONISATION:**
 >
-> 1. ✅ Docs 02 et 03 DOIVENT avoir les 14 mêmes champs
-> 2. ✅ Même ordre de déclaration (C, U, Cr, Ur, ...)
+> 1. ✅ Docs 02 et 03 DOIVENT avoir les 15 mêmes champs
+> 2. ✅ Même ordre de déclaration (C, U, Cr, Ur, T, ...)
 > 3. ✅ Mêmes types exacts (int64_t, uint16_t, uint32_t, uint256)
 > 4. ✅ Même méthode CheckInvariants() avec logique identique
 > 5. ✅ Même signature SERIALIZE_METHODS
@@ -128,6 +141,7 @@ Les invariants doivent être vrais **à chaque fin de ConnectBlock()** :
 **Vérification:**
 
 Les invariants doivent être vérifiés immédiatement après :
+- AccumulateDaoTreasury (Phase 6)
 - ApplyDailyYield
 - ApplyKHUTransactions
 - ApplyKhuUnstake
@@ -185,13 +199,24 @@ Both mutations confined to single function call under global state lock.
 
 **Prohibited.** Only REDEEM destroys KHU.
 
-### 3.4 Authorized Pipeline
+### 3.4 Authorized Operations
 
 ```
-PIV → MINT → KHU_T → STAKE → ZKHU → UNSTAKE → KHU_T → REDEEM → PIV
+OPÉRATIONS INDÉPENDANTES (pas de séquence obligatoire):
+
+  MINT:    PIV → KHU_T       (instantané)
+  REDEEM:  KHU_T → PIV       (instantané)
+  STAKE:   KHU_T → ZKHU      (optionnel, pour yield R%)
+  UNSTAKE: ZKHU → KHU_T      (après maturity 4320 blocs)
+
+FLUX POSSIBLES:
+
+  Simple:   PIV → MINT → KHU_T → REDEEM → PIV
+  Complet:  PIV → MINT → KHU_T → STAKE → ZKHU → UNSTAKE → KHU_T → REDEEM → PIV
+  Mixte:    MINT/REDEEM en boucle + STAKE partiel pour yield
 ```
 
-**No other path allowed.**
+**STAKE/UNSTAKE sont OPTIONNELS.** On peut MINT/REDEEM sans jamais staker.
 
 ### 3.5 Atomicité du Double Flux (semantics canonique)
 
@@ -241,32 +266,74 @@ U -= amount
 
 Ces opérations sont atomiques : C et U NE DOIVENT JAMAIS être modifiés séparément.
 
-### 3.7 Pipeline canonique KHU (immuable)
+### 3.7 Opérations canoniques KHU (immuables)
 
 ```
-PIV → MINT → KHU_T → STAKE → ZKHU → UNSTAKE → KHU_T → REDEEM → PIV
+Opérations autorisées (INDÉPENDANTES, pas de séquence obligatoire):
+  • MINT:    PIV → KHU_T
+  • REDEEM:  KHU_T → PIV
+  • STAKE:   KHU_T → ZKHU (optionnel)
+  • UNSTAKE: ZKHU → KHU_T + bonus (optionnel)
 ```
 
-Aucune autre transformation n'est autorisée.
+Aucune autre transformation n'est autorisée. STAKE/UNSTAKE sont optionnels.
 
 ### 3.8 Ordre canonique ConnectBlock()
 
 ```
 1. LoadKhuState(height - 1)
-2. ApplyDailyYieldIfNeeded()
-3. ProcessKHUTransactions()
-4. ApplyBlockReward()
-5. CheckInvariants()
-6. SaveKhuState(height)
+2. AccumulateDaoTreasuryIfNeeded()  // Phase 6: T += 0.5% × (U+Ur) tous les 172800 blocs
+3. ApplyDailyYieldIfNeeded()
+4. ProcessKHUTransactions()
+5. ApplyBlockReward()
+6. CheckInvariants()
+7. SaveKhuState(height)
 ```
 
 Cet ordre est **immuable** et doit être respecté strictement dans l'implémentation.
 
-> ⚠️ **ANTI-DÉRIVE CRITIQUE : ORDRE YIELD → TRANSACTIONS**
+> ⚠️ **ANTI-DÉRIVE CRITIQUE : ORDRE DAO → YIELD → TRANSACTIONS**
 >
-> **L'étape 2 (ApplyDailyYieldIfNeeded) DOIT s'exécuter AVANT l'étape 3 (ProcessKHUTransactions).**
+> **L'étape 2 (AccumulateDaoTreasuryIfNeeded) DOIT s'exécuter EN PREMIER (avant tout).**
+> **L'étape 3 (ApplyDailyYieldIfNeeded) DOIT s'exécuter AVANT l'étape 4 (ProcessKHUTransactions).**
 >
-> **RAISON CRITIQUE :**
+> **RAISON CRITIQUE POUR DAO EN PREMIER:**
+>
+> Le budget DAO est calculé comme `0.5% × (U + Ur)`. Ce calcul doit utiliser l'état **au début du bloc** (avant modifications par YIELD ou TRANSACTIONS). Si DAO était exécuté après YIELD:
+>
+> ```
+> // SCÉNARIO D'ERREUR (yield → dao)
+> 1. ApplyDailyYieldIfNeeded() exécuté en PREMIER
+>    → state.Ur += daily_yield (Ur augmente)
+>    → state.Cr += daily_yield
+>
+> 2. AccumulateDaoTreasuryIfNeeded() exécuté EN SECOND
+>    → budget = 0.5% × (U + Ur_APRÈS_YIELD)
+>    → Budget INCORRECTEMENT basé sur Ur augmenté
+>    → T += budget_FAUX (trop élevé)
+>
+> 3. Résultat : Budget DAO non-déterministe
+>    → Dépend de l'ordre d'exécution
+>    → Consensus ambiguïté
+> ```
+>
+> **ORDRE CORRECT (dao → yield → transactions):**
+>
+> ```
+> 1. AccumulateDaoTreasuryIfNeeded() exécuté EN PREMIER
+>    → budget = 0.5% × (U + Ur_INITIAL)
+>    → T += budget (basé sur état initial)
+>
+> 2. ApplyDailyYieldIfNeeded() exécuté EN SECOND
+>    → state.Ur += daily_yield
+>    → N'affecte PAS le budget DAO déjà calculé
+>
+> 3. Résultat : Budget DAO déterministe
+>    → Toujours basé sur état début de bloc
+>    → Consensus clair
+> ```
+>
+> **RAISON CRITIQUE POUR YIELD AVANT TRANSACTIONS:**
 >
 > Si un bloc contient à la fois :
 > - Un update du yield quotidien (tous les 1440 blocs)
@@ -419,6 +486,79 @@ Interdictions absolues dans l'implémentation:
 - Pas de table alternative ou cache pré-calculé
 - Pas de modulation selon hashrate/staking/network
 - La formule `max(6 - year, 0)` est sacrée et inchangeable
+
+### 5.6 DAO Treasury Accumulation (Phase 6)
+
+**Règle:**
+
+Tous les **172800 blocs** (4 mois), le pool interne T s'incrémente automatiquement:
+
+```
+T += 0.5% × (U + Ur)
+T += (U + Ur) × 5 / 1000
+```
+
+**Propriétés:**
+
+- **Automatique:** Aucun vote, aucune gouvernance pour l'accumulation
+- **Déterministe:** Formule fixe, basée sur état début de bloc
+- **Perpétuel:** Continue indéfiniment (même après année 6)
+- **Internal Pool:** T est un champ dans KhuGlobalState (pas une address externe)
+- **Indépendant:** N'affecte PAS C, U, Cr, Ur (pas de création monétaire immédiate)
+
+**Cycle:**
+
+```cpp
+const uint32_t DAO_CYCLE_LENGTH = 172800;  // 4 months (4 × 43200 DOMC cycle)
+
+bool IsDaoCycleBoundary(uint32_t nHeight, uint32_t nActivationHeight) {
+    if (nHeight <= nActivationHeight) return false;
+    uint32_t blocks_since_activation = nHeight - nActivationHeight;
+    return (blocks_since_activation % DAO_CYCLE_LENGTH) == 0;
+}
+```
+
+**Budget Calculation:**
+
+```cpp
+CAmount CalculateDAOBudget(const KhuGlobalState& state) {
+    __int128 total = (__int128)state.U + (__int128)state.Ur;
+    __int128 budget = (total * 5) / 1000;
+
+    if (budget < 0 || budget > MAX_MONEY) {
+        return 0;  // Overflow protection
+    }
+
+    return (CAmount)budget;
+}
+```
+
+**Accumulation:**
+
+```cpp
+void AccumulateDaoTreasury(KhuGlobalState& state) {
+    CAmount budget = CalculateDAOBudget(state);
+    state.T += budget;
+
+    // T overflow protection
+    if (state.T < 0 || state.T > MAX_MONEY) {
+        reject_block("dao-treasury-overflow");
+    }
+}
+```
+
+**Phase 7 (Future):**
+
+Les propositions DAO pourront dépenser depuis T (avec vote MN approval). Phase 6 implémente uniquement l'accumulation.
+
+**Système Dual:**
+
+```
+Système 1 (Years 0-6):   Block reward DAO = 6→0 PIV/bloc (section 5.2)
+Système 2 (Perpétuel):   Treasury Pool T = 0.5% × (U+Ur) / 4 mois (section 5.6)
+```
+
+Ces deux systèmes fonctionnent **EN PARALLÈLE** et sont **INDÉPENDANTS**.
 
 ---
 
@@ -692,6 +832,44 @@ if ((nHeight - last_yield_update_height) >= 1440) {
 
 **INVARIANT_2 preserved: Cr == Ur always.**
 
+### 8.2.1 R% Global et Uniforme (RÈGLE CRITIQUE)
+
+> ⚠️ **CLARIFICATION IMPORTANTE — ANTI-CONFUSION**
+>
+> **R% est GLOBAL et IDENTIQUE pour TOUS les stakers à un instant T.**
+>
+> ```
+> À jour J avec R_annual = X:
+>   - Alice (stakée depuis 100 jours) → reçoit X%
+>   - Bob (staké depuis 10 jours)     → reçoit X%
+>   - Charlie (staké depuis 1 jour)   → reçoit X%
+> ```
+>
+> **Ce n'est PAS une "dilution des stakers".**
+> **C'est une "dilution des arbitrageurs tardifs":**
+>
+> - R% diminue au fil du temps (30% → 4% sur 26 ans via DOMC/R_MAX)
+> - Un arbitrageur qui arrive TARD reçoit un R% plus faible
+> - Mais à un instant donné, TOUS les stakers actifs reçoivent le MÊME taux
+>
+> **Exemple temporel:**
+> ```
+> Année 0: R_MAX=30%, DOMC vote R=25%
+>   → Alice stake → reçoit 25%
+>   → Bob stake   → reçoit 25% (même que Alice)
+>
+> Année 5: R_MAX=25%, DOMC vote R=20%
+>   → Alice (toujours stakée) → reçoit 20%
+>   → Bob (toujours staké)    → reçoit 20%
+>   → Charlie arrive          → reçoit 20% (même que Alice et Bob)
+> ```
+>
+> **Code source (khu_yield.cpp ligne 114):**
+> ```cpp
+> // Le MÊME R_annual pour toutes les notes
+> CAmount dailyYield = CalculateDailyYieldForNote(note.amount, R_annual);
+> ```
+
 ### 8.3 Yield Restrictions
 
 ```
@@ -763,7 +941,7 @@ First DOMC cycle starts at: ACTIVATION_HEIGHT + 525600 (1 year)
 
 ---
 
-## 10. HTLC CROSS-CHAIN
+## 10. HTLC (OPTIONAL)
 
 ### 10.1 HTLC_CREATE
 
@@ -1131,11 +1309,10 @@ Block (ACTIVATION_HEIGHT + 525600):
 - Voting enabled
 ```
 
-### Phase 5: HTLC (TBD blocks after activation)
+### Phase 5: HTLC (Optional, TBD)
 ```
 Block (ACTIVATION_HEIGHT + <TBD>):
-- HTLC enabled
-- Cross-chain swaps active
+- HTLC transactions enabled (optional)
 ```
 
 ---
@@ -1156,18 +1333,19 @@ L'ordre ConnectBlock() est **immuable** :
 
 ```
 1. LoadKhuState(height - 1)
-2. ApplyDailyYieldIfNeeded()
-3. ProcessKHUTransactions()
-4. ApplyBlockReward()
-5. CheckInvariants()
-6. SaveKhuState(height)
+2. AccumulateDaoTreasuryIfNeeded()  // Phase 6: T += 0.5% × (U+Ur) tous les 172800 blocs
+3. ApplyDailyYieldIfNeeded()
+4. ProcessKHUTransactions()
+5. ApplyBlockReward()
+6. CheckInvariants()
+7. SaveKhuState(height)
 ```
 
 Toute modification de cet ordre constitue un consensus break.
 
 ### 19.3 Verrouillage
 
-Toute fonction modifiant C, U, Cr, ou Ur DOIT :
+Toute fonction modifiant C, U, Cr, Ur, ou T DOIT :
 - Acquérir le lock `cs_khu` avant toute mutation
 - Maintenir ce lock pendant toutes les mutations atomiques
 - Appeler `CheckInvariants()` avant de relâcher le lock
@@ -1187,6 +1365,10 @@ Aucune correction automatique. Aucune tolérance. Rejet immédiat.
 
 ```
 1.0.0 - Initial canonical specification
+1.1.0 - Phase 6: Added T (DAO Treasury Pool) as 15th field in KhuGlobalState
+        - T accumulates 0.5% × (U+Ur) every 172800 blocks (4 months)
+        - Updated ConnectBlock order: AccumulateDaoTreasuryIfNeeded() added as step 2
+        - Updated anti-drift checksum for 15 fields
 ```
 
 ---

@@ -586,8 +586,8 @@ Phase 1 ne fait QUE la foundation. Phases suivantes ajouteront:
 - **Phase 3:** Daily YIELD (Cr/Ur growth)
 - **Phase 4:** UNSTAKE bonus (Cr/Ur consumption)
 - **Phase 5:** DOMC governance (R% voting)
-- **Phase 6:** Gateway HTLC (cross-chain)
-- **Phase 7:** ZKHU Sapling staking (privacy)
+- **Phase 6:** ZKHU Sapling staking (privacy)
+- **Phase 7:** HTLC (optional atomic swaps)
 - **Phase 8:** Wallet + RPC complets
 - **Phase 9:** Tests + Intégration
 - **Phase 10:** Mainnet preparation

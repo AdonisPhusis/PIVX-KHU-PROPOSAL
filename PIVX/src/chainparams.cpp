@@ -246,6 +246,10 @@ public:
         consensus.nTimeSlotLength = 15;
         consensus.nMaxProposalPayments = 6;
 
+        // KHU DAO Treasury (Phase 6)
+        // TODO: Replace with actual multisig DAO council address before mainnet deployment
+        consensus.strDaoTreasuryAddress = "DPLACEHOLDERMainnetDaoTreasuryAddressHere";
+
         // spork keys
         consensus.strSporkPubKey = "0410050aa740d280b134b40b40658781fc1116ba7700764e0ce27af3e1737586b3257d19232e0cb5084947f5107e44bcd577f126c9eb4a30ea2807b271d2145298";
         consensus.strSporkPubKeyOld = "040F129DE6546FE405995329A887329BED4321325B1A73B0A257423C05C1FCFE9E40EF0678AEF59036A22C42E61DFD29DF7EFB09F56CC73CADF64E05741880E3E7";
@@ -410,6 +414,9 @@ public:
         consensus.nTimeSlotLength = 15;
         consensus.nMaxProposalPayments = 20;
 
+        // KHU DAO Treasury (Phase 6 - Testnet)
+        consensus.strDaoTreasuryAddress = "yPLACEHOLDERTestnetDaoTreasuryAddressHere";
+
         // spork keys
         consensus.strSporkPubKey = "04677c34726c491117265f4b1c83cef085684f36c8df5a97a3a42fc499316d0c4e63959c9eca0dba239d9aaaf72011afffeb3ef9f51b9017811dec686e412eb504";
         consensus.strSporkPubKeyOld = "04E88BB455E2A04E65FCC41D88CD367E9CCE1F5A409BE94D8C2B4B35D223DED9C8E2F4E061349BA3A38839282508066B6DC4DB72DD432AC4067991E6BF20176127";
@@ -556,6 +563,10 @@ public:
         consensus.nTimeSlotLength = 15;
         consensus.nMaxProposalPayments = 20;
 
+        // KHU DAO Treasury (Phase 6 - RegTest)
+        // Using a simple test address for regtest
+        consensus.strDaoTreasuryAddress = "yPLACEHOLDERRegtestDaoTreasuryAddressHere";
+
         /* Spork Key for RegTest:
         WIF private key: 932HEevBSujW2ud7RfB1YF91AFygbBRQj3de3LyaCRqNzKKgWXi
         private key hex: bd4960dcbd9e7f2223f24e7164ecb6f1fe96fc3a416f5d3a830ba5720c84b8ca
@@ -606,8 +617,7 @@ public:
         consensus.vUpgrades[Consensus::UPGRADE_V5_3].nActivationHeight          = 251;
         consensus.vUpgrades[Consensus::UPGRADE_V5_5].nActivationHeight          = 576;
         consensus.vUpgrades[Consensus::UPGRADE_V5_6].nActivationHeight          = 1000;
-        consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight =
-                Consensus::NetworkUpgrade::NO_ACTIVATION_HEIGHT;
+        consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight          = 200;
 
         /**
          * The message start string is designed to be unlikely to occur in normal data.

@@ -25,7 +25,7 @@ Après recadrage et relecture complète de tous les documents (9 docs, 5000+ lig
 
 **Je comprends que le projet vise à créer:**
 
-Un **stablecoin collatéralisé 1:1** (PIV ↔ KHU) avec **yield gouverné démocratiquement** (DOMC) dans un système où:
+Un **Knowledge Hedge Unit (KHU)** — colored coin collatéralisé 1:1 (PIV ↔ KHU) avec **yield gouverné démocratiquement** (DOMC) dans un système où:
 
 ```
 Émission PIVX (6→0) ⊥ Yield KHU (R% voté)
@@ -47,7 +47,7 @@ PIV → MINT → KHU_T → STAKE → ZKHU → UNSTAKE → KHU_T → REDEEM → P
 ```
 
 **Vision économique:**
-- Stablecoin trustless (pas de tiers, pas de réserve fractionnaire)
+- Colored coin trustless (pas de tiers, pas de réserve fractionnaire)
 - Yield décentralisé (masternodes votent R%)
 - Privacy optionnelle (Sapling staking-only)
 - Interopérabilité (HTLC cross-chain)
@@ -863,7 +863,7 @@ Toutes les phases sont techniquement réalisables avec technologies existantes (
 
 ✅ **OUI, je comprends et partage la vision.**
 
-Stablecoin 1:1 trustless avec yield gouverné démocratiquement, séparation émission/yield, invariants mathématiques sacrés.
+Knowledge Hedge Unit (KHU) collatéralisé 1:1 trustless avec yield gouverné démocratiquement, séparation émission/yield, invariants mathématiques sacrés.
 
 **C'est élégant, rigoureux, et innovant.**
 

@@ -27,6 +27,7 @@
 #include "invalid.h"
 #include "key.h"
 #include "khu/khu_validation.h"
+#include "khu/khu_domcdb.h"
 #include "mapport.h"
 #include "miner.h"
 #include "netbase.h"
@@ -1488,6 +1489,12 @@ bool AppInitMain()
                 // KHU: Initialize ZKHU database (Phase 4/5 - Sapling Staking)
                 if (!InitZKHUDB(1 << 20, fReindex)) { // 1 MB cache
                     UIError(_("Failed to initialize ZKHU database"));
+                    return false;
+                }
+
+                // KHU: Initialize DOMC database (Phase 6.2 - Governance Voting)
+                if (!InitKHUDomcDB(1 << 20, fReindex)) { // 1 MB cache
+                    UIError(_("Failed to initialize KHU DOMC database"));
                     return false;
                 }
 

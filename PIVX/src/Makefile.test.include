@@ -127,7 +127,11 @@ BITCOIN_TESTS =\
   test/khu_phase5_regression_tests.cpp \
   test/khu_phase5_yield_tests.cpp \
   test/khu_phase6_dao_tests.cpp \
+  test/khu_phase6_domc_tests.cpp \
+  test/khu_phase6_yield_tests.cpp \
   test/khu_v6_activation_tests.cpp \
+  test/khu_global_integration_tests.cpp \
+  test/khu_pipeline_demo_test.cpp \
   test/dbwrapper_tests.cpp \
   test/validation_tests.cpp \
   test/main_tests.cpp \

@@ -20,6 +20,10 @@
 #include <schemes.hpp>
 #include <threshold.hpp>
 #undef DOUBLE
+// Undefine VERSION macro from chiabls/relic to avoid conflicts with NetMsgType::VERSION
+#ifdef VERSION
+#undef VERSION
+#endif
 
 #include <array>
 #include <mutex>

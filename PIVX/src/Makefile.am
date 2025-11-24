@@ -242,7 +242,11 @@ BITCOIN_CORE_H = \
   khu/khu_commitment.h \
   khu/khu_commitmentdb.h \
   khu/khu_dao.h \
+  khu/khu_domc.h \
+  khu/khu_domcdb.h \
+  khu/khu_domc_tx.h \
   khu/khu_mint.h \
+  khu/khu_yield.h \
   khu/khu_redeem.h \
   khu/khu_stake.h \
   khu/khu_state.h \
@@ -567,7 +571,11 @@ libbitcoin_common_a_SOURCES = \
   khu/khu_commitment.cpp \
   khu/khu_commitmentdb.cpp \
   khu/khu_dao.cpp \
+  khu/khu_domc.cpp \
+  khu/khu_domcdb.cpp \
+  khu/khu_domc_tx.cpp \
   khu/khu_mint.cpp \
+  khu/khu_yield.cpp \
   khu/khu_redeem.cpp \
   khu/khu_stake.cpp \
   khu/khu_state.cpp \

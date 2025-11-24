@@ -189,6 +189,13 @@ struct Params {
     // KHU V6 emission: 6→0 per year (Phase 1-Emission)
     static constexpr int BLOCKS_PER_YEAR = 525600;  // 365 days * 1440 blocks/day
     static constexpr CAmount MAX_REWARD_YEAR = 6 * COIN;  // Year 0 max reward per compartment
+
+    // KHU DAO Treasury (Phase 6 - Automatic budget)
+    // Budget = 0.5% × (U + Ur) every 172800 blocks (4 months)
+    // Runs in PARALLEL with block reward DAO (years 0-6)
+    // CONTINUES after block reward ends (year 6+)
+    std::string strDaoTreasuryAddress;
+
     int64_t nProposalEstablishmentTime;
     int nStakeMinAge;
     int nStakeMinDepth;

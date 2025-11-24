@@ -61,6 +61,10 @@ public:
  * Bitcoin protocol message types. When adding new message types, don't forget
  * to update allNetMessageTypes in protocol.cpp.
  */
+// Undefine VERSION macro from chiabls/relic to avoid conflict with NetMsgType::VERSION
+#ifdef VERSION
+#undef VERSION
+#endif
 namespace NetMsgType
 {
 /**

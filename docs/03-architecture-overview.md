@@ -1,6 +1,6 @@
 # 03 — PIVX-V6-KHU ARCHITECTURE OVERVIEW
 
-Version: 1.0.0
+Version: 1.1.0
 Status: FINAL
 Base: PIVX Core v5.6.1 + KHU Extensions
 
@@ -37,6 +37,7 @@ src/khu/
 ├── khu_unstake.h/cpp        # Logic UNSTAKE
 ├── khu_yield.h/cpp          # Scheduler Cr/Ur
 ├── khu_domc.h/cpp           # Gouvernance R%
+├── khu_dao.h/cpp            # DAO Treasury (Phase 6)
 └── khu_htlc.h/cpp           # HTLC cross-chain
 ```
 
@@ -73,6 +74,9 @@ struct KhuGlobalState {
     int64_t Cr;                     // Reward pool
     int64_t Ur;                     // Reward rights
 
+    // DAO Treasury (Phase 6)
+    int64_t T;                      // DAO Treasury Pool (accumulation automatique)
+
     // DOMC
     uint16_t R_annual;              // Basis points (0-3000)
     uint16_t R_MAX_dynamic;         // max(400, 3000 - year*100)
@@ -94,7 +98,7 @@ struct KhuGlobalState {
     // Invariant verification
     bool CheckInvariants() const {
         // Verify non-negativity
-        if (C < 0 || U < 0 || Cr < 0 || Ur < 0)
+        if (C < 0 || U < 0 || Cr < 0 || Ur < 0 || T < 0)
             return false;
 
         // INVARIANT 1: Collateralization
@@ -102,6 +106,9 @@ struct KhuGlobalState {
 
         // INVARIANT 2: Reward Collateralization
         bool cdr_ok = (Ur == 0 || Cr == Ur);
+
+        // INVARIANT 3: Treasury Non-Negative (T can grow independently)
+        // T >= 0 (verified above)
 
         return cd_ok && cdr_ok;
     }
@@ -117,10 +124,10 @@ struct KhuGlobalState {
 >
 > Cette structure `KhuGlobalState` dans doc 03 doit être **IDENTIQUE** à celle de doc 02.
 >
-> **CHECKSUM DE REFERENCE (14 champs) :**
+> **CHECKSUM DE REFERENCE (15 champs) :**
 > ```
-> SHA256("int64_t C | int64_t U | int64_t Cr | int64_t Ur | uint16_t R_annual | uint16_t R_MAX_dynamic | uint32_t last_domc_height | uint32_t domc_cycle_start | uint32_t domc_cycle_length | uint32_t domc_phase_length | uint32_t last_yield_update_height | uint32_t nHeight | uint256 hashPrevState | uint256 hashBlock")
-> = 0x4a7b8c9e...  (same as doc 02)
+> SHA256("int64_t C | int64_t U | int64_t Cr | int64_t Ur | int64_t T | uint16_t R_annual | uint16_t R_MAX_dynamic | uint32_t last_domc_height | uint32_t domc_cycle_start | uint32_t domc_cycle_length | uint32_t domc_phase_length | uint32_t last_yield_update_height | uint32_t nHeight | uint256 hashPrevState | uint256 hashBlock")
+> = 0x7d3e2a1f...  (same as doc 02 - UPDATED for Phase 6)
 > ```
 >
 > **VERIFICATION:**
@@ -641,7 +648,17 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
 
     KhuGlobalState newState = prevState;
 
-    // 2. Appliquer le yield quotidien (si applicable)
+    // 2. Accumuler DAO Treasury (si applicable) - Phase 6
+    // AVANT TOUT pour utiliser état initial (U + Ur au début du bloc)
+    if (IsDaoCycleBoundary(pindex->nHeight, consensusParams.height_KHU_activation)) {
+        CAmount daoBudget = CalculateDAOBudget(newState);
+        newState.T += daoBudget;
+        // Vérifier overflow
+        if (newState.T < 0 || newState.T > MAX_MONEY)
+            return state.Invalid("dao-treasury-overflow");
+    }
+
+    // 3. Appliquer le yield quotidien (si applicable)
     // AVANT transactions pour éviter mismatch avec UNSTAKE
     if (pindex->nHeight >= newState.last_yield_update_height + BLOCKS_PER_DAY) {
         ApplyDailyYield(newState, pindex->nHeight, view);
@@ -649,7 +666,7 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
         newState.last_yield_update_height = pindex->nHeight;
     }
 
-    // 3. Appliquer les transactions KHU du bloc
+    // 4. Appliquer les transactions KHU du bloc
     // ⚠️ ANTI-DÉRIVE: TOUTES les erreurs de transaction KHU doivent rejeter le bloc
     for (const auto& tx : block.vtx) {
         if (!tx->IsKHUTransaction())
@@ -1320,7 +1337,7 @@ void ActivateNewRPercent(KhuGlobalState& state, uint32_t nHeight) {
 
 ---
 
-## 11. HTLC CROSS-CHAIN
+## 11. HTLC (OPTIONAL)
 
 ### 11.1 Transaction Types
 
@@ -1646,8 +1663,7 @@ height < ACTIVATION_HEIGHT
 ### Phase 7: HTLC (Block ACTIVATION_HEIGHT + Y)
 ```
 - HTLC enabled (Bitcoin standard scripts)
-- Cross-chain swaps active
-- Gateway off-chain operational
+- Atomic swap capability active
 ```
 
 ---

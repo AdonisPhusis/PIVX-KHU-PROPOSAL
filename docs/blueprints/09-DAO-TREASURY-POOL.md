@@ -1,7 +1,7 @@
-# PHASE 6 - DAO TREASURY POOL (T)
+# 09 — DAO TREASURY POOL BLUEPRINT
 
-**Date:** 2025-01-24
-**Version:** 3.0 FINAL
+**Date:** 2025-11-24
+**Version:** 1.0
 **Status:** CANONIQUE
 
 ---

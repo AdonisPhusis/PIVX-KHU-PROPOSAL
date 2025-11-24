@@ -129,7 +129,7 @@
 | 3 | DAILY_YIELD | 7j | MOYENNE 🟡 |
 | 4 | UNSTAKE bonus | 4j | FAIBLE ✅ |
 | 5 | DOMC (commit-reveal) | 6-7j | MOYENNE 🟡 |
-| 6 | Gateway HTLC | 10j | MOYENNE-HAUTE 🟠 |
+| 6 | HTLC (optional) | 3j | FAIBLE ✅ |
 | 7 | ZKHU (Sapling wrapper) | 8j | FAIBLE-MOYENNE ✅ |
 | 8 | Wallet + RPC | 7j | MOYENNE 🟡 |
 | 9 | Tests + Intégration | 8j | MOYENNE 🟡 |

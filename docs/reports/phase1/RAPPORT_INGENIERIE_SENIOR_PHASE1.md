@@ -22,7 +22,7 @@ Après analyse complète de la documentation (9 documents, 3000+ lignes de spec)
 
 ### 1.1 Vision Globale
 
-**Objectif:** Créer un stablecoin collatéralisé 1:1 par PIV avec yield gouverné démocratiquement.
+**Objectif:** Créer un Knowledge Hedge Unit (KHU) — colored coin collatéralisé 1:1 par PIV avec yield gouverné démocratiquement.
 
 **Innovation clé:** Séparation claire entre:
 - **Émission PIVX** (déflationnaire, immuable: 6→0 PIV/an)

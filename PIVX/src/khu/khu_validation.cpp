@@ -9,12 +9,16 @@
 #include "khu/khu_commitment.h"
 #include "khu/khu_commitmentdb.h"
 #include "khu/khu_dao.h"
+#include "khu/khu_domc.h"
+#include "khu/khu_domcdb.h"
+#include "khu/khu_domc_tx.h"
 #include "khu/khu_mint.h"
 #include "khu/khu_redeem.h"
 #include "khu/khu_stake.h"
 #include "khu/khu_state.h"
 #include "khu/khu_statedb.h"
 #include "khu/khu_unstake.h"
+#include "khu/khu_yield.h"
 #include "khu/zkhu_db.h"
 #include "primitives/block.h"
 #include "sync.h"
@@ -161,18 +165,46 @@ bool ProcessKHUBlock(const CBlock& block,
     newState.hashPrevState = prevState.GetHash();
 
     // PHASE 6: Canonical order (CONSENSUS CRITICAL)
-    // STEP 1: DOMC cycle boundary — Phase 6.2 (TODO)
-    // STEP 2: DAO Treasury — Phase 6.3 (CURRENT)
+    // STEP 1: DOMC cycle boundary — Phase 6.2 (DOMC Governance)
+    // STEP 2: DAO Treasury — Phase 6.3 (DAO Pool)
     // STEP 3: Daily Yield — Phase 6.1 (TODO)
-    // STEP 4: KHU Transactions — Phase 2-4 (MINT/REDEEM/STAKE/UNSTAKE)
+    // STEP 4: KHU Transactions — Phase 2-4 (MINT/REDEEM/STAKE/UNSTAKE) + Phase 6.2 (DOMC)
     // STEP 5: Block Reward — Future
     // STEP 6: CheckInvariants()
     // STEP 7: PersistState()
+
+    // STEP 1: DOMC cycle boundary (Phase 6.2)
+    // At cycle boundary: finalize previous cycle (calculate median R), initialize new cycle
+    if (khu_domc::IsDomcCycleBoundary(nHeight, consensusParams.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight)) {
+        // Finalize previous cycle: calculate median(R) from reveals, update R_annual
+        if (!khu_domc::FinalizeDomcCycle(newState, nHeight, consensusParams)) {
+            return validationState.Error("domc-finalize-failed");
+        }
+
+        // Initialize new cycle: update cycle_start, commit_phase_start, reveal_deadline
+        khu_domc::InitializeDomcCycle(newState, nHeight);
+
+        LogPrint(BCLog::KHU, "ProcessKHUBlock: DOMC cycle boundary at height %u, R_annual=%u (%.2f%%)\n",
+                 nHeight, newState.R_annual, newState.R_annual / 100.0);
+    }
 
     // STEP 2: DAO Treasury accumulation (Phase 6.3)
     // Budget calculated on INITIAL state (before yield/transactions)
     if (!khu_dao::AccumulateDaoTreasuryIfNeeded(newState, nHeight, consensusParams)) {
         return validationState.Error("dao-treasury-failed");
+    }
+
+    // STEP 3: Daily Yield distribution (Phase 6.1)
+    // Apply daily yield to all mature staked notes (every 1440 blocks)
+    // This updates Ur += total_yield (Cr remains unchanged)
+    uint32_t V6_activation = consensusParams.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight;
+    if (khu_yield::ShouldApplyDailyYield(nHeight, V6_activation, newState.last_yield_update_height)) {
+        if (!khu_yield::ApplyDailyYield(newState, nHeight, V6_activation)) {
+            return validationState.Error("daily-yield-failed");
+        }
+
+        LogPrint(BCLog::KHU, "ProcessKHUBlock: Applied daily yield at height %u, Ur=%d\n",
+                 nHeight, newState.Ur);
     }
 
     // STEP 4: Process KHU transactions
@@ -194,6 +226,22 @@ bool ProcessKHUBlock(const CBlock& block,
             // Phase 4: ZKHU → KHU_T + bonus (double flux: C+, U+, Cr-, Ur-)
             if (!ApplyKHUUnstake(*tx, view, newState, nHeight)) {
                 return validationState.Error(strprintf("Failed to apply KHU UNSTAKE at height %d", nHeight));
+            }
+        } else if (tx->nType == CTransaction::TxType::KHU_DOMC_COMMIT) {
+            // Phase 6.2: DOMC commit vote (Hash(R || salt))
+            if (!ValidateDomcCommitTx(*tx, validationState, newState, nHeight, consensusParams)) {
+                return false; // validationState already set
+            }
+            if (!ApplyDomcCommitTx(*tx, nHeight)) {
+                return validationState.Error(strprintf("Failed to apply DOMC COMMIT at height %d", nHeight));
+            }
+        } else if (tx->nType == CTransaction::TxType::KHU_DOMC_REVEAL) {
+            // Phase 6.2: DOMC reveal vote (R + salt)
+            if (!ValidateDomcRevealTx(*tx, validationState, newState, nHeight, consensusParams)) {
+                return false; // validationState already set
+            }
+            if (!ApplyDomcRevealTx(*tx, nHeight)) {
+                return validationState.Error(strprintf("Failed to apply DOMC REVEAL at height %d", nHeight));
             }
         }
     }
@@ -218,7 +266,8 @@ bool DisconnectKHUBlock(const CBlock& block,
                        CBlockIndex* pindex,
                        CValidationState& validationState,
                        CCoinsViewCache& view,
-                       KhuGlobalState& khuState)
+                       KhuGlobalState& khuState,
+                       const Consensus::Params& consensusParams)
 {
     LOCK(cs_khu);
 
@@ -281,12 +330,52 @@ bool DisconnectKHUBlock(const CBlock& block,
                     strprintf("Failed to undo KHU STAKE at height %d (tx %s)",
                               nHeight, tx->GetHash().ToString()));
             }
+        } else if (tx->nType == CTransaction::TxType::KHU_DOMC_REVEAL) {
+            // Phase 6.2: Undo DOMC reveal vote (erase from DB)
+            if (!UndoDomcRevealTx(*tx, nHeight)) {
+                return validationState.Invalid(false, REJECT_INVALID, "khu-undo-domc-reveal-failed",
+                    strprintf("Failed to undo DOMC REVEAL at height %d (tx %s)",
+                              nHeight, tx->GetHash().ToString()));
+            }
+        } else if (tx->nType == CTransaction::TxType::KHU_DOMC_COMMIT) {
+            // Phase 6.2: Undo DOMC commit vote (erase from DB)
+            if (!UndoDomcCommitTx(*tx, nHeight)) {
+                return validationState.Invalid(false, REJECT_INVALID, "khu-undo-domc-commit-failed",
+                    strprintf("Failed to undo DOMC COMMIT at height %d (tx %s)",
+                              nHeight, tx->GetHash().ToString()));
+            }
         }
         // Note: MINT/REDEEM undo logic handled elsewhere (Phase 2 compatibility)
     }
 
+    // PHASE 6: Undo Daily Yield (Phase 6.1)
+    // Must be undone AFTER transactions, BEFORE DOMC/DAO (reverse order of Connect)
+    uint32_t V6_activation = consensusParams.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight;
+    if (khu_yield::ShouldApplyDailyYield(nHeight, V6_activation, khuState.last_yield_update_height)) {
+        if (!khu_yield::UndoDailyYield(khuState, nHeight, V6_activation)) {
+            return validationState.Invalid(false, REJECT_INVALID, "undo-daily-yield-failed",
+                strprintf("Failed to undo daily yield at height %d", nHeight));
+        }
+
+        LogPrint(BCLog::KHU, "DisconnectKHUBlock: Undid daily yield at height %u, Ur=%d\n",
+                 nHeight, khuState.Ur);
+    }
+
+    // PHASE 6: Undo DOMC cycle finalization (Phase 6.2)
+    // Must be undone AFTER Daily Yield, BEFORE DAO (reverse order of Connect)
+    // At cycle boundary: undo R_annual update from previous cycle finalization
+    if (khu_domc::IsDomcCycleBoundary(nHeight, V6_activation)) {
+        if (!khu_domc::UndoFinalizeDomcCycle(khuState, nHeight, consensusParams)) {
+            return validationState.Invalid(false, REJECT_INVALID, "undo-domc-cycle-failed",
+                strprintf("Failed to undo DOMC cycle finalization at height %d", nHeight));
+        }
+
+        LogPrint(BCLog::KHU, "DisconnectKHUBlock: Undid DOMC cycle finalization at height %u, R_annual=%u\n",
+                 nHeight, khuState.R_annual);
+    }
+
     // PHASE 6: Undo DAO Treasury (Phase 6.3)
-    // Must be undone AFTER transactions (reverse order of Connect)
+    // Must be undone AFTER DOMC (reverse order of Connect)
     if (!khu_dao::UndoDaoTreasuryIfNeeded(khuState, nHeight, consensusParams)) {
         return validationState.Invalid(false, REJECT_INVALID, "undo-dao-treasury-failed",
             strprintf("Failed to undo DAO treasury at height %d", nHeight));

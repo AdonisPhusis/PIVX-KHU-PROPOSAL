@@ -41,6 +41,12 @@ Ces documents forment la base conceptuelle et technique du projet. **Lecture rec
   - Yield : R% gouverné par DOMC (indépendant de l'émission)
   - Invariants : Application mathématique, jamais violés
 
+- **[07-economics-simplified.md](07-economics-simplified.md)** (PÉDAGOGIQUE)
+  - Transition 4/6/10 → 6/6/6 → 0/0/0 expliquée
+  - Ce que chaque acteur GAGNE (MN: pouvoir, Stakers: R%+privacy, DAO: % activité)
+  - Inflation réelle démystifiée (R% ≠ inflation sur supply totale)
+  - FAQ rapide pour nouveaux arrivants
+
 ### 6. Roadmap et Phases
 - **[05-roadmap.md](05-roadmap.md)**
   - **Phase 1 : ✅ COMPLETED** - Consensus de base
@@ -91,10 +97,8 @@ Spécifications détaillées de chaque composant majeur :
    - Gouvernance R% : Vote DOMC par masternodes
    - Pool : Cr/Ur (complètement séparé de l'émission)
 
-7. **[07-KHU-HTLC-GATEWAY.md](blueprints/07-KHU-HTLC-GATEWAY.md)** ⏳
-   - **Note clé** : Utilise les scripts HTLC Bitcoin standards
-   - Pas d'implémentation HTLC KHU spéciale nécessaire
-   - Gateway : Matching off-chain, KHU comme unité de compte
+7. **HTLC** (optionnel)
+   - Scripts HTLC Bitcoin standards (déjà supportés par PIVX)
 
 8. **[08-WALLET-RPC.md](blueprints/08-WALLET-RPC.md)** ⏳
    - Commandes RPC : Toutes opérations (MINT, REDEEM, STAKE, UNSTAKE)
@@ -196,7 +200,6 @@ Situés dans **[reports/phase1/](reports/phase1/)** :
 
 **Rapports de Corrections :**
 - RAPPORT_PHASE1_FIX_ZKHU_SAPLING.md
-- RAPPORT_PHASE1_FIX_HTLC_GATEWAY.md
 - RAPPORT_PHASE1_FIX_SAPLING_SEPARATION.md
 - RAPPORT_PHASE1_PURGE_ZEROCONCEPTS.md
 - Et autres (voir dossier complet)

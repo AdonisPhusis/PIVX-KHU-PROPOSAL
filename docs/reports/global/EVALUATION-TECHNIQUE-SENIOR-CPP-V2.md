@@ -42,7 +42,6 @@ docs/
     ├── 04-FINALITE-MASTERNODE-STAKERS.md  (LLMQ finality)
     ├── 05-ZKHU-STAKE-UNSTAKE.md           (Ancien - à supprimer)
     ├── 06-YIELD-R-PERCENT.md              (R% yield system)
-    ├── 07-KHU-HTLC-GATEWAY.md             (Cross-chain swaps)
     ├── 07-ZKHU-SAPLING-STAKE.md           (ZKHU propre)
     └── 08-WALLET-RPC.md                   (Wallet + RPC)
 ```
@@ -456,7 +455,7 @@ if (tied.size() > 1) {
 | 5 | **DOMC commit-reveal** | **800** | **MOYENNE** | **6-7** ← Mis à jour |
 | 6 | SAFU (timelock) | 300 | FAIBLE | 3 |
 | 7 | **ZKHU STAKE/UNSTAKE** | **1500** | **FAIBLE-MOYENNE** | **8** ← Corrigé |
-| 8 | HTLC gateway | 400 | FAIBLE | 3 |
+| 8 | HTLC (optional) | 400 | FAIBLE | 3 |
 | 9 | Wallet RPC | 800 | MOYENNE | 6 |
 | 10 | Tests (unit + functional) | 2000 | MOYENNE | 15 |
 

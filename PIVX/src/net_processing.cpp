@@ -32,6 +32,11 @@
 
 #include <chrono>
 
+// Undefine VERSION macro from chiabls/relic to avoid conflicts with NetMsgType::VERSION
+#ifdef VERSION
+#undef VERSION
+#endif
+
 using namespace std::chrono_literals;
 
 

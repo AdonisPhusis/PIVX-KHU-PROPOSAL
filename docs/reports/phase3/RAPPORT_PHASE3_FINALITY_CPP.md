@@ -437,7 +437,7 @@ bool KhuStateCommitment::IsValid() const {
 **Phase 4:** SAPLING (STAKE/UNSTAKE) - ZKHU privacy staking
 **Phase 5:** YIELD Cr/Ur (Moteur DOMC) - Daily yield + R% system
 **Phase 6:** DOMC (Gouvernance R%) - Decentralized monetary creation
-**Phase 7:** HTLC Cross-Chain - Gateway compatibility
+**Phase 7:** HTLC (Optional) - Atomic swap capability
 **Phase 8:** Wallet / RPC - Complete UI
 **Phase 9:** Testnet Long - Stability testing
 **Phase 10:** Mainnet - Production deployment

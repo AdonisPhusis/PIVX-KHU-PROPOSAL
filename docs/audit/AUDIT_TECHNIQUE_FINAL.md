@@ -453,7 +453,6 @@ Référence : `RAPPORT_RED_TEAM_FINAL.md`
 - ✅ Pas de BURN KHU (seul REDEEM)
 - ✅ Pipeline respecté (pas de raccourcis)
 - ✅ HTLC = Bitcoin standard (pas de code spécial)
-- ✅ Gateway off-chain (pas de logique on-chain)
 - ✅ Etc. (15/15 respectées)
 
 **Résultat :** ✅ AUCUNE DÉRIVE DÉTECTÉE

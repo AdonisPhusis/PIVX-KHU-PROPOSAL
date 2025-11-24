@@ -206,7 +206,6 @@ grep -ri "zerocoin\|zpiv" docs/blueprints/*.md
 | 04 | FINALITE-MASTERNODE-STAKERS.md | 27 KB | ✅ PRÊT |
 | 05 | ~~ZKHU-STAKE-UNSTAKE.md~~ | — | ❌ ARCHIVÉ |
 | 06 | YIELD-R-PERCENT.md | 22 KB | ✅ PRÊT |
-| 07 | KHU-HTLC-GATEWAY.md | 23 KB | ✅ PRÊT |
 | 07 | ZKHU-SAPLING-STAKE.md | 16 KB | ✅ PRÊT |
 | 08 | WALLET-RPC.md | 24 KB | ✅ PRÊT |
 

@@ -69,7 +69,8 @@ bool DisconnectKHUBlock(const CBlock& block,
                        CBlockIndex* pindex,
                        CValidationState& state,
                        CCoinsViewCache& view,
-                       KhuGlobalState& khuState);
+                       KhuGlobalState& khuState,
+                       const Consensus::Params& consensusParams);
 
 /**
  * InitKHUStateDB - Initialize the KHU state database
