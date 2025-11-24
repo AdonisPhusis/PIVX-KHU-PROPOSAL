@@ -1943,33 +1943,84 @@ if __name__ == '__main__':
 
 ### 9.1 Activation Height
 
-```cpp
-// src/chainparams.cpp
-consensus.height_KHU_Phase6_activation = 500000; // Example height
+**⚠️ CRITICAL: Phase 6 uses UPGRADE_V6_0 activation (NOT a separate upgrade)**
 
-// Phase 6 activates all 3 components simultaneously:
-// - 6.1 Daily Yield
-// - 6.2 DOMC Governance
-// - 6.3 DAO Treasury
+Phase 6 activates **simultaneously** with KHU V6.0 (MINT, REDEEM, Finality, Emission).
+
+```cpp
+// Phase 6 uses existing UPGRADE_V6_0 activation
+// Defined in src/chainparams.cpp:
+
+// MAINNET (currently NO_ACTIVATION_HEIGHT)
+consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight =
+        Consensus::NetworkUpgrade::NO_ACTIVATION_HEIGHT;  // To be set
+
+// TESTNET (currently NO_ACTIVATION_HEIGHT)
+consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight =
+        Consensus::NetworkUpgrade::NO_ACTIVATION_HEIGHT;  // To be set for testing
+
+// REGTEST (currently NO_ACTIVATION_HEIGHT)
+consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight =
+        Consensus::NetworkUpgrade::ALWAYS_ACTIVE;  // Set for unit tests
 ```
 
-### 9.2 State Migration
+**Phase 6 activates all 3 components simultaneously with V6.0:**
+- 6.1 Daily Yield Engine
+- 6.2 DOMC Governance
+- 6.3 DAO Treasury Pool
 
-**At activation height**:
+**No separate activation height needed** - Phase 6 is part of V6.0.
+
+### 9.2 Activation Check in Code
+
+**All Phase 6 code must check UPGRADE_V6_0:**
 
 ```cpp
-if (nHeight == consensusParams.height_KHU_Phase6_activation) {
+// src/khu/khu_validation.cpp - ConnectBlock
+if (NetworkUpgradeActive(nHeight, consensus, Consensus::UPGRADE_V6_0)) {
+    const int nActivationHeight = consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight;
+
+    // STEP 2: DOMC Governance (Phase 6.2)
+    if ((nHeight - newState.domc_cycle_start) == khu_domc::DOMC_CYCLE_LENGTH) {
+        if (!khu_domc::ApplyNewRAtCycleBoundary(newState, nHeight)) {
+            return state.Invalid("domc-cycle-failed");
+        }
+    }
+
+    // STEP 3: DAO Treasury (Phase 6.3)
+    if (!khu_dao::AccumulateDaoTreasuryIfNeeded(newState, nHeight, nActivationHeight)) {
+        return state.Invalid("dao-treasury-failed");
+    }
+
+    // STEP 4: Daily Yield (Phase 6.1)
+    if (!khu_yield::ApplyDailyYield(newState, nHeight, nActivationHeight)) {
+        return state.Invalid("daily-yield-failed");
+    }
+}
+```
+
+### 9.3 State Migration
+
+**At V6.0 activation height** (first block where NetworkUpgradeActive returns true):
+
+```cpp
+if (NetworkUpgradeActive(nHeight, consensus, Consensus::UPGRADE_V6_0) &&
+    !NetworkUpgradeActive(nHeight - 1, consensus, Consensus::UPGRADE_V6_0)) {
+    // This is the FIRST block of V6.0 activation
     KhuGlobalState state = LoadKhuState(nHeight - 1);
 
-    // Initialize Phase 6 fields
+    // Initialize Phase 6 fields (if not already initialized)
     state.T = 0;
     state.domc_cycle_start = nHeight;
     state.domc_cycle_length = 172800;
     state.domc_commit_phase_start = nHeight + 132480;
     state.domc_reveal_deadline = nHeight + 152640;
-    state.R_annual = 1500; // 15% initial
-    state.R_MAX_dynamic = 3000; // 30% initial
+    state.R_annual = 1500; // 15% initial (basis points)
+    state.R_MAX_dynamic = 3000; // 30% initial (basis points)
     state.last_yield_update_height = nHeight;
+    state.domc_commits.clear();
+    state.domc_reveals.clear();
+    state.staked_note_commitments.clear();
 
     SaveKhuState(nHeight, state);
 }
@@ -2072,8 +2123,8 @@ if (nHeight == consensusParams.height_KHU_Phase6_activation) {
 - [ ] **3. Update CheckInvariants**:
   - [ ] Add T >= 0 check ✅ (already in docs/02)
 - [ ] **4. Update anti-drift checksums** ✅ (already in docs/02/03)
-- [ ] **5. Add Phase 6 activation height** to chainparams
-- [ ] **6. Implement state migration** at activation
+- [ ] **5. Verify UPGRADE_V6_0 activation** works for Phase 6 (uses existing activation)
+- [ ] **6. Implement state migration** at V6.0 activation (first block only)
 - [ ] **7. Write integration test** (khu_phase6_full.py)
 - [ ] **8. Run all tests** (unit + functional)
 - [ ] **9. Update RPC commands**:
@@ -2108,7 +2159,7 @@ if (nHeight == consensusParams.height_KHU_Phase6_activation) {
 | `src/khu/khu_validation.cpp` | MODIFY | ALL | Update ConnectBlock/DisconnectBlock |
 | `src/masternode-ping.h` | MODIFY | 6.2 | Add DOMC voting fields |
 | `src/masternode.cpp` | MODIFY | 6.2 | Process DOMC commits/reveals |
-| `src/chainparams.cpp` | MODIFY | ALL | Add Phase 6 activation height |
+| `src/consensus/params.h` | MODIFY | ALL | Remove strDaoTreasuryAddress (uses T internal) |
 | `src/undo.h` | MODIFY | ALL | Add KhuBlockUndo structure |
 | `src/test/khu_phase6_tests.cpp` | CREATE | ALL | Unit tests for Phase 6 |
 | `test/functional/khu_phase6_yield.py` | CREATE | 6.1 | Functional test for yield |
