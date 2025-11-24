@@ -1,0 +1,1247 @@
+# PHASE 6 — ARCHITECTURE TECHNIQUE
+
+**Date**: 2025-11-24
+**Version**: 2.0 (DRAFT)
+**Status**: Architecture Proposal (Updated with PIVX Budget Integration)
+
+---
+
+## 📋 OBJECTIFS PHASE 6
+
+1. **DAILY YIELD ENGINE** — Moteur de yield quotidien (R%)
+2. **DOMC R% GOVERNANCE** — Vote commit/reveal masternodes (cycle 4 mois)
+3. **DAO BUDGET** — Budget automatique 0.5% (U + Ur) tous les 4 mois
+
+---
+
+## 🏗️ ARCHITECTURE FICHIERS
+
+### Nouveaux Fichiers
+
+```
+src/khu/
+├── khu_yield.h                # ApplyDailyYield, UndoDailyYield
+├── khu_yield.cpp
+├── khu_domc.h                 # Vote R%, commit-reveal, cycles
+├── khu_domc.cpp
+├── khu_dao_proposal.h         # CKhuDAOProposal (adapt budgetproposal.h)
+├── khu_dao_proposal.cpp
+├── khu_dao_vote.h             # CKhuDAOVote (adapt budgetvote.h)
+├── khu_dao_vote.cpp
+├── khu_dao_manager.h          # CKhuDAOManager (simplify budgetmanager.h)
+└── khu_dao_manager.cpp
+
+src/test/
+├── khu_yield_tests.cpp        # ~15 tests yield
+├── khu_domc_tests.cpp         # ~15 tests DOMC
+└── khu_dao_tests.cpp          # ~12 tests DAO (proposal, vote, manager)
+
+test/functional/
+├── khu_phase6_yield.py        # Yield multi-notes, reorgs
+├── khu_phase6_domc.py         # Cycles DOMC, vote median
+└── khu_phase6_dao.py          # DAO budget, burn, proposals
+```
+
+**Note**: Architecture DAO inspirée du système Budget PIVX (réutilisation ~80% code éprouvé)
+
+### Fichiers Modifiés (Intégration)
+
+```
+src/validation.cpp        # ConnectBlock, DisconnectBlock (ordre yield→tx)
+src/consensus/tx_verify.cpp  # Validation TX_DOMC_VOTE (si nécessaire)
+src/masternode/masternode.h  # Extension CMasternodePing (nRCommitment, nRProposal, nRSecret)
+```
+
+---
+
+## 🔧 1. KHU_YIELD — DAILY YIELD ENGINE
+
+### 1.1 Header (`khu_yield.h`)
+
+```cpp
+// Copyright (c) 2025 The PIVX Core developers
+// Distributed under the MIT software license.
+
+#ifndef PIVX_KHU_YIELD_H
+#define PIVX_KHU_YIELD_H
+
+#include "khu/khu_state.h"
+#include "coins.h"
+#include "amount.h"
+
+#include <stdint.h>
+
+/**
+ * DAILY YIELD ENGINE — Phase 6
+ *
+ * Applique le yield quotidien (R%) à toutes les notes ZKHU matures.
+ *
+ * RÈGLES:
+ * - Trigger toutes les BLOCKS_PER_DAY (1440 blocs)
+ * - Notes matures uniquement (≥4320 blocs = 3 jours)
+ * - Yield linéaire (pas de compounding)
+ * - Formule: Ur_daily = floor(amount × R_annual / 10000 / 365)
+ * - Invariant: Cr += Δ, Ur += Δ (même delta, atomique)
+ */
+
+// Constants
+static const uint32_t BLOCKS_PER_DAY = 1440;  // 1 bloc/minute
+static const uint32_t MATURITY_BLOCKS = 4320; // 3 jours
+static const uint32_t BLOCKS_PER_YEAR = 525600; // 365 × 1440
+
+/**
+ * Vérifier si yield doit être appliqué à ce height
+ *
+ * @param state État KHU global actuel
+ * @param nHeight Height du bloc courant
+ * @return true si yield doit être appliqué
+ */
+bool ShouldApplyDailyYield(const KhuGlobalState& state, uint32_t nHeight);
+
+/**
+ * Appliquer le yield quotidien à toutes les notes ZKHU matures
+ *
+ * ORDRE CONNECTBLOCK:
+ *   1. Load prevState
+ *   2. ApplyDailyYield(newState, height)  ← ICI
+ *   3. Apply TX KHU (MINT/REDEEM/STAKE/UNSTAKE)
+ *   4. Apply block reward
+ *   5. CheckInvariants()
+ *   6. Persist newState
+ *
+ * @param state État KHU global (modifié in-place)
+ * @param nHeight Height du bloc courant
+ * @param view Coins view (pour itération notes ZKHU)
+ * @return true si succès, false si erreur
+ */
+bool ApplyDailyYield(KhuGlobalState& state, uint32_t nHeight, CCoinsViewCache& view);
+
+/**
+ * Annuler le yield quotidien lors d'un reorg
+ *
+ * Inverse l'effet de ApplyDailyYield pour le bloc nHeight.
+ *
+ * @param state État KHU global (modifié in-place)
+ * @param nHeight Height du bloc à déconnecter
+ * @param view Coins view
+ * @return true si succès, false si erreur
+ */
+bool UndoDailyYield(KhuGlobalState& state, uint32_t nHeight, CCoinsViewCache& view);
+
+/**
+ * Calculer le yield quotidien pour un montant donné
+ *
+ * Formule canonique:
+ *   annual = (amount × R_annual) / 10000
+ *   daily  = annual / 365
+ *
+ * OVERFLOW PROTECTION: Utilise __int128 pour calcul intermédiaire
+ *
+ * @param amount Montant staké (principal)
+ * @param R_annual Taux annuel en basis points (ex: 500 = 5.00%)
+ * @return Yield quotidien en satoshis
+ */
+CAmount CalculateDailyYield(CAmount amount, uint16_t R_annual);
+
+/**
+ * Vérifier si une note ZKHU est mature
+ *
+ * @param stake_start_height Height de création de la note (STAKE)
+ * @param current_height Height actuel
+ * @return true si note mature (≥4320 blocs)
+ */
+bool IsNoteMature(uint32_t stake_start_height, uint32_t current_height);
+
+/**
+ * Itérer sur toutes les notes ZKHU et appliquer le yield
+ *
+ * IMPLÉMENTATION:
+ * - Streaming via LevelDB cursor (pas de "load all into RAM")
+ * - Batch update via CDBBatch pour performance
+ * - Accumulation total_yield pour mise à jour Cr/Ur globale
+ *
+ * @param state État KHU global (Cr/Ur modifiés)
+ * @param R_annual Taux annuel actuel
+ * @param nHeight Height courant
+ * @return Total yield appliqué (pour validation)
+ */
+CAmount ApplyYieldToAllNotes(KhuGlobalState& state, uint16_t R_annual, uint32_t nHeight);
+
+#endif // PIVX_KHU_YIELD_H
+```
+
+### 1.2 Implémentation (`khu_yield.cpp`)
+
+```cpp
+// Copyright (c) 2025 The PIVX Core developers
+// Distributed under the MIT software license.
+
+#include "khu/khu_yield.h"
+#include "khu/khu_db.h"
+#include "logging.h"
+#include "sync.h"
+
+#include <stdexcept>
+
+bool ShouldApplyDailyYield(const KhuGlobalState& state, uint32_t nHeight)
+{
+    // Yield quotidien toutes les 1440 blocs
+    //
+    // Si last_yield_update_height = 0 (genesis), attendre 1440 blocs
+    // Sinon, trigger si (nHeight - last_yield_update_height) >= BLOCKS_PER_DAY
+
+    if (state.last_yield_update_height == 0) {
+        // Premier yield après 1 jour complet
+        return (nHeight >= BLOCKS_PER_DAY);
+    }
+
+    return (nHeight - state.last_yield_update_height) >= BLOCKS_PER_DAY;
+}
+
+CAmount CalculateDailyYield(CAmount amount, uint16_t R_annual)
+{
+    if (R_annual == 0 || amount <= 0) {
+        return 0;
+    }
+
+    // OVERFLOW PROTECTION: Utilise __int128 pour calcul intermédiaire
+    //
+    // annual = (amount × R_annual) / 10000
+    // daily  = annual / 365
+
+    __int128 numerator = ((__int128)amount * (CAmount)R_annual);
+    CAmount annual = (CAmount)(numerator / 10000);
+
+    // Division entière = floor automatique
+    CAmount daily = annual / 365;
+
+    if (daily < 0) {
+        LogPrintf("WARNING: CalculateDailyYield overflow detected (amount=%lld, R=%u)\n",
+                  amount, R_annual);
+        return 0;
+    }
+
+    return daily;
+}
+
+bool IsNoteMature(uint32_t stake_start_height, uint32_t current_height)
+{
+    if (current_height < stake_start_height) {
+        return false; // Impossible
+    }
+
+    return (current_height - stake_start_height) >= MATURITY_BLOCKS;
+}
+
+bool ApplyDailyYield(KhuGlobalState& state, uint32_t nHeight, CCoinsViewCache& view)
+{
+    AssertLockHeld(cs_khu); // Requis: LOCK(cs_khu)
+
+    if (!ShouldApplyDailyYield(state, nHeight)) {
+        return true; // Pas de yield ce bloc, c'est OK
+    }
+
+    LogPrint(BCLog::KHU, "ApplyDailyYield: height=%u, R_annual=%u\n", nHeight, state.R_annual);
+
+    // Appliquer yield à toutes les notes ZKHU matures
+    CAmount total_yield = ApplyYieldToAllNotes(state, state.R_annual, nHeight);
+
+    if (total_yield < 0) {
+        return error("ApplyDailyYield: negative total_yield (%lld)", total_yield);
+    }
+
+    // Mettre à jour Cr/Ur (atomique, même delta)
+    state.Cr += total_yield;
+    state.Ur += total_yield;
+
+    // Mettre à jour last_yield_update_height
+    state.last_yield_update_height = nHeight;
+
+    LogPrint(BCLog::KHU, "ApplyDailyYield: total_yield=%lld, Cr=%lld, Ur=%lld\n",
+             total_yield, state.Cr, state.Ur);
+
+    return true;
+}
+
+bool UndoDailyYield(KhuGlobalState& state, uint32_t nHeight, CCoinsViewCache& view)
+{
+    AssertLockHeld(cs_khu);
+
+    // TODO: Implémenter undo logic
+    //
+    // Stratégies possibles:
+    // 1. Stocker delta total par height (simple, reorg ≤12 blocs)
+    // 2. Recalculer yield inverse (streaming notes)
+    // 3. Snapshot notes (lourd, éviter)
+    //
+    // Pour reorg ≤12 blocs, option 1 est optimale:
+    //   - Stocker YieldDelta(height) dans LevelDB ('Y' + height → total_yield)
+    //   - UndoDailyYield: Cr -= YieldDelta(height), Ur -= YieldDelta(height)
+
+    LogPrint(BCLog::KHU, "UndoDailyYield: height=%u (TODO: implement)\n", nHeight);
+
+    // PLACEHOLDER: Implement me!
+    return true;
+}
+
+CAmount ApplyYieldToAllNotes(KhuGlobalState& state, uint16_t R_annual, uint32_t nHeight)
+{
+    AssertLockHeld(cs_khu);
+
+    // TODO: Implémenter itération streaming sur notes ZKHU
+    //
+    // Pseudo-code:
+    //   CAmount total_yield = 0;
+    //
+    //   for each note in ZKHU_DB (streaming cursor):
+    //     if (!note.is_spent && IsNoteMature(note.stake_height, nHeight)):
+    //       daily = CalculateDailyYield(note.amount, R_annual);
+    //       note.Ur_accumulated += daily;
+    //       total_yield += daily;
+    //
+    //       // Batch update DB
+    //       batch.Write(note_key, note);
+    //
+    //   db.WriteBatch(batch);
+    //   return total_yield;
+
+    LogPrint(BCLog::KHU, "ApplyYieldToAllNotes: R_annual=%u, height=%u (TODO: iterate notes)\n",
+             R_annual, nHeight);
+
+    // PLACEHOLDER
+    return 0;
+}
+```
+
+---
+
+## 🔧 2. KHU_DOMC — R% GOVERNANCE
+
+### 2.1 Header (`khu_domc.h`)
+
+```cpp
+// Copyright (c) 2025 The PIVX Core developers
+// Distributed under the MIT software license.
+
+#ifndef PIVX_KHU_DOMC_H
+#define PIVX_KHU_DOMC_H
+
+#include "khu/khu_state.h"
+#include "uint256.h"
+
+#include <stdint.h>
+#include <vector>
+
+/**
+ * DOMC R% GOVERNANCE — Phase 6
+ *
+ * Vote commit-reveal par masternodes pour déterminer R% (yield annuel).
+ *
+ * CYCLE: 172800 blocs (4 mois)
+ * PHASES:
+ *   - 0-132480:  R% ACTIF uniquement (3m+2j)
+ *   - 132480-152640: COMMIT (2 semaines)
+ *   - 152640-172800: PRÉAVIS (2 semaines, R_next visible)
+ *
+ * RÈGLES:
+ * - R% ∈ [0, R_MAX_dynamic]
+ * - R_MAX_dynamic = max(400, 3000 - year×100) // 30%→4% sur 25 ans
+ * - Agrégation: Médiane arithmétique (ou moyenne, selon spec)
+ * - Privacy: Commitment SHA256 pendant commit phase
+ */
+
+// Constants
+static const uint32_t DOMC_CYCLE_LENGTH = 172800;   // 4 mois
+static const uint32_t DOMC_ACTIVE_LENGTH = 132480;  // 3m+2j
+static const uint32_t DOMC_COMMIT_LENGTH = 20160;   // 2 semaines
+static const uint32_t DOMC_NOTICE_LENGTH = 20160;   // 2 semaines
+
+// Phases DOMC
+enum DOMCPhase {
+    DOMC_PHASE_ACTIVE = 0,  // R% actif, pas de vote
+    DOMC_PHASE_COMMIT = 1,  // Commit votes (privacy)
+    DOMC_PHASE_NOTICE = 2   // Préavis (R_next visible)
+};
+
+/**
+ * Vote R% masternode (commit-reveal)
+ */
+struct DOMCVote {
+    uint256 commitment;   // SHA256(R_proposal || secret) - phase commit
+    uint16_t R_proposal;  // R% proposé (basis points) - phase reveal
+    uint256 secret;       // Secret révélé - phase reveal
+
+    bool IsValid() const {
+        // Vérifier reveal: SHA256(R || secret) == commitment
+        CHashWriter ss(SER_GETHASH, 0);
+        ss << R_proposal << secret;
+        return (ss.GetHash() == commitment);
+    }
+};
+
+/**
+ * Calculer R_MAX_dynamic selon l'année
+ *
+ * Formule: max(400, 3000 - year×100)
+ *
+ * @param nHeight Height actuel
+ * @param nActivationHeight Height activation KHU
+ * @return R_MAX_dynamic en basis points
+ */
+uint16_t CalculateRMaxDynamic(uint32_t nHeight, uint32_t nActivationHeight);
+
+/**
+ * Déterminer phase DOMC actuelle
+ *
+ * @param state État KHU global
+ * @param nHeight Height actuel
+ * @return Phase DOMC (ACTIVE, COMMIT, NOTICE)
+ */
+DOMCPhase GetDOMCPhase(const KhuGlobalState& state, uint32_t nHeight);
+
+/**
+ * Vérifier si cycle DOMC doit se terminer
+ *
+ * @param state État KHU global
+ * @param nHeight Height actuel
+ * @return true si fin de cycle (activation nouveau R%)
+ */
+bool ShouldFinalizeDOMCCycle(const KhuGlobalState& state, uint32_t nHeight);
+
+/**
+ * Calculer médiane (ou moyenne) des votes valides
+ *
+ * @param votes Vecteur de votes R% valides
+ * @return R_annual médian (clamped à R_MAX_dynamic)
+ */
+uint16_t CalculateRMedian(const std::vector<uint16_t>& votes, uint16_t R_MAX_dynamic);
+
+/**
+ * Finaliser cycle DOMC et activer nouveau R%
+ *
+ * PROCESSUS:
+ *   1. Collecter tous les votes reveals valides
+ *   2. Calculer médiane
+ *   3. Clamp à [0, R_MAX_dynamic]
+ *   4. Activer state.R_annual = nouveau R%
+ *   5. Réinitialiser cycle (last_domc_height = nHeight)
+ *
+ * @param state État KHU global (modifié)
+ * @param nHeight Height actuel
+ * @return true si succès
+ */
+bool FinalizeDOMCCycle(KhuGlobalState& state, uint32_t nHeight);
+
+/**
+ * Valider vote DOMC dans un bloc
+ *
+ * (Si implémenté via TX spéciale TX_DOMC_VOTE)
+ *
+ * @param vote Vote à valider
+ * @param phase Phase DOMC actuelle
+ * @param R_MAX_dynamic R_MAX actuel
+ * @return true si vote valide
+ */
+bool ValidateDOMCVote(const DOMCVote& vote, DOMCPhase phase, uint16_t R_MAX_dynamic);
+
+#endif // PIVX_KHU_DOMC_H
+```
+
+### 2.2 Implémentation (`khu_domc.cpp`)
+
+```cpp
+// Copyright (c) 2025 The PIVX Core developers
+// Distributed under the MIT software license.
+
+#include "khu/khu_domc.h"
+#include "logging.h"
+
+#include <algorithm>
+
+uint16_t CalculateRMaxDynamic(uint32_t nHeight, uint32_t nActivationHeight)
+{
+    if (nHeight < nActivationHeight) {
+        return 3000; // 30.00% (avant activation)
+    }
+
+    // year = (height - activation) / BLOCKS_PER_YEAR
+    uint32_t blocks_since_activation = nHeight - nActivationHeight;
+    uint32_t year = blocks_since_activation / 525600; // 365 × 1440
+
+    // R_MAX = max(400, 3000 - year×100)
+    uint16_t R_MAX = 3000;
+    if (year > 0) {
+        uint32_t reduction = year * 100;
+        if (reduction >= 2600) {
+            R_MAX = 400; // Plancher 4.00%
+        } else {
+            R_MAX = 3000 - reduction;
+        }
+    }
+
+    return R_MAX;
+}
+
+DOMCPhase GetDOMCPhase(const KhuGlobalState& state, uint32_t nHeight)
+{
+    // Position dans le cycle actuel
+    uint32_t cycle_start = state.domc_cycle_start;
+    uint32_t position = nHeight - cycle_start;
+
+    if (position < DOMC_ACTIVE_LENGTH) {
+        return DOMC_PHASE_ACTIVE;
+    } else if (position < DOMC_ACTIVE_LENGTH + DOMC_COMMIT_LENGTH) {
+        return DOMC_PHASE_COMMIT;
+    } else {
+        return DOMC_PHASE_NOTICE;
+    }
+}
+
+bool ShouldFinalizeDOMCCycle(const KhuGlobalState& state, uint32_t nHeight)
+{
+    uint32_t cycle_start = state.domc_cycle_start;
+    uint32_t position = nHeight - cycle_start;
+
+    // Finaliser à la fin du cycle (172800 blocs)
+    return (position >= DOMC_CYCLE_LENGTH);
+}
+
+uint16_t CalculateRMedian(const std::vector<uint16_t>& votes, uint16_t R_MAX_dynamic)
+{
+    if (votes.empty()) {
+        return 0; // Pas de votes → R% = 0
+    }
+
+    std::vector<uint16_t> sorted = votes;
+    std::sort(sorted.begin(), sorted.end());
+
+    size_t n = sorted.size();
+    uint16_t median;
+
+    if (n % 2 == 0) {
+        // Pair: moyenne des 2 éléments centraux
+        median = (sorted[n/2 - 1] + sorted[n/2]) / 2;
+    } else {
+        // Impair: élément central
+        median = sorted[n/2];
+    }
+
+    // Clamp à [0, R_MAX_dynamic]
+    if (median > R_MAX_dynamic) {
+        median = R_MAX_dynamic;
+    }
+
+    return median;
+}
+
+bool FinalizeDOMCCycle(KhuGlobalState& state, uint32_t nHeight)
+{
+    AssertLockHeld(cs_khu);
+
+    // TODO: Implémenter collecte votes reveals + calcul médiane
+    //
+    // Pseudo-code:
+    //   std::vector<uint16_t> valid_votes;
+    //
+    //   for each masternode:
+    //     if (mn.vote.IsValid() && mn.vote.R_proposal <= R_MAX):
+    //       valid_votes.push_back(mn.vote.R_proposal);
+    //
+    //   uint16_t R_new = CalculateRMedian(valid_votes, state.R_MAX_dynamic);
+    //
+    //   state.R_annual = R_new;
+    //   state.last_domc_height = nHeight;
+    //   state.domc_cycle_start = nHeight;
+
+    LogPrint(BCLog::KHU, "FinalizeDOMCCycle: height=%u (TODO: collect votes)\n", nHeight);
+
+    // PLACEHOLDER
+    return true;
+}
+
+bool ValidateDOMCVote(const DOMCVote& vote, DOMCPhase phase, uint16_t R_MAX_dynamic)
+{
+    // Phase COMMIT: commitment doit être non-null
+    if (phase == DOMC_PHASE_COMMIT) {
+        return !vote.commitment.IsNull();
+    }
+
+    // Phase NOTICE/REVEAL: reveal doit être valide
+    if (phase == DOMC_PHASE_NOTICE) {
+        if (!vote.IsValid()) {
+            return false; // SHA256 mismatch
+        }
+
+        // R_proposal doit être dans [0, R_MAX_dynamic]
+        if (vote.R_proposal > R_MAX_dynamic) {
+            return false;
+        }
+    }
+
+    return true;
+}
+```
+
+---
+
+## 🔧 3. KHU_DAO — DAO BUDGET (Automatique)
+
+**🎯 PRINCIPE**: Budget DAO **automatique**, sans vote, sans gouvernance
+
+### Architecture DAO — 1 Fichier Simple
+
+```
+src/khu/
+└── khu_dao.{h,cpp}    # DAO budget automatique (3 fonctions)
+```
+
+**Règle Unique:**
+```
+Tous les 172800 blocs (4 mois):
+  DAO_budget = (U + Ur) × 0.5%
+  Mint DAO_budget PIV → DAO treasury
+  SANS VOTE, SANS GOUVERNANCE
+```
+
+**Pas de:**
+- ❌ Vote MN sur budget
+- ❌ Propositions user
+- ❌ Collateral
+- ❌ Système de gouvernance
+- ❌ Validation approve/reject
+- ❌ Burn conditionnel
+
+**Juste:**
+- ✅ Timer (172800 blocs)
+- ✅ Calcul (0.5% × (U+Ur))
+- ✅ Mint PIV automatique
+- ✅ Paiement DAO treasury
+
+---
+
+### 3.1 Module: khu_dao_vote.{h,cpp} — Vote Masternode
+
+**Source**: Adaptation directe `src/budget/budgetvote.h`
+
+#### Header (`khu_dao_vote.h`)
+
+```cpp
+// Copyright (c) 2025 The PIVX Core developers
+// Distributed under the MIT software license.
+
+#ifndef PIVX_KHU_DAO_VOTE_H
+#define PIVX_KHU_DAO_VOTE_H
+
+#include "messagesigner.h"
+#include "primitives/transaction.h"
+
+#include <univalue.h>
+
+/**
+ * KHU DAO VOTE — Phase 6
+ *
+ * Vote masternode sur proposition DAO (YES/NO/ABSTAIN).
+ *
+ * ADAPTATION PIVX budgetvote.h:
+ * - ✅ Même structure vote (CSignedMessage)
+ * - ✅ Même enum VoteDirection
+ * - ✅ Signature MN identique
+ * - ✅ P2P relay identique
+ */
+
+class CKhuDAOVote : public CSignedMessage
+{
+public:
+    enum VoteDirection : uint32_t {
+        VOTE_ABSTAIN = 0,
+        VOTE_YES = 1,
+        VOTE_NO = 2
+    };
+
+private:
+    bool fValid;          // Vote valide (signature vérifiée)
+    bool fSynced;         // Vote synced réseau
+    uint256 nProposalHash; // Hash proposition DAO
+    VoteDirection nVote;  // Direction vote
+    int64_t nTime;        // Timestamp
+    CTxIn vin;            // MN identifier (collateral input)
+
+public:
+    CKhuDAOVote();
+    CKhuDAOVote(const CTxIn& vinIn, const uint256& nProposalHashIn, VoteDirection nVoteIn);
+
+    void Relay() const;   // Broadcast P2P
+
+    std::string GetVoteString() const {
+        if (nVote == VOTE_YES) return "YES";
+        if (nVote == VOTE_NO) return "NO";
+        return "ABSTAIN";
+    }
+
+    uint256 GetHash() const;
+
+    // Override CSignedMessage
+    uint256 GetSignatureHash() const override { return GetHash(); }
+    std::string GetStrMessage() const override;
+    CTxIn GetVin() const { return vin; }
+
+    UniValue ToJSON() const;
+
+    // Getters
+    VoteDirection GetDirection() const { return nVote; }
+    uint256 GetProposalHash() const { return nProposalHash; }
+    int64_t GetTime() const { return nTime; }
+    bool IsSynced() const { return fSynced; }
+    bool IsValid() const { return fValid; }
+
+    // Setters
+    void SetSynced(bool _fSynced) { fSynced = _fSynced; }
+    void SetTime(const int64_t& _nTime) { nTime = _nTime; }
+    void SetValid(bool _fValid) { fValid = _fValid; }
+
+    SERIALIZE_METHODS(CKhuDAOVote, obj) {
+        READWRITE(obj.vin, obj.nProposalHash, Using<CustomUintFormatter<4>>(obj.nVote),
+                  obj.nTime, obj.vchSig, obj.nMessVersion);
+    }
+};
+
+#endif // PIVX_KHU_DAO_VOTE_H
+```
+
+---
+
+### 3.2 Module: khu_dao_proposal.{h,cpp} — Proposition DAO
+
+**Source**: Adaptation `src/budget/budgetproposal.h` (simplifié)
+
+#### Header (`khu_dao_proposal.h`)
+
+```cpp
+// Copyright (c) 2025 The PIVX Core developers
+// Distributed under the MIT software license.
+
+#ifndef PIVX_KHU_DAO_PROPOSAL_H
+#define PIVX_KHU_DAO_PROPOSAL_H
+
+#include "khu/khu_dao_vote.h"
+#include "khu/khu_state.h"
+#include "amount.h"
+#include "script/script.h"
+
+#include <map>
+#include <string>
+
+/**
+ * KHU DAO PROPOSAL — Phase 6
+ *
+ * Proposition budget DAO pour un cycle (172800 blocs).
+ *
+ * ADAPTATION PIVX budgetproposal.h:
+ * - ✅ Garde: name, URL, address, amount, votes, collateral
+ * - ❌ Supprime: nBlockStart/End (paiement ponctuel)
+ * - 🔄 Ajoute: dao_cycle (numéro cycle)
+ */
+
+// Constants
+static const CAmount KHU_DAO_PROPOSAL_FEE = (10 * COIN);  // Collateral (vs 50 PIV PIVX)
+static const size_t DAO_PROP_NAME_MAX_SIZE = 20;
+static const size_t DAO_PROP_URL_MAX_SIZE = 64;
+static const CAmount DAO_PROP_MIN_AMOUNT = 10 * COIN;
+
+class CKhuDAOProposal
+{
+private:
+    bool fValid;
+    std::string strInvalid;
+    std::map<COutPoint, CKhuDAOVote> mapVotes;
+
+protected:
+    std::string strProposalName;  // Max 20 chars
+    std::string strURL;           // Max 64 chars
+    CScript address;              // Bénéficiaire (payee)
+    CAmount nAmount;              // Montant demandé
+    uint256 nFeeTXHash;           // Collateral TX (10 PIV)
+    uint32_t dao_cycle;           // Numéro cycle (height / 172800)
+
+public:
+    int64_t nTime;                // Timestamp création
+
+    CKhuDAOProposal();
+    CKhuDAOProposal(const std::string& name, const std::string& url,
+                    const CScript& payee, const CAmount& amount,
+                    uint32_t cycle, const uint256& nfeetxhash);
+
+    // Vote management
+    bool AddOrUpdateVote(const CKhuDAOVote& vote, std::string& strError);
+    void SetSynced(bool synced);
+    UniValue GetVotesArray() const;
+
+    // Vote counts
+    int GetYeas() const;
+    int GetNays() const;
+    int GetAbstains() const;
+    double GetRatio() const { return (GetYeas() - GetNays()) / (double)(GetYeas() + GetNays() + 1); }
+
+    // Validation
+    bool UpdateValid(int nHeight, int mnCount);
+    bool IsValid() const { return fValid; }
+    std::string IsInvalidReason() const { return strInvalid; }
+
+    bool IsPassing(int mnCount) const;
+    bool IsExpired(int nCurrentHeight) const;
+
+    // Getters
+    std::string GetName() const { return strProposalName; }
+    std::string GetURL() const { return strURL; }
+    CScript GetPayee() const { return address; }
+    CAmount GetAmount() const { return nAmount; }
+    uint32_t GetCycle() const { return dao_cycle; }
+    const uint256& GetFeeTXHash() const { return nFeeTXHash; }
+    std::map<COutPoint, CKhuDAOVote> GetVotes() const { return mapVotes; }
+
+    uint256 GetHash() const {
+        CHashWriter ss(SER_GETHASH, PROTOCOL_VERSION);
+        ss << strProposalName << strURL << dao_cycle << nAmount
+           << std::vector<unsigned char>(address.begin(), address.end());
+        return ss.GetHash();
+    }
+
+    // Serialization
+    SERIALIZE_METHODS(CKhuDAOProposal, obj) {
+        READWRITE(LIMITED_STRING(obj.strProposalName, DAO_PROP_NAME_MAX_SIZE));
+        READWRITE(LIMITED_STRING(obj.strURL, DAO_PROP_URL_MAX_SIZE));
+        READWRITE(obj.address);
+        READWRITE(obj.nAmount);
+        READWRITE(obj.nFeeTXHash);
+        READWRITE(obj.dao_cycle);
+        READWRITE(obj.nTime);
+        READWRITE(obj.mapVotes);
+    }
+
+    // Compare by net YES count
+    static inline bool PtrHigherYes(CKhuDAOProposal* a, CKhuDAOProposal* b) {
+        const int netYes_a = a->GetYeas() - a->GetNays();
+        const int netYes_b = b->GetYeas() - b->GetNays();
+        if (netYes_a == netYes_b)
+            return UintToArith256(a->GetFeeTXHash()) > UintToArith256(b->GetFeeTXHash());
+        return netYes_a > netYes_b;
+    }
+};
+
+#endif // PIVX_KHU_DAO_PROPOSAL_H
+```
+
+---
+
+### 3.3 Module: khu_dao_manager.{h,cpp} — Gestionnaire DAO
+
+**Source**: Simplification `src/budget/budgetmanager.h`
+
+#### Header (`khu_dao_manager.h`)
+
+```cpp
+// Copyright (c) 2025 The PIVX Core developers
+// Distributed under the MIT software license.
+
+#ifndef PIVX_KHU_DAO_MANAGER_H
+#define PIVX_KHU_DAO_MANAGER_H
+
+#include "khu/khu_dao_proposal.h"
+#include "khu/khu_dao_vote.h"
+#include "khu/khu_state.h"
+#include "sync.h"
+
+#include <map>
+
+#define ORPHAN_DAO_VOTES_CACHE_LIMIT 10000
+
+/**
+ * KHU DAO MANAGER — Phase 6
+ *
+ * Gestionnaire central propositions & votes DAO.
+ *
+ * ADAPTATION PIVX budgetmanager.h:
+ * - ✅ Garde: maps, locks, orphan votes, collateral tracking
+ * - ❌ Supprime: FinalizedBudget logic
+ * - 🔄 Simplifie: 1 gagnant par cycle (highest votes)
+ */
+
+class CKhuDAOManager
+{
+protected:
+    // Maps (thread-safe via locks)
+    std::map<uint256, CKhuDAOProposal> mapProposals;        // guarded by cs_proposals
+    std::map<uint256, CKhuDAOVote> mapSeenVotes;            // guarded by cs_votes
+
+    // Orphan votes (cache pour MN sync retardé)
+    typedef std::pair<std::vector<CKhuDAOVote>, int64_t> OrphanVotesAndLastReceived;
+    std::map<uint256, OrphanVotesAndLastReceived> mapOrphanVotes;  // guarded by cs_votes
+
+    // Collateral tracking (reorg safety)
+    std::map<uint256, uint256> mapFeeTxToProposal;          // guarded by cs_proposals
+
+public:
+    // Locks (ORDRE CRITIQUE)
+    mutable RecursiveMutex cs_proposals;
+    mutable RecursiveMutex cs_votes;
+
+    CKhuDAOManager() {}
+
+    // Proposal management
+    bool HaveProposal(const uint256& propHash) const {
+        LOCK(cs_proposals);
+        return mapProposals.count(propHash);
+    }
+
+    bool AddProposal(CKhuDAOProposal& proposal);
+    CKhuDAOProposal* FindProposal(const uint256& nHash);
+    bool GetProposal(const uint256& nHash, CKhuDAOProposal& prop) const;
+
+    std::vector<CKhuDAOProposal*> GetAllProposalsOrdered();  // Tri par votes (highest first)
+
+    // Vote management
+    bool HaveSeenVote(const uint256& voteHash) const {
+        LOCK(cs_votes);
+        return mapSeenVotes.count(voteHash);
+    }
+
+    bool AddAndRelayVote(const CKhuDAOVote& vote, std::string& strError);
+    bool UpdateProposal(const CKhuDAOVote& vote, CNode* pfrom, std::string& strError);
+    void AddSeenVote(const CKhuDAOVote& vote);
+
+    // Get winning proposal for a cycle
+    bool GetWinningProposal(uint32_t dao_cycle, CScript& payeeRet, CAmount& nAmountRet) const;
+
+    // DAO budget calculation
+    CAmount CalculateDAOBudget(const KhuGlobalState& state) const {
+        // (U + Ur) × 0.5%
+        __int128 total = ((__int128)state.U + state.Ur);
+        __int128 budget = (total * 5) / 1000;
+        return (CAmount)budget;
+    }
+
+    bool ShouldCreateDAOBudget(const KhuGlobalState& state, uint32_t nHeight) const {
+        uint32_t cycle_position = nHeight - state.domc_cycle_start;
+        return (cycle_position >= 172800);  // 4 mois
+    }
+
+    // Fill coinstake with DAO payment
+    bool FillDAOBudgetPayment(CMutableTransaction& txCoinstake,
+                             const KhuGlobalState& state,
+                             int nHeight) const;
+
+    // Consensus validation
+    enum class TrxValidationStatus {
+        InValid,         // TX invalide
+        Valid,           // TX valide
+        DoublePayment,   // Double paiement DAO
+        VoteThreshold    // Pas assez votes MN
+    };
+
+    TrxValidationStatus IsKhuDAOTransactionValid(const CTransaction& txNew,
+                                                 const uint256& nBlockHash,
+                                                 int nBlockHeight,
+                                                 const KhuGlobalState& state) const;
+
+    // P2P sync
+    bool ProcessMessage(CNode* pfrom, std::string& strCommand, CDataStream& vRecv, int& banScore);
+    void Sync(CNode* node, bool fPartial);
+
+    // Cleanup
+    void RemoveStaleVotesOnProposal(CKhuDAOProposal* prop);
+    void CheckAndRemoveExpired(int nCurrentHeight);
+};
+
+// Global instance
+extern CKhuDAOManager khuDAOManager;
+
+#endif // PIVX_KHU_DAO_MANAGER_H
+```
+
+---
+
+### 3.4 Implémentation: FillDAOBudgetPayment
+
+```cpp
+// khu_dao_manager.cpp
+
+bool CKhuDAOManager::FillDAOBudgetPayment(
+    CMutableTransaction& txCoinstake,
+    const KhuGlobalState& state,
+    int nHeight
+) const {
+    if (!ShouldCreateDAOBudget(state, nHeight)) {
+        return false;  // Pas un bloc budget
+    }
+
+    // Calculer budget
+    CAmount dao_budget = CalculateDAOBudget(state);
+
+    if (dao_budget <= 0) {
+        return false;
+    }
+
+    // Récupérer cycle actuel
+    uint32_t dao_cycle = nHeight / 172800;
+
+    // Récupérer proposition gagnante (highest votes)
+    CScript payee;
+    CAmount amount;
+
+    if (GetWinningProposal(dao_cycle, payee, amount)) {
+        // ✅ ACCEPTÉ: Payer la proposition
+        txCoinstake.vout.emplace_back(dao_budget, payee);
+        LogPrint(BCLog::KHU, "DAO Budget: Paying %lld PIV to winning proposal (cycle %u)\n",
+                 dao_budget, dao_cycle);
+    } else {
+        // ❌ REJETÉ: Brûler le budget
+        CScript burnScript;
+        burnScript << OP_RETURN;
+        txCoinstake.vout.emplace_back(dao_budget, burnScript);
+        LogPrint(BCLog::KHU, "DAO Budget: Burning %lld PIV (no winning proposal, cycle %u)\n",
+                 dao_budget, dao_cycle);
+    }
+
+    return true;
+}
+
+bool CKhuDAOManager::GetWinningProposal(
+    uint32_t dao_cycle,
+    CScript& payeeRet,
+    CAmount& nAmountRet
+) const {
+    LOCK(cs_proposals);
+
+    // Filtrer propositions pour ce cycle
+    std::vector<CKhuDAOProposal*> cycleProposals;
+
+    for (auto& [hash, prop] : mapProposals) {
+        if (prop.GetCycle() == dao_cycle && prop.IsValid()) {
+            cycleProposals.push_back(const_cast<CKhuDAOProposal*>(&prop));
+        }
+    }
+
+    if (cycleProposals.empty()) {
+        return false;  // Aucune proposition valide
+    }
+
+    // Trier par votes (highest YES - NO)
+    std::sort(cycleProposals.begin(), cycleProposals.end(),
+              CKhuDAOProposal::PtrHigherYes);
+
+    // Récupérer gagnant (premier dans liste triée)
+    CKhuDAOProposal* winner = cycleProposals[0];
+
+    // Vérifier quorum (ex: 10% MN minimum)
+    int mnCount = mnodeman.CountEnabled();
+    if (!winner->IsPassing(mnCount)) {
+        return false;  // Pas assez votes
+    }
+
+    payeeRet = winner->GetPayee();
+    nAmountRet = winner->GetAmount();
+
+    return true;
+}
+```
+
+---
+
+## 🔗 4. INTÉGRATION VALIDATION.CPP
+
+### 4.1 Ordre ConnectBlock (SACRÉ)
+
+```cpp
+bool ConnectBlock(const CBlock& block, CBlockIndex* pindex, ...)
+{
+    // ... (code existant)
+
+    // === KHU PHASE 6 INTEGRATION ===
+    if (IsKHUActive(nHeight)) {
+
+        // 1. Charger état précédent
+        KhuGlobalState prevState;
+        if (!LoadKhuState(pindex->pprev->GetBlockHash(), prevState)) {
+            return state.Invalid(REJECT_INVALID, "khu-state-missing");
+        }
+
+        KhuGlobalState newState = prevState;
+        newState.nHeight = nHeight;
+        newState.hashBlock = block.GetHash();
+
+        // 2. APPLY DAILY YIELD (si trigger)
+        if (!ApplyDailyYield(newState, nHeight, view)) {
+            return state.Invalid(REJECT_INVALID, "khu-yield-failed");
+        }
+
+        // 3. APPLY TX KHU (MINT, REDEEM, STAKE, UNSTAKE)
+        for (const auto& tx : block.vtx) {
+            if (!ProcessKHUTransaction(tx, newState, view)) {
+                return state.Invalid(REJECT_INVALID, "khu-tx-failed");
+            }
+        }
+
+        // 4. APPLY BLOCK REWARD (émission PIVX, pas de modification Cr/Ur)
+        // (code existant block reward)
+
+        // 5. DOMC CYCLE FINALIZATION (si fin cycle)
+        if (ShouldFinalizeDOMCCycle(newState, nHeight)) {
+            if (!FinalizeDOMCCycle(newState, nHeight)) {
+                return state.Invalid(REJECT_INVALID, "khu-domc-failed");
+            }
+        }
+
+        // 6. DAO BUDGET (si fin cycle) — Intégration CKhuDAOManager
+        // Note: DAO budget modifie coinstake (paiement ou burn)
+        // Appelé AVANT création coinstake dans CreateCoinStake
+        if (khuDAOManager.ShouldCreateDAOBudget(newState, nHeight)) {
+            // FillDAOBudgetPayment sera appelé dans CreateCoinStake
+            // (voir src/stakeinput.cpp ou équivalent)
+            LogPrint(BCLog::KHU, "DAO Budget cycle @ height %u\n", nHeight);
+        }
+
+        // 7. CHECK INVARIANTS (SACRÉ)
+        if (!newState.CheckInvariants()) {
+            return state.Invalid(REJECT_INVALID, "khu-invariants-broken",
+                                 strprintf("C=%lld U=%lld Cr=%lld Ur=%lld",
+                                          newState.C, newState.U, newState.Cr, newState.Ur));
+        }
+
+        // 8. PERSIST STATE
+        if (!PersistKhuState(newState)) {
+            return state.Invalid(REJECT_INVALID, "khu-persist-failed");
+        }
+    }
+
+    // ... (reste du code)
+}
+```
+
+### 4.2 Ordre DisconnectBlock (Reorg)
+
+```cpp
+bool DisconnectBlock(const CBlock& block, CBlockIndex* pindex, ...)
+{
+    // ... (code existant)
+
+    if (IsKHUActive(nHeight)) {
+
+        // ORDRE INVERSE:
+        // 1. Load current state
+        // 2. Undo DAO budget (si applicable)
+        // 3. Undo DOMC cycle (si applicable)
+        // 4. Undo TX KHU (UNSTAKE → STAKE → REDEEM → MINT)
+        // 5. Undo Daily Yield
+        // 6. Restore prev state
+
+        KhuGlobalState currentState;
+        if (!LoadKhuState(block.GetHash(), currentState)) {
+            return error("DisconnectBlock: khu-state-missing");
+        }
+
+        // Undo yield
+        if (!UndoDailyYield(currentState, nHeight, view)) {
+            return error("DisconnectBlock: khu-undo-yield-failed");
+        }
+
+        // Undo TX...
+        // (code existant)
+    }
+}
+```
+
+---
+
+## ✅ 5. CHECKLIST DÉVELOPPEMENT
+
+### Phase 6.1 — Yield Engine
+- [ ] `khu_yield.h` signatures
+- [ ] `khu_yield.cpp` implémentation
+  - [ ] `CalculateDailyYield` (avec __int128)
+  - [ ] `ApplyDailyYield` (streaming notes)
+  - [ ] `UndoDailyYield` (delta storage)
+  - [ ] `ApplyYieldToAllNotes` (LevelDB cursor + batch)
+- [ ] Tests yield (`khu_yield_tests.cpp`, 15 tests)
+- [ ] Python stress tests (`khu_phase6_yield.py`)
+
+### Phase 6.2 — DOMC R%
+- [ ] `khu_domc.h` structures + signatures
+- [ ] `khu_domc.cpp` implémentation
+  - [ ] `CalculateRMaxDynamic` (schedule 30%→4%)
+  - [ ] `GetDOMCPhase` (ACTIVE/COMMIT/NOTICE)
+  - [ ] `CalculateRMedian` (agrégation votes)
+  - [ ] `FinalizeDOMCCycle` (activation nouveau R%)
+- [ ] Extension `CMasternodePing` (nRCommitment, nRProposal, nRSecret)
+- [ ] Tests DOMC (`khu_domc_tests.cpp`, 15 tests)
+- [ ] Python functional tests (`khu_phase6_domc.py`)
+
+### Phase 6.3 — DAO Budget (Architecture PIVX)
+- [ ] `khu_dao_vote.{h,cpp}` — Vote MN (adapt budgetvote.h)
+  - [ ] `CKhuDAOVote` (CSignedMessage + VoteDirection)
+  - [ ] Relay P2P, sérialisation
+- [ ] `khu_dao_proposal.{h,cpp}` — Propositions (adapt budgetproposal.h)
+  - [ ] `CKhuDAOProposal` (name, URL, payee, amount, cycle, collateral)
+  - [ ] Vote management (AddOrUpdateVote, GetYeas/Nays)
+  - [ ] Validation (IsPassing, IsExpired)
+- [ ] `khu_dao_manager.{h,cpp}` — Manager (simplify budgetmanager.h)
+  - [ ] Maps thread-safe (cs_proposals, cs_votes)
+  - [ ] Orphan votes cache (10000 limite)
+  - [ ] Collateral tracking (mapFeeTxToProposal)
+  - [ ] `GetWinningProposal` (highest votes)
+  - [ ] `FillDAOBudgetPayment` (paiement ou burn)
+  - [ ] P2P sync (ProcessMessage, Sync)
+- [ ] Tests DAO (`khu_dao_tests.cpp`, 12 tests)
+  - [ ] Vote signature/validation
+  - [ ] Proposal creation/voting
+  - [ ] GetWinningProposal logic
+  - [ ] Burn mechanism
+- [ ] Python tests (`khu_phase6_dao.py`)
+
+### Phase 6.4 — Intégration
+- [ ] `validation.cpp` ConnectBlock (ordre yield→tx→reward→domc→dao→invariants)
+- [ ] `validation.cpp` DisconnectBlock (undo inverse)
+- [ ] Locks (`cs_khu` + `AssertLockHeld`)
+- [ ] Logging (`BCLog::KHU`)
+
+### Phase 6.5 — Tests & Rapport
+- [ ] `make check` (42+ tests Phase 6)
+- [ ] Functional tests Python (yield, domc, dao, stress)
+- [ ] Rapport Phase 6 (`RAPPORT_PHASE6_FINAL.md`)
+  - [ ] Implémentation summary
+  - [ ] Attack vectors testés
+  - [ ] Checklist invariants
+
+---
+
+## 🚫 INTERDICTIONS ABSOLUES
+
+### NE PAS TOUCHER (Phases 1-5 gelées)
+- ❌ `khu_state.h` (struct KhuGlobalState)
+- ❌ `khu_tx.cpp` (MINT/REDEEM/STAKE/UNSTAKE)
+- ❌ `sapling_operation.cpp` (Sapling ZKHU)
+- ❌ Constants: BLOCKS_PER_DAY, MATURITY, BLOCKS_PER_YEAR
+- ❌ Émission PIVX (max(6-year, 0))
+
+### NE PAS FAIRE
+- ❌ Modifier C, U en dehors de MINT/REDEEM/UNSTAKE
+- ❌ Modifier Cr, Ur en dehors de YIELD/UNSTAKE
+- ❌ Utiliser float/double (int64_t uniquement)
+- ❌ Violer ordre ConnectBlock: Yield → TX → Reward → CheckInvariants → Persist
+- ❌ Injecter Cr/Ur depuis émission PIVX (KHUPoolInjection = 0)
+
+---
+
+## 📝 PROCHAINES ÉTAPES
+
+1. **Validation architecture** — User approve ce document
+2. **Branch création** — `git checkout -b khu-phase6-domc-yield-dao`
+3. **Implémentation squelettes** — Créer fichiers .h/.cpp avec TODOs
+4. **Tests TDD** — Écrire tests AVANT implémentation complète
+5. **Implémentation itérative** — Yield → DOMC → DAO
+6. **Intégration** — `validation.cpp` hooks
+7. **Rapport final** — `RAPPORT_PHASE6_FINAL.md`
+8. **PR** — Merge après validation complète
+
+---
+
+**FIN ARCHITECTURE PHASE 6**
