@@ -86,69 +86,118 @@ KHU fonctionne comme actif collatéralisé 1:1.
 
 ## 4. PHASE 4 — SAPLING (STAKE / UNSTAKE)
 
-**STATUT : ⏳ PLANNED**
-*Durée estimée : ~8 jours d'implémentation (complexité LOW-MEDIUM)*
-*Approche : Wrapper autour du Sapling PIVX existant (pas de nouvelle crypto)*
+**STATUT : ✅ COMPLETED**
+*Référence : voir docs/reports/phase4/ pour implémentation et tests*
+*Tests : 7/7 PASS (DisconnectKHUBlock + unit tests)*
 
 ### Objectifs
 - STAKE : KHU_T → ZKHU.
-- UNSTAKE : ZKHU → KHU_T.
+- UNSTAKE : ZKHU → KHU_T (avec bonus Ur_accumulated).
 - Sapling minimal : 1 note par stake.
 - Pas de Z→Z KHU.
 - Rolling Frontier Tree.
 - Maturité staking : 3 jours = 4320 blocs.
 
 ### Résultat
-Staking privé ZK opérationnel.
+✅ **IMPLÉMENTÉ ET VALIDÉ**
+- Staking privé ZK opérationnel
+- Notes ZKHU avec nullifiers (anti-double-spend)
+- DisconnectKHUBlock fonctionnel (reorg safety)
+- Database ZKHU avec note tracking
 
 ---------------------------------------
 
-## 5. PHASE 5 — YIELD Cr/Ur (MOTEUR DOMC)
+## 5. PHASE 5 — ZKHU SAPLING & DB INTEGRATION
 
-**STATUT : ⏳ PLANNED**
-*Durée estimée : ~7 jours d'implémentation*
-*Axiome confirmé : KHUPoolInjection = 0 (aucune injection externe)*
-
-### Fonctionnement
-- R% voté annuellement par DOMC.
-- R_MAX_DYNAMIC = max(400, 3000 – year(height)*100).  // basis points
-
-**Valeurs initiales (activation):**
-- R_annual = 500 (5.00%)
-- R_MAX_dynamic = 3000 (30.00%)
-- Premier cycle DOMC: activation_height + 525600 (1 an)
-
-Chaque jour = 1440 blocs :
-Ur_daily = (stake_amount * R_annual/10000) / 365
-Ur += Ur_daily
-Cr += Ur_daily
-
-UNSTAKE :
-bonus = Ur_accumulé
-U += bonus
-C += bonus
-Cr -= bonus
-Ur -= bonus
-
-Invariants préservés automatiquement.
-
-### Résultat
-Rendement généré uniquement par DOMC.
-
----------------------------------------
-
-## 6. PHASE 6 — DOMC (GOUVERNANCE DE R%)
-
-**STATUT : ⏳ PLANNED**
+**STATUT : ✅ COMPLETED & TESTED**
+*Référence : voir docs/reports/phase5/ pour rapports d'implémentation et audit*
+*Tests : 38/38 PASS (33 C++ unit tests + 5 Python stress tests)*
 
 ### Objectifs
-- Vote commit/reveal.
-- Cycle exprimé en blocs.
-- Activation automatique.
-- R% ∈ [0, R_MAX_DYNAMIC].
+- Intégration complète Sapling dans système KHU
+- Database ZKHU avec note tracking et nullifiers
+- ZKHU note commitment tree (Merkle tree Sapling)
+- Vérification ZKHU proofs (Groth16)
+- DisconnectKHUBlock (reorg safety)
+
+**Tests exhaustifs:**
+- **Regression (6/6)**: Non-régression Phases 1-4
+- **Red Team (12/12)**: Attaques économiques (overflow, double-spend, pool drain)
+- **Yield (15/15)**: Formules R% avec BLOCKS_PER_DAY=1440 canonique
+- **Python Stress (5/5)**: Long sequences, reorgs (shallow & deep), cascade
 
 ### Résultat
-Création monétaire programmable & décentralisée.
+✅ **IMPLÉMENTÉ ET AUDITÉ**
+- ZKHU Sapling opérationnel (privacy complète)
+- Database LevelDB avec préfixes ZKHU
+- Nullifier tracking (anti-double-spend)
+- Invariants C==U, Cr==Ur vérifiés avec égalité EXACTE
+- Reorg safety testée (jusqu'à 20 blocs)
+- Formules yield consensus-accurate (pas d'approximations float)
+- Protection overflow avec __int128
+
+**Axiome confirmé:** KHUPoolInjection = 0 (système fermé, aucune injection externe)
+
+---------------------------------------
+
+## 6. PHASE 6 — DOMC (GOUVERNANCE R% + DAO BUDGET)
+
+**STATUT : ⏳ PLANNED**
+*Référence : voir docs/blueprints/06-YIELD-R-PERCENT.md et 08-DAO-BUDGET.md*
+
+### Objectifs
+
+**6.1 — Gouvernance R% (Yield Stakers)**
+- Vote commit/reveal par masternodes (privacy)
+- Cycle 4 mois = 172800 blocs
+- Timeline:
+  ```
+  0────────132480────152640────172800
+  │   R% ACTIF  │ COMMIT │PRÉAVIS│
+  │  (3m+2j)    │ 2 sem  │ 2 sem │
+  ```
+- R% ∈ [0, R_MAX_DYNAMIC]
+- R_MAX_DYNAMIC = max(400, 3000 – year×100) // Décroit 30%→4% sur 25 ans
+- Activation automatique tous les 172800 blocs
+
+**Formule yield (quotidien):**
+```
+Ur_daily = floor(stake_amount × R_annual / 10000 / 365)
+Cr += Ur_daily
+Ur += Ur_daily
+```
+
+**UNSTAKE (bonus matérialisé):**
+```
+bonus = Ur_accumulated
+C += bonus  (MINT nouveaux KHU_T)
+U += bonus
+Cr -= bonus (consommation pool)
+Ur -= bonus
+```
+
+**6.2 — DAO Budget Automatique (NOUVEAU)**
+- **Budget créé automatiquement** tous les 4 mois (aligné cycle DOMC):
+  ```
+  DAO_budget = (U + Ur) × 0.5%  // 0,5% de la supply KHU
+  ```
+- **Distribution contrôlée par vote MN:**
+  - Propositions DAO soumises (projets dev, marketing, infra)
+  - Masternodes votent approve/reject
+  - Proposition acceptée → PIV payé au projet
+  - Proposition rejetée → **PIV BRÛLÉ** 🔥 (déflationniste!)
+
+**Inflation annuelle:** ~1,5%/an (0,5% × 3 cycles)
+
+**Gouvernance:**
+- Masternodes = gouvernants (vote R% + propositions DAO)
+- Stakers KHU = économie (votent avec leurs pieds: stake/unstake si R% insatisfaisant)
+
+### Résultat
+- ✅ Création monétaire programmable & décentralisée
+- ✅ Financement DAO perpétuel (post année-6 où émission PIVX = 0)
+- ✅ Mécanisme déflationniste (burn si propositions rejetées)
+- ✅ Équilibre des pouvoirs (MN votent, stakers sanctionnent économiquement)
 
 ---------------------------------------
 
