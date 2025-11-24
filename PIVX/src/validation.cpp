@@ -32,6 +32,7 @@
 #include "khu/khu_state.h"
 #include "khu/khu_statedb.h"
 #include "khu/khu_validation.h"
+#include "khu/khu_domc_tx.h"
 #include "legacy/validation_zerocoin_legacy.h"
 #include "llmq/quorums_chainlocks.h"
 #include "masternode-payments.h"
@@ -495,6 +496,38 @@ static bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState &state, 
         if (!CheckSpecialTx(tx, chainActive.Tip(), &view, state)) {
             // pass the state returned by the function above
             return false;
+        }
+
+        // Phase 6.2: Validate DOMC transactions (commit/reveal votes)
+        if (tx.nType == CTransaction::TxType::KHU_DOMC_COMMIT ||
+            tx.nType == CTransaction::TxType::KHU_DOMC_REVEAL) {
+            // Load current KHU state to validate DOMC transaction
+            CKHUStateDB* khudb = GetKHUStateDB();
+            if (!khudb) {
+                return state.DoS(100, false, REJECT_INVALID, "khu-db-not-initialized",
+                                false, "KHU state database not initialized");
+            }
+
+            KhuGlobalState khuState;
+            if (!khudb->ReadKHUState(chainHeight, khuState)) {
+                return state.DoS(100, false, REJECT_INVALID, "khu-state-not-found",
+                                false, strprintf("KHU state not found at height %d", chainHeight));
+            }
+
+            // Validate DOMC commit transaction
+            if (tx.nType == CTransaction::TxType::KHU_DOMC_COMMIT) {
+                if (!ValidateDomcCommitTx(tx, state, khuState, nextBlockHeight, consensus)) {
+                    return error("%s: DOMC commit validation failed for %s: %s",
+                                __func__, tx.GetHash().ToString(), FormatStateMessage(state));
+                }
+            }
+            // Validate DOMC reveal transaction
+            else if (tx.nType == CTransaction::TxType::KHU_DOMC_REVEAL) {
+                if (!ValidateDomcRevealTx(tx, state, khuState, nextBlockHeight, consensus)) {
+                    return error("%s: DOMC reveal validation failed for %s: %s",
+                                __func__, tx.GetHash().ToString(), FormatStateMessage(state));
+                }
+            }
         }
 
         // Bring the best block into scope
@@ -1435,7 +1468,7 @@ DisconnectResult DisconnectBlock(CBlock& block, const CBlockIndex* pindex, CCoin
             khuGlobalState.nHeight = pindex->nHeight;
         }
 
-        if (!DisconnectKHUBlock(block, const_cast<CBlockIndex*>(pindex), validationState, view, khuGlobalState)) {
+        if (!DisconnectKHUBlock(block, const_cast<CBlockIndex*>(pindex), validationState, view, khuGlobalState, consensus)) {
             error("%s: DisconnectKHUBlock failed for %s: %s", __func__,
                   pindex->GetBlockHash().ToString(), validationState.GetRejectReason());
             return DISCONNECT_FAILED;

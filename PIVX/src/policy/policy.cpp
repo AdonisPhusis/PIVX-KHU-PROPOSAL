@@ -109,6 +109,19 @@ bool IsStandardTx(const CTransactionRef& tx, int nBlockHeight, std::string& reas
     }
     // After v5, all txes with a version number accepted by consensus are considered standard.
 
+    // Phase 6.2: DOMC transactions are standard (KHU_DOMC_COMMIT and KHU_DOMC_REVEAL)
+    // These transactions use OP_RETURN with serialized DOMC data
+    if (tx->nType == CTransaction::TxType::KHU_DOMC_COMMIT ||
+        tx->nType == CTransaction::TxType::KHU_DOMC_REVEAL) {
+        // DOMC transactions are always considered standard if V6.0 is active
+        if (!Params().GetConsensus().NetworkUpgradeActive(nBlockHeight, Consensus::UPGRADE_V6_0)) {
+            reason = "domc-not-active";
+            return false;
+        }
+        // DOMC TX validation is handled separately in AcceptToMemoryPool
+        return true;
+    }
+
     // Treat non-final transactions as non-standard to prevent a specific type
     // of double-spend attack, as well as DoS attacks. (if the transaction
     // can't be mined, the attacker isn't expending resources broadcasting it)
