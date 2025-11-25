@@ -1,6 +1,6 @@
 # Blueprint Phase 8 — RPC/Wallet KHU
 
-**Version:** 2.0 (Fusionné)
+**Version:** 3.0 (Découpage incrémental)
 **Date:** 2025-11-25
 **Status:** EN COURS
 **Branche:** khu-phase8-rpc
@@ -14,6 +14,69 @@ Implémenter les commandes RPC et l'infrastructure wallet permettant aux utilisa
 **Prérequis:** Phases 1-7 complètes ✅
 
 **Principe:** Wallet KHU = Extension de CWallet existant, pas nouveau wallet.
+
+---
+
+## 1.1 DÉCOUPAGE INCRÉMENTAL (RECOMMANDÉ)
+
+> ⚠️ **Avis dev C++:** Le scope original est ambitieux. Découpage en sous-phases pour releases testnet incrémentales.
+
+| Sous-Phase | Contenu | Risque | Livrable |
+|------------|---------|--------|----------|
+| **8a** | RPC Transparent | Faible | Testnet Alpha |
+| **8b** | RPC Shielded (ZKHU) | Élevé | Testnet Beta |
+| **8c** | Transferts + Polish | Moyen | Testnet RC |
+
+### Phase 8a — RPC Transparent (Priorité)
+```
+├── Infrastructure wallet (mapKHUCoins)
+├── khubalance (lecture seule)
+├── khulistunspent (lecture seule)
+├── khumint (PIV → KHU_T)
+└── khuredeem (KHU_T → PIV)
+```
+**Complexité:** Basse — Réutilise code UTXO existant PIVX
+
+### Phase 8b — RPC Shielded (Complexe)
+```
+├── Infrastructure ZKHU (mapZKHUNotes, witness tracking)
+├── khulistnotes (lecture notes ZKHU)
+├── khustake (KHU_T → ZKHU)
+└── khuunstake (ZKHU → KHU_T + bonus)
+```
+**Complexité:** Haute — Witness Sapling, nullifier tracking, maturity
+
+### Phase 8c — Transferts + Finalisation
+```
+├── khusend (transfert KHU_T, version simplifiée)
+├── khugetinfo (agrégation état)
+└── Tests d'intégration complets
+```
+**Complexité:** Moyenne — Coin selection, change management
+
+---
+
+## 1.2 RISQUES TECHNIQUES IDENTIFIÉS
+
+| Risque | Impact | Mitigation |
+|--------|--------|------------|
+| **Witness ZKHU sync** | Consensus break si désync | Tests reorg intensifs Phase 8b |
+| **Reorg + wallet** | Notes fantômes après invalidation | Rescan sur reorg > 1 bloc |
+| **khusend change** | Complexité coin selection | V1 sans change (exact amount) |
+| **Performance scan** | Lenteur au démarrage | Index LevelDB optimisé |
+
+---
+
+## 1.3 DÉCISION: khusend SIMPLIFIÉ (V1)
+
+```cpp
+// V1: Exact amount only, pas de change automatique
+// L'utilisateur doit avoir un UTXO du montant exact ou combiner manuellement
+
+// V2 (futur): Coin selection + change automatique
+```
+
+Raison: Éviter bugs coin selection pour testnet initial.
 
 ---
 
@@ -567,25 +630,60 @@ void WalletModel::updateKHUBalance(CWallet* wallet, CAmount newBalance) {
 
 ---
 
-## 7. ORDRE D'IMPLÉMENTATION
+## 7. ORDRE D'IMPLÉMENTATION (RÉVISÉ)
 
+### Phase 8a — RPC Transparent (Testnet Alpha)
 ```
-Phase 8.1 — Lecture (Simple, pas de TX)
-├── 1. khubalance
-├── 2. khulistunspent
-└── 3. khulistnotes
+Semaine 1:
+├── 1. Infrastructure mapKHUCoins dans CWallet
+├── 2. Persistence wallet.dat (khucoin)
+├── 3. khubalance (transparent only)
+└── 4. khulistunspent
 
-Phase 8.2 — Transactions Transparentes
-├── 4. khumint
-├── 5. khuredeem
-└── 6. khusend
+Semaine 2:
+├── 5. khumint (PIV → KHU_T)
+├── 6. khuredeem (KHU_T → PIV)
+└── 7. Tests unitaires Phase 8a
 
-Phase 8.3 — Transactions ZKHU (Sapling)
-├── 7. khustake
-└── 8. khuunstake
+✅ LIVRABLE: Testnet Alpha (mint/redeem fonctionnel)
+```
 
-Phase 8.4 — Agrégation
-└── 9. khugetinfo
+### Phase 8b — RPC Shielded (Testnet Beta)
+```
+Semaine 3-4:
+├── 8. Infrastructure mapZKHUNotes + witness tracking
+├── 9. Persistence wallet.dat (zkhunote)
+├── 10. khulistnotes
+├── 11. khustake (KHU_T → ZKHU)
+├── 12. khuunstake (ZKHU → KHU_T + bonus)
+├── 13. khubalance (update: inclure staked + yield)
+└── 14. Tests reorg ZKHU
+
+✅ LIVRABLE: Testnet Beta (staking fonctionnel)
+```
+
+### Phase 8c — Transferts (Testnet RC)
+```
+Semaine 5:
+├── 15. khusend (V1: exact amount, pas de change)
+├── 16. khugetinfo
+├── 17. Tests intégration complets
+└── 18. Documentation utilisateur
+
+✅ LIVRABLE: Testnet Release Candidate
+```
+
+### Dépendances
+```
+khubalance ──────────────────────────────────────────────→
+     │
+     ├── khulistunspent ──→ khumint ──→ khuredeem
+     │                           │
+     │                           └──→ khusend (8c)
+     │
+     └── khulistnotes ──→ khustake ──→ khuunstake
+                              │
+                              └──→ khubalance (update staked)
 ```
 
 ---
@@ -698,22 +796,48 @@ static const CRPCCommand commands[] = {
 
 ---
 
-## 11. CHECKLIST TESTNET
+## 11. CHECKLIST PAR SOUS-PHASE
 
-- [ ] Infrastructure wallet (mapKHUCoins, mapZKHUNotes)
-- [ ] Persistence wallet.dat
-- [ ] `khubalance` fonctionnel
-- [ ] `khulistunspent` fonctionnel
-- [ ] `khulistnotes` fonctionnel
-- [ ] `khumint` fonctionnel + tests
-- [ ] `khuredeem` fonctionnel + tests
-- [ ] `khustake` fonctionnel + tests
-- [ ] `khuunstake` fonctionnel + tests
-- [ ] Invariants préservés après chaque RPC
-- [ ] 0 régression tests existants
+### Phase 8a — Testnet Alpha
+- [ ] `mapKHUCoins` dans CWallet
+- [ ] Persistence `khucoin` dans wallet.dat
+- [ ] `khubalance` (transparent only)
+- [ ] `khulistunspent`
+- [ ] `khumint` + tests
+- [ ] `khuredeem` + tests
+- [ ] Invariants C==U préservés
+- [ ] 0 régression tests Phases 1-7
+
+### Phase 8b — Testnet Beta
+- [ ] `mapZKHUNotes` dans CWallet
+- [ ] Witness tracking ZKHU
+- [ ] Persistence `zkhunote` dans wallet.dat
+- [ ] `khulistnotes`
+- [ ] `khustake` + tests
+- [ ] `khuunstake` + tests
+- [ ] `khubalance` (staked + yield)
+- [ ] Tests reorg (invalidation notes)
+- [ ] Invariants Cr==Ur préservés
+
+### Phase 8c — Testnet RC
+- [ ] `khusend` (V1: exact amount)
+- [ ] `khugetinfo`
+- [ ] Tests intégration full cycle
+- [ ] Documentation CLI
+- [ ] Stress test 1000 TX
+
+---
+
+## 12. CRITÈRES DE RELEASE
+
+| Sous-Phase | Critère GO/NO-GO |
+|------------|------------------|
+| **8a → Alpha** | mint/redeem 100% fonctionnel, tests pass |
+| **8b → Beta** | stake/unstake fonctionnel, reorg test pass |
+| **8c → RC** | Full cycle pass, stress test pass |
 
 ---
 
 **Signature:** Claude (Senior C++)
 **Date:** 2025-11-25
-**Version:** 2.0 (Fusionné depuis 08-WALLET-RPC.md)
+**Version:** 3.0 (Découpage incrémental recommandé)
