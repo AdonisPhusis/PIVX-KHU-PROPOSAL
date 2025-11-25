@@ -15,6 +15,12 @@
 #include "logging.h"
 #include "primitives/transaction.h"
 #include "sapling/incrementalmerkletree.h"
+#include "sync.h"
+
+#include <limits>
+
+// External lock (defined in khu_validation.cpp)
+extern RecursiveMutex cs_khu;
 
 bool CheckKHUUnstake(
     const CTransaction& tx,
@@ -116,7 +122,8 @@ bool ApplyKHUUnstake(
     KhuGlobalState& state,
     int nHeight)
 {
-    // TODO Phase 6: AssertLockHeld(cs_khu);
+    // ⚠️ CRITICAL: cs_khu MUST be held
+    AssertLockHeld(cs_khu);
 
     // 1. Validate transaction has Sapling spend data
     if (!tx.sapData) {
@@ -165,18 +172,20 @@ bool ApplyKHUUnstake(
     // RATIONALE: L'UNSTAKE retire un droit (Ur) et le matérialise en supply (U).
     //            Le collateral doit suivre (C+ pour backing, Cr- pour release).
 
-    // 1. Supply increases (U+)
-    // TODO: Add SafeAdd when available
-    // if (!SafeAdd(state.U, bonus, state.U)) {
-    //     return error("%s: overflow U (U=%d, bonus=%d)", __func__, state.U, bonus);
-    // }
+    // ✅ FIX CVE-KHU-2025-003: Verify overflow BEFORE mutation
+    // CRITICAL: Signed integer overflow in C++ is undefined behavior (UB).
+    // Without this check, overflow could break the C==U invariant.
+    if (state.U > (std::numeric_limits<CAmount>::max() - bonus)) {
+        return error("%s: overflow would occur on U (U=%d, bonus=%d)", __func__, state.U, bonus);
+    }
+    if (state.C > (std::numeric_limits<CAmount>::max() - bonus)) {
+        return error("%s: overflow would occur on C (C=%d, bonus=%d)", __func__, state.C, bonus);
+    }
+
+    // 1. Supply increases (U+) - Safe: overflow checked above
     state.U += bonus;
 
-    // 2. Collateral increases (C+) — ADJACENT à U+
-    // TODO: Add SafeAdd when available
-    // if (!SafeAdd(state.C, bonus, state.C)) {
-    //     return error("%s: overflow C (C=%d, bonus=%d)", __func__, state.C, bonus);
-    // }
+    // 2. Collateral increases (C+) — ADJACENT à U+ - Safe: overflow checked above
     state.C += bonus;
 
     // 3. Reward pool decreases (Cr-)
@@ -246,7 +255,8 @@ bool UndoKHUUnstake(
     KhuGlobalState& state,
     int nHeight)
 {
-    // TODO Phase 6: AssertLockHeld(cs_khu);
+    // ⚠️ CRITICAL: cs_khu MUST be held
+    AssertLockHeld(cs_khu);
 
     // 1. Validate transaction structure
     if (!tx.sapData || tx.sapData->vShieldedSpend.empty()) {
@@ -277,7 +287,7 @@ bool UndoKHUUnstake(
 
     // 6. Extract bonus from note (same as ApplyKHUUnstake)
     CAmount bonus = noteData.Ur_accumulated;  // Phase 5: may be >0
-    CAmount noteAmount = noteData.amount;
+    // Note: noteData.amount is not used in undo, only bonus matters for state reversal
 
     // ✅ REVERSE DOUBLE FLUX — SYMÉTRIE CRITIQUE:
     //
@@ -295,18 +305,18 @@ bool UndoKHUUnstake(
     }
     state.C -= bonus;
 
-    // 3. Reward pool increases (Cr+) — reverse of Cr-
-    // TODO: Add SafeAdd when available
-    // if (!SafeAdd(state.Cr, bonus, state.Cr)) {
-    //     return error("%s: overflow Cr (Cr=%d, bonus=%d)", __func__, state.Cr, bonus);
-    // }
+    // ✅ FIX CVE-KHU-2025-003: Verify overflow BEFORE mutation
+    if (state.Cr > (std::numeric_limits<CAmount>::max() - bonus)) {
+        return error("%s: overflow would occur on Cr (Cr=%d, bonus=%d)", __func__, state.Cr, bonus);
+    }
+    if (state.Ur > (std::numeric_limits<CAmount>::max() - bonus)) {
+        return error("%s: overflow would occur on Ur (Ur=%d, bonus=%d)", __func__, state.Ur, bonus);
+    }
+
+    // 3. Reward pool increases (Cr+) — reverse of Cr- - Safe: overflow checked above
     state.Cr += bonus;
 
-    // 4. Unstake rights increase (Ur+) — reverse of Ur-
-    // TODO: Add SafeAdd when available
-    // if (!SafeAdd(state.Ur, bonus, state.Ur)) {
-    //     return error("%s: overflow Ur (Ur=%d, bonus=%d)", __func__, state.Ur, bonus);
-    // }
+    // 4. Unstake rights increase (Ur+) — reverse of Ur- - Safe: overflow checked above
     state.Ur += bonus;
 
     // 7. Note is already in DB (we didn't erase it in Apply)
