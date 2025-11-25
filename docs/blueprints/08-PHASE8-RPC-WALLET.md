@@ -1,6 +1,6 @@
 # Blueprint Phase 8 — RPC/Wallet KHU
 
-**Version:** 1.0
+**Version:** 2.0 (Fusionné)
 **Date:** 2025-11-25
 **Status:** EN COURS
 **Branche:** khu-phase8-rpc
@@ -9,267 +9,249 @@
 
 ## 1. OBJECTIF
 
-Implémenter les commandes RPC permettant aux utilisateurs d'interagir avec le système KHU via CLI/RPC.
+Implémenter les commandes RPC et l'infrastructure wallet permettant aux utilisateurs d'interagir avec le système KHU via CLI/RPC.
 
 **Prérequis:** Phases 1-7 complètes ✅
 
+**Principe:** Wallet KHU = Extension de CWallet existant, pas nouveau wallet.
+
 ---
 
-## 2. LISTE DES RPC À IMPLÉMENTER
+## 2. ARCHITECTURE WALLET KHU
 
-### 2.1 RPC Existants (Phases 1-6)
+### 2.1 Extension CWallet PIVX
 
-| Commande | Status | Fichier |
-|----------|--------|---------|
-| `getkhustate` | ✅ | rpc/khu.cpp:53 |
-| `getkhustatecommitment` | ✅ | rpc/khu.cpp:140 |
-| `domccommit` | ✅ | rpc/khu.cpp:223 |
-| `domcreveal` | ✅ | rpc/khu.cpp:363 |
+```cpp
+/**
+ * Extension CWallet pour KHU
+ * src/wallet/wallet.h
+ */
+class CWallet {
+    // ═══════════════════════════════════════════
+    // EXISTANT (PIVX standard)
+    // ═══════════════════════════════════════════
+    std::map<uint256, CWalletTx> mapWallet;
+    std::set<COutPoint> setLockedCoins;
 
-### 2.2 RPC Phase 8 — Priorité P0 (BLOQUANT TESTNET)
+    // ═══════════════════════════════════════════
+    // NOUVEAU (KHU-specific)
+    // ═══════════════════════════════════════════
+
+    //! Map des UTXOs KHU_T possédés
+    std::map<COutPoint, CKHUUTXO> mapKHUCoins;
+
+    //! Balance KHU_T totale
+    CAmount nKHUBalance;
+
+    //! Balance KHU_T stakée (ZKHU)
+    CAmount nKHUStaked;
+
+    //! Notes ZKHU possédées
+    std::map<uint256, ZKHUNoteData> mapZKHUNotes;
+
+public:
+    // Lecture balances
+    CAmount GetKHUBalance() const;
+    CAmount GetZKHUBalance() const;
+    CAmount GetKHUPendingYield() const;
+
+    // Gestion UTXOs KHU_T
+    std::vector<COutput> AvailableKHUCoins(bool fOnlySafe = true) const;
+    bool AddKHUCoin(const COutPoint& outpoint, const CKHUUTXO& khuCoin);
+    bool SpendKHUCoin(const COutPoint& outpoint);
+    bool SelectKHUCoins(CAmount amount, std::vector<COutput>& vCoins) const;
+
+    // Gestion notes ZKHU
+    bool GetKHUNotes(std::vector<ZKHUNoteEntry>& notes, bool includeImmature = false) const;
+    bool AddKHUNote(const uint256& noteId, const ZKHUNoteData& note);
+    bool SpendKHUNote(const uint256& noteId);
+
+    // Création transactions
+    bool CreateKHUTransaction(
+        const std::vector<CRecipient>& vecSend,
+        CWalletTx& wtxNew,
+        CReserveKey& reservekey,
+        CAmount& nFeeRet,
+        int& nChangePosRet,
+        std::string& strFailReason,
+        const CCoinControl* coinControl = nullptr
+    );
+
+private:
+    void UpdateKHUBalance();
+};
+```
+
+### 2.2 Structure ZKHUNoteEntry (Wallet)
+
+```cpp
+/**
+ * Note ZKHU stockée dans wallet
+ */
+struct ZKHUNoteEntry {
+    uint256 noteId;           // Commitment (cm)
+    CAmount amount;           // Principal staké
+    uint32_t stakeHeight;     // Bloc de stake
+    uint256 nullifier;        // Pour spend
+    libzcash::SaplingPaymentAddress address;
+
+    // Méthodes computed
+    bool IsMature(uint32_t currentHeight) const {
+        return (currentHeight - stakeHeight) >= MATURITY_BLOCKS;  // 4320
+    }
+
+    uint32_t BlocksToMaturity(uint32_t currentHeight) const {
+        if (IsMature(currentHeight)) return 0;
+        return MATURITY_BLOCKS - (currentHeight - stakeHeight);
+    }
+
+    CAmount GetPendingYield(uint32_t currentHeight, uint16_t R_annual) const {
+        if (!IsMature(currentHeight)) return 0;
+        uint32_t daysStaked = (currentHeight - stakeHeight) / BLOCKS_PER_DAY;
+        return (amount * R_annual / 10000) * daysStaked / 365;
+    }
+};
+```
+
+### 2.3 Tracking UTXOs KHU_T
+
+```cpp
+/**
+ * Ajouter UTXO KHU_T au wallet
+ */
+bool CWallet::AddKHUCoin(const COutPoint& outpoint, const CKHUUTXO& khuCoin) {
+    LOCK(cs_wallet);
+
+    if (!IsMine(khuCoin.scriptPubKey))
+        return false;
+
+    mapKHUCoins[outpoint] = khuCoin;
+    UpdateKHUBalance();
+    NotifyKHUBalanceChanged(nKHUBalance);
+
+    return true;
+}
+
+/**
+ * Marquer UTXO KHU_T comme dépensé
+ */
+bool CWallet::SpendKHUCoin(const COutPoint& outpoint) {
+    LOCK(cs_wallet);
+
+    auto it = mapKHUCoins.find(outpoint);
+    if (it == mapKHUCoins.end())
+        return false;
+
+    mapKHUCoins.erase(it);
+    UpdateKHUBalance();
+
+    return true;
+}
+
+/**
+ * Calculer balance totale KHU_T
+ */
+void CWallet::UpdateKHUBalance() {
+    LOCK(cs_wallet);
+
+    nKHUBalance = 0;
+    nKHUStaked = 0;
+
+    for (const auto& [outpoint, khuCoin] : mapKHUCoins) {
+        if (khuCoin.fStaked) {
+            nKHUStaked += khuCoin.amount;
+        } else {
+            nKHUBalance += khuCoin.amount;
+        }
+    }
+}
+```
+
+### 2.4 Scan Blockchain pour KHU
+
+```cpp
+/**
+ * Scanner blockchain pour récupérer UTXOs KHU_T
+ */
+bool CWallet::ScanForKHUCoins(const CBlockIndex* pindexStart) {
+    LOCK2(cs_main, cs_wallet);
+
+    const CBlockIndex* pindex = pindexStart;
+
+    while (pindex) {
+        CBlock block;
+        if (!ReadBlockFromDisk(block, pindex))
+            return error("ScanForKHUCoins: failed to read block");
+
+        for (const auto& tx : block.vtx) {
+            if (IsKHUTransaction(tx)) {
+                ScanKHUTransaction(tx, pindex->nHeight);
+            }
+        }
+
+        pindex = chainActive.Next(pindex);
+    }
+
+    return true;
+}
+```
+
+---
+
+## 3. LISTE DES RPC
+
+### 3.1 RPC Existants (Phases 1-6) ✅
+
+| Commande | Description | Fichier |
+|----------|-------------|---------|
+| `getkhustate` | État global KHU | rpc/khu.cpp:53 |
+| `getkhustatecommitment` | Commitment finality | rpc/khu.cpp:140 |
+| `domccommit` | Vote DOMC (commit) | rpc/khu.cpp:223 |
+| `domcreveal` | Vote DOMC (reveal) | rpc/khu.cpp:363 |
+
+### 3.2 RPC Phase 8 — P0 (BLOQUANT TESTNET)
 
 | Commande | Description | Complexité |
 |----------|-------------|------------|
+| `khubalance` | Solde KHU (T + Z + yield) | Basse |
+| `khulistunspent` | Liste UTXOs KHU_T | Basse |
 | `khumint` | PIV → KHU_T | Moyenne |
 | `khuredeem` | KHU_T → PIV | Moyenne |
+| `khulistnotes` | Liste notes ZKHU | Moyenne |
 | `khustake` | KHU_T → ZKHU | Haute |
 | `khuunstake` | ZKHU → KHU_T + bonus | Haute |
 
-### 2.3 RPC Phase 8 — Priorité P1
-
-| Commande | Description | Complexité |
-|----------|-------------|------------|
-| `khubalance` | Solde KHU (T + Z) | Basse |
-| `khulistnotes` | Liste notes ZKHU | Moyenne |
-| `khulistunspent` | Liste UTXOs KHU_T | Basse |
-
-### 2.4 RPC Phase 8 — Priorité P2
+### 3.3 RPC Phase 8 — P1 (Post-Testnet)
 
 | Commande | Description | Complexité |
 |----------|-------------|------------|
 | `khusend` | Transfer KHU_T | Moyenne |
-| `khugetinfo` | Info R%, cycle DOMC | Basse |
+| `khugetinfo` | Info R%, DOMC, wallet | Basse |
 
 ---
 
-## 3. SPÉCIFICATIONS DÉTAILLÉES
+## 4. SPÉCIFICATIONS RPC DÉTAILLÉES
 
-### 3.1 `khumint <amount>`
-
-**Fonction:** Convertit PIV en KHU_T (1:1)
-
-```
-Usage: khumint <amount>
-
-Arguments:
-  amount    (numeric, required) Montant en PIV à convertir
-
-Result:
-{
-  "txid": "hash",           // Transaction ID
-  "amount": n,              // Montant minté (satoshis)
-  "address": "addr",        // Adresse KHU_T destination
-  "fee": n                  // Fee payé
-}
-
-Exemple:
-> pivx-cli khumint 100
-```
-
-**Implémentation:**
-1. Vérifier solde PIV suffisant
-2. Créer TX type KHU_MINT
-3. Input: UTXO PIV standard
-4. Output: KHU_T UTXO (marqué comme colored coin)
-5. Broadcast et retourner txid
-
-**Validation:**
-- amount > 0
-- amount <= solde PIV disponible
-- V6 activé
-
----
-
-### 3.2 `khuredeem <amount>`
-
-**Fonction:** Convertit KHU_T en PIV (1:1)
-
-```
-Usage: khuredeem <amount>
-
-Arguments:
-  amount    (numeric, required) Montant KHU_T à convertir
-
-Result:
-{
-  "txid": "hash",
-  "amount": n,
-  "address": "addr",        // Adresse PIV destination
-  "fee": n
-}
-
-Exemple:
-> pivx-cli khuredeem 50
-```
-
-**Implémentation:**
-1. Vérifier solde KHU_T suffisant
-2. Sélectionner UTXOs KHU_T (coin selection)
-3. Créer TX type KHU_REDEEM
-4. Input: KHU_T UTXOs
-5. Output: PIV standard + change KHU_T si nécessaire
-6. Broadcast
-
-**Validation:**
-- amount > 0
-- amount <= solde KHU_T disponible
-- UTXOs KHU_T non stakés (fStaked == false)
-
----
-
-### 3.3 `khustake <amount>`
-
-**Fonction:** Convertit KHU_T en ZKHU (privacy + yield)
-
-```
-Usage: khustake <amount>
-
-Arguments:
-  amount    (numeric, required) Montant KHU_T à staker
-
-Result:
-{
-  "txid": "hash",
-  "note_id": "hash",        // Commitment de la note ZKHU
-  "amount": n,
-  "stake_height": n,        // Hauteur de début stake
-  "maturity_height": n      // Hauteur de maturité (stake_height + 4320)
-}
-
-Exemple:
-> pivx-cli khustake 1000
-```
-
-**Implémentation:**
-1. Vérifier solde KHU_T suffisant
-2. Générer clés Sapling (ivk, ovk, d)
-3. Créer note ZKHU avec amount
-4. Créer TX type KHU_STAKE
-5. Input: KHU_T UTXO
-6. Output: Sapling shielded output (1 note)
-7. Stocker note dans wallet
-8. Broadcast
-
-**Validation:**
-- amount > 0
-- amount <= solde KHU_T
-- Sapling params chargés
-
----
-
-### 3.4 `khuunstake <note_id>`
-
-**Fonction:** Convertit ZKHU en KHU_T + bonus yield
-
-```
-Usage: khuunstake <note_id>
-
-Arguments:
-  note_id   (string, required) ID de la note ZKHU (commitment hash)
-
-Result:
-{
-  "txid": "hash",
-  "principal": n,           // Montant principal
-  "bonus": n,               // Yield accumulé
-  "total": n,               // principal + bonus
-  "address": "addr",        // Adresse KHU_T destination
-  "stake_duration": n       // Durée en blocs
-}
-
-Exemple:
-> pivx-cli khuunstake "abc123..."
-```
-
-**Implémentation:**
-1. Lire note depuis wallet
-2. Vérifier maturité (>= 4320 blocs)
-3. Calculer bonus = Ur_accumulated de la note
-4. Créer TX type KHU_UNSTAKE
-5. Input: Sapling spend (nullifier)
-6. Output: KHU_T UTXO (principal + bonus)
-7. Broadcast
-
-**Validation:**
-- note_id existe dans wallet
-- note mature (current_height - stake_height >= 4320)
-- nullifier non dépensé
-
----
-
-### 3.5 `khubalance`
-
-**Fonction:** Affiche solde KHU total
+### 4.1 `khubalance`
 
 ```
 Usage: khubalance
 
 Result:
 {
-  "transparent": n,         // KHU_T en UTXOs
-  "staked": n,              // ZKHU en notes (principal)
+  "transparent": n,         // KHU_T en UTXOs (satoshis)
+  "staked": n,              // ZKHU principal (satoshis)
   "pending_yield": n,       // Yield accumulé non réclamé
-  "total": n,               // transparent + staked
-  "immature_count": n       // Nombre de notes < 4320 blocs
+  "total": n,               // transparent + staked + pending_yield
+  "immature_count": n,      // Notes < 4320 blocs
+  "mature_count": n         // Notes >= 4320 blocs
 }
 
 Exemple:
 > pivx-cli khubalance
 ```
 
-**Implémentation:**
-1. Scanner UTXOs KHU_T du wallet
-2. Scanner notes ZKHU du wallet
-3. Calculer yield pending pour chaque note mature
-4. Agréger et retourner
-
----
-
-### 3.6 `khulistnotes`
-
-**Fonction:** Liste les notes ZKHU du wallet
-
-```
-Usage: khulistnotes [include_immature=false]
-
-Arguments:
-  include_immature  (boolean, optional) Inclure notes immatures
-
-Result:
-[
-  {
-    "note_id": "hash",
-    "amount": n,
-    "stake_height": n,
-    "current_height": n,
-    "blocks_staked": n,
-    "mature": true|false,
-    "blocks_to_maturity": n,    // 0 si mature
-    "pending_yield": n,
-    "nullifier": "hash"
-  },
-  ...
-]
-
-Exemple:
-> pivx-cli khulistnotes true
-```
-
----
-
-### 3.7 `khulistunspent`
-
-**Fonction:** Liste les UTXOs KHU_T
+### 4.2 `khulistunspent`
 
 ```
 Usage: khulistunspent [minconf=1] [maxconf=9999999]
@@ -287,23 +269,157 @@ Result:
   },
   ...
 ]
-
-Exemple:
-> pivx-cli khulistunspent
 ```
 
----
+### 4.3 `khumint <amount>`
 
-### 3.8 `khusend <address> <amount>`
+```
+Usage: khumint <amount>
 
-**Fonction:** Envoie KHU_T à une adresse
+Arguments:
+  amount    (numeric, required) Montant PIV à convertir
+
+Result:
+{
+  "txid": "hash",
+  "amount_khu": n,
+  "address": "addr",
+  "fee": n
+}
+
+Validation:
+- amount > 0
+- amount <= solde PIV disponible
+- V6 activé
+```
+
+**Implémentation:**
+```cpp
+UniValue khumint(const JSONRPCRequest& request) {
+    LOCK2(cs_main, pwallet->cs_wallet);
+
+    CAmount nAmount = AmountFromValue(request.params[0]);
+    if (nAmount <= 0)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid amount");
+
+    if (nAmount > pwallet->GetBalance())
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, "Insufficient PIV");
+
+    // Créer TX type KHU_MINT
+    CMutableTransaction tx;
+    tx.nType = TxType::KHU_MINT;
+
+    // Input: PIV à brûler
+    if (!pwallet->SelectCoins(nAmount, tx.vin))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Failed to select coins");
+
+    // Output 0: Proof-of-burn
+    CScript burnScript;
+    burnScript << OP_RETURN << ToByteVector(uint256::ZERO);
+    tx.vout.push_back(CTxOut(nAmount, burnScript));
+
+    // Output 1: KHU_T créé
+    CKeyID keyID;
+    pwallet->GetKeyFromPool(keyID);
+    tx.vout.push_back(CTxOut(nAmount, GetScriptForDestination(keyID)));
+
+    // Sign & broadcast...
+}
+```
+
+### 4.4 `khuredeem <amount>`
+
+```
+Usage: khuredeem <amount>
+
+Arguments:
+  amount    (numeric, required) Montant KHU_T à convertir
+
+Result:
+{
+  "txid": "hash",
+  "amount_piv": n,
+  "address": "addr",
+  "fee": n
+}
+
+Validation:
+- amount > 0
+- amount <= solde KHU_T
+- UTXOs non stakés (fStaked == false)
+```
+
+### 4.5 `khulistnotes`
+
+```
+Usage: khulistnotes [include_immature=false]
+
+Result:
+[
+  {
+    "note_id": "hash",
+    "amount": n,
+    "stake_height": n,
+    "blocks_staked": n,
+    "mature": true|false,
+    "blocks_to_maturity": n,
+    "pending_yield": n,
+    "nullifier": "hash"
+  },
+  ...
+]
+```
+
+### 4.6 `khustake <amount>`
+
+```
+Usage: khustake <amount>
+
+Arguments:
+  amount    (numeric, required) Montant KHU_T à staker
+
+Result:
+{
+  "txid": "hash",
+  "note_id": "hash",
+  "amount": n,
+  "stake_height": n,
+  "maturity_height": n      // stake_height + 4320
+}
+
+Validation:
+- amount > 0
+- amount <= solde KHU_T
+- Sapling params chargés
+```
+
+### 4.7 `khuunstake <note_id>`
+
+```
+Usage: khuunstake <note_id>
+
+Arguments:
+  note_id   (string, required) ID note ZKHU (commitment)
+
+Result:
+{
+  "txid": "hash",
+  "principal": n,
+  "bonus": n,               // Yield R%
+  "total": n,
+  "stake_duration": n       // Blocs
+}
+
+Validation:
+- note_id existe dans wallet
+- Note mature (>= 4320 blocs)
+- Nullifier non dépensé
+```
+
+### 4.8 `khusend <address> <amount>`
 
 ```
 Usage: khusend <address> <amount>
-
-Arguments:
-  address   (string, required) Adresse KHU destination
-  amount    (numeric, required) Montant à envoyer
 
 Result:
 {
@@ -313,11 +429,7 @@ Result:
 }
 ```
 
----
-
-### 3.9 `khugetinfo`
-
-**Fonction:** Informations détaillées KHU
+### 4.9 `khugetinfo`
 
 ```
 Usage: khugetinfo
@@ -325,18 +437,19 @@ Usage: khugetinfo
 Result:
 {
   "state": {
-    "C": n, "U": n, "Cr": n, "Ur": n, "T": n
+    "C": n, "U": n, "Cr": n, "Ur": n, "T": n,
+    "invariants_ok": true
   },
   "yield": {
-    "R_annual": n,
-    "R_annual_pct": x.xx,
+    "R_annual": n,              // Basis points
+    "R_annual_pct": x.xx,       // Pourcentage
     "R_MAX_dynamic": n,
-    "daily_rate_pct": x.xxxx
+    "daily_rate_bps": x.xx      // R_annual / 365
   },
   "domc": {
     "cycle_id": n,
     "cycle_start": n,
-    "phase": "idle|commit|reveal|finalize",
+    "phase": "idle|commit|reveal",
     "blocks_to_next_phase": n
   },
   "wallet": {
@@ -349,105 +462,161 @@ Result:
 
 ---
 
-## 4. PLAN D'IMPLÉMENTATION
+## 5. PERSISTENCE WALLET
 
-### Phase 8.1 — Core RPC (P0)
+### 5.1 Sauvegarde wallet.dat
 
-| Étape | Tâche | Fichiers | Durée Est. |
-|-------|-------|----------|------------|
-| 8.1.1 | `khumint` | rpc/khu.cpp, wallet/wallet.cpp | - |
-| 8.1.2 | `khuredeem` | rpc/khu.cpp, wallet/wallet.cpp | - |
-| 8.1.3 | `khubalance` | rpc/khu.cpp | - |
-| 8.1.4 | `khulistunspent` | rpc/khu.cpp | - |
-| 8.1.5 | Tests unitaires P0 | test/rpc_khu_tests.cpp | - |
+```cpp
+/**
+ * Sauvegarder UTXOs KHU dans wallet.dat
+ */
+bool CWalletDB::WriteKHUCoin(const COutPoint& outpoint, const CKHUUTXO& khuCoin) {
+    return Write(std::make_pair(std::string("khucoin"), outpoint), khuCoin);
+}
 
-### Phase 8.2 — ZKHU RPC (P0)
+bool CWalletDB::EraseKHUCoin(const COutPoint& outpoint) {
+    return Erase(std::make_pair(std::string("khucoin"), outpoint));
+}
 
-| Étape | Tâche | Fichiers | Durée Est. |
-|-------|-------|----------|------------|
-| 8.2.1 | `khustake` | rpc/khu.cpp, wallet/wallet.cpp, sapling/* | - |
-| 8.2.2 | `khuunstake` | rpc/khu.cpp, wallet/wallet.cpp | - |
-| 8.2.3 | `khulistnotes` | rpc/khu.cpp | - |
-| 8.2.4 | Tests unitaires ZKHU | test/rpc_khu_tests.cpp | - |
+/**
+ * Sauvegarder notes ZKHU
+ */
+bool CWalletDB::WriteZKHUNote(const uint256& noteId, const ZKHUNoteEntry& note) {
+    return Write(std::make_pair(std::string("zkhunote"), noteId), note);
+}
 
-### Phase 8.3 — Extras (P1/P2)
+bool CWalletDB::EraseZKHUNote(const uint256& noteId) {
+    return Erase(std::make_pair(std::string("zkhunote"), noteId));
+}
+```
 
-| Étape | Tâche | Fichiers |
-|-------|-------|----------|
-| 8.3.1 | `khusend` | rpc/khu.cpp |
-| 8.3.2 | `khugetinfo` | rpc/khu.cpp |
-| 8.3.3 | Tests complets | test/rpc_khu_tests.cpp |
-| 8.3.4 | Documentation | doc/khu-rpc.md |
+### 5.2 Chargement wallet.dat
+
+```cpp
+/**
+ * Charger données KHU depuis wallet.dat
+ */
+bool CWalletDB::LoadKHUData(CWallet* pwallet) {
+    Dbc* pcursor = GetCursor();
+    if (!pcursor) return false;
+
+    while (true) {
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+
+        int ret = ReadAtCursor(pcursor, ssKey, ssValue);
+        if (ret == DB_NOTFOUND) break;
+
+        std::string strType;
+        ssKey >> strType;
+
+        if (strType == "khucoin") {
+            COutPoint outpoint;
+            ssKey >> outpoint;
+            CKHUUTXO khuCoin;
+            ssValue >> khuCoin;
+            pwallet->mapKHUCoins[outpoint] = khuCoin;
+        }
+        else if (strType == "zkhunote") {
+            uint256 noteId;
+            ssKey >> noteId;
+            ZKHUNoteEntry note;
+            ssValue >> note;
+            pwallet->mapZKHUNotes[noteId] = note;
+        }
+    }
+
+    pcursor->close();
+    pwallet->UpdateKHUBalance();
+    return true;
+}
+```
 
 ---
 
-## 5. DÉPENDANCES WALLET
+## 6. NOTIFICATIONS UI
 
-### 5.1 Modifications wallet/wallet.h
-
-```cpp
-// KHU wallet functions
-bool GetKHUBalance(CAmount& transparent, CAmount& staked, CAmount& pendingYield) const;
-bool SelectKHUCoins(CAmount amount, std::vector<COutput>& vCoins) const;
-bool GetKHUNotes(std::vector<ZKHUNoteEntry>& notes, bool includeImmature = false) const;
-bool AddKHUNote(const uint256& noteId, const ZKHUNoteData& note);
-bool SpendKHUNote(const uint256& noteId);
-```
-
-### 5.2 Structure ZKHUNoteEntry (wallet)
+### 6.1 Signaux Wallet
 
 ```cpp
-struct ZKHUNoteEntry {
-    uint256 noteId;           // Commitment
-    CAmount amount;           // Principal
-    uint32_t stakeHeight;     // Bloc de stake
-    uint256 nullifier;        // Pour spend
-    libzcash::SaplingPaymentAddress address;
-
-    // Computed
-    bool IsMature(uint32_t currentHeight) const;
-    CAmount GetPendingYield(uint32_t currentHeight, uint16_t R_annual) const;
+/**
+ * Signaux pour notifier UI des changements KHU
+ */
+class CWallet {
+public:
+    boost::signals2::signal<void(CWallet*, CAmount)> NotifyKHUBalanceChanged;
+    boost::signals2::signal<void(CWallet*, const uint256&)> NotifyKHUTransactionChanged;
+    boost::signals2::signal<void(CWallet*, const uint256&)> NotifyZKHUNoteChanged;
 };
 ```
 
----
-
-## 6. ORDRE D'IMPLÉMENTATION RECOMMANDÉ
-
-```
-1. khubalance       (lecture seule, simple)
-2. khulistunspent   (lecture seule, simple)
-3. khumint          (TX simple, pas de Sapling)
-4. khuredeem        (TX simple, pas de Sapling)
-5. khulistnotes     (lecture ZKHU)
-6. khustake         (TX Sapling, complexe)
-7. khuunstake       (TX Sapling, complexe)
-8. khusend          (optionnel)
-9. khugetinfo       (agrégation)
-```
-
----
-
-## 7. TESTS REQUIS
-
-### 7.1 Tests Unitaires
+### 6.2 Connection Qt
 
 ```cpp
-BOOST_AUTO_TEST_SUITE(rpc_khu_tests)
+void WalletModel::subscribeToCoreSignals() {
+    // KHU signals
+    wallet->NotifyKHUBalanceChanged.connect(
+        boost::bind(&WalletModel::updateKHUBalance, this, _1, _2)
+    );
+}
 
-// P0 Tests
-BOOST_AUTO_TEST_CASE(test_khumint_basic)
-BOOST_AUTO_TEST_CASE(test_khumint_insufficient_funds)
-BOOST_AUTO_TEST_CASE(test_khuredeem_basic)
-BOOST_AUTO_TEST_CASE(test_khuredeem_insufficient_khu)
-BOOST_AUTO_TEST_CASE(test_khubalance)
-BOOST_AUTO_TEST_CASE(test_khulistunspent)
+void WalletModel::updateKHUBalance(CWallet* wallet, CAmount newBalance) {
+    Q_EMIT khuBalanceChanged(newBalance);
+}
+```
 
-// ZKHU Tests
-BOOST_AUTO_TEST_CASE(test_khustake_basic)
-BOOST_AUTO_TEST_CASE(test_khuunstake_mature)
-BOOST_AUTO_TEST_CASE(test_khuunstake_immature_rejected)
-BOOST_AUTO_TEST_CASE(test_khulistnotes)
+---
+
+## 7. ORDRE D'IMPLÉMENTATION
+
+```
+Phase 8.1 — Lecture (Simple, pas de TX)
+├── 1. khubalance
+├── 2. khulistunspent
+└── 3. khulistnotes
+
+Phase 8.2 — Transactions Transparentes
+├── 4. khumint
+├── 5. khuredeem
+└── 6. khusend
+
+Phase 8.3 — Transactions ZKHU (Sapling)
+├── 7. khustake
+└── 8. khuunstake
+
+Phase 8.4 — Agrégation
+└── 9. khugetinfo
+```
+
+---
+
+## 8. TESTS
+
+### 8.1 Tests Unitaires
+
+```cpp
+BOOST_AUTO_TEST_SUITE(khu_wallet_tests)
+
+// Balance tests
+BOOST_AUTO_TEST_CASE(test_khu_balance_empty)
+BOOST_AUTO_TEST_CASE(test_khu_balance_after_mint)
+BOOST_AUTO_TEST_CASE(test_khu_balance_after_stake)
+
+// UTXO tests
+BOOST_AUTO_TEST_CASE(test_add_khu_coin)
+BOOST_AUTO_TEST_CASE(test_spend_khu_coin)
+BOOST_AUTO_TEST_CASE(test_available_khu_coins)
+
+// Note tests
+BOOST_AUTO_TEST_CASE(test_add_zkhu_note)
+BOOST_AUTO_TEST_CASE(test_note_maturity)
+BOOST_AUTO_TEST_CASE(test_pending_yield_calculation)
+
+// RPC tests
+BOOST_AUTO_TEST_CASE(test_rpc_khumint)
+BOOST_AUTO_TEST_CASE(test_rpc_khuredeem)
+BOOST_AUTO_TEST_CASE(test_rpc_khustake)
+BOOST_AUTO_TEST_CASE(test_rpc_khuunstake)
 
 // Integration
 BOOST_AUTO_TEST_CASE(test_full_cycle_mint_stake_unstake_redeem)
@@ -455,31 +624,96 @@ BOOST_AUTO_TEST_CASE(test_full_cycle_mint_stake_unstake_redeem)
 BOOST_AUTO_TEST_SUITE_END()
 ```
 
-### 7.2 Tests Fonctionnels
+### 8.2 Tests Fonctionnels
 
 ```python
 # test/functional/khu_rpc.py
-def test_mint_redeem_roundtrip():
-def test_stake_unstake_with_yield():
-def test_balance_updates():
+class KHURPCTest(PivxTestFramework):
+    def run_test(self):
+        # Test balance
+        balance = self.nodes[0].khubalance()
+        assert_equal(balance['total'], 0)
+
+        # Test MINT
+        self.nodes[0].generate(101)
+        self.nodes[0].khumint(100)
+        self.nodes[0].generate(1)
+        balance = self.nodes[0].khubalance()
+        assert_equal(balance['transparent'], 100 * COIN)
+
+        # Test STAKE
+        self.nodes[0].khustake(50)
+        self.nodes[0].generate(1)
+        balance = self.nodes[0].khubalance()
+        assert_equal(balance['staked'], 50 * COIN)
+
+        # Test UNSTAKE (après maturité)
+        self.nodes[0].generate(4320)  # Maturité
+        notes = self.nodes[0].khulistnotes()
+        self.nodes[0].khuunstake(notes[0]['note_id'])
 ```
 
 ---
 
-## 8. CHECKLIST AVANT TESTNET
+## 9. REGISTRATION RPC
 
+### 9.1 Table des commandes
+
+```cpp
+static const CRPCCommand commands[] = {
+    //  category    name                 actor              argNames
+    // Existants
+    {"khu", "getkhustate",           &getkhustate,           {}},
+    {"khu", "getkhustatecommitment", &getkhustatecommitment, {"height"}},
+    {"khu", "domccommit",            &domccommit,            {"R_proposal", "mn_outpoint"}},
+    {"khu", "domcreveal",            &domcreveal,            {"R_proposal", "salt", "mn_outpoint"}},
+    // Phase 8
+    {"khu", "khubalance",            &khubalance,            {}},
+    {"khu", "khulistunspent",        &khulistunspent,        {"minconf", "maxconf"}},
+    {"khu", "khulistnotes",          &khulistnotes,          {"include_immature"}},
+    {"khu", "khumint",               &khumint,               {"amount"}},
+    {"khu", "khuredeem",             &khuredeem,             {"amount"}},
+    {"khu", "khustake",              &khustake,              {"amount"}},
+    {"khu", "khuunstake",            &khuunstake,            {"note_id"}},
+    {"khu", "khusend",               &khusend,               {"address", "amount"}},
+    {"khu", "khugetinfo",            &khugetinfo,            {}},
+};
+```
+
+---
+
+## 10. INTERDICTIONS
+
+```
+❌ Créer wallet KHU séparé (réutiliser CWallet)
+❌ Modifier format wallet.dat (rétrocompatibilité)
+❌ RPC sans validation montants
+❌ Balance KHU sans scan blockchain
+❌ Dépenser UTXO staké (fStaked=true)
+❌ MINT sans vérifier balance PIV
+❌ REDEEM sans vérifier balance KHU
+❌ UNSTAKE sans vérifier maturité
+❌ Transaction KHU sans fees PIV
+```
+
+---
+
+## 11. CHECKLIST TESTNET
+
+- [ ] Infrastructure wallet (mapKHUCoins, mapZKHUNotes)
+- [ ] Persistence wallet.dat
+- [ ] `khubalance` fonctionnel
+- [ ] `khulistunspent` fonctionnel
+- [ ] `khulistnotes` fonctionnel
 - [ ] `khumint` fonctionnel + tests
 - [ ] `khuredeem` fonctionnel + tests
 - [ ] `khustake` fonctionnel + tests
 - [ ] `khuunstake` fonctionnel + tests
-- [ ] `khubalance` fonctionnel
-- [ ] `khulistnotes` fonctionnel
-- [ ] `khulistunspent` fonctionnel
 - [ ] Invariants préservés après chaque RPC
-- [ ] Documentation RPC complète
 - [ ] 0 régression tests existants
 
 ---
 
 **Signature:** Claude (Senior C++)
 **Date:** 2025-11-25
+**Version:** 2.0 (Fusionné depuis 08-WALLET-RPC.md)
