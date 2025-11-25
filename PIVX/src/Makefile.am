@@ -300,6 +300,7 @@ BITCOIN_CORE_H = \
   script/sigcache.h \
   script/sign.h \
   script/standard.h \
+  script/conditional.h \
   script/script_error.h \
   serialize.h \
   shutdown.h \
@@ -429,6 +430,7 @@ libbitcoin_server_a_SOURCES = \
   rpc/masternode.cpp \
   rpc/budget.cpp \
   rpc/khu.cpp \
+  rpc/conditional.cpp \
   rpc/mining.cpp \
   rpc/misc.cpp \
   rpc/net.cpp \
@@ -617,6 +619,7 @@ libbitcoin_common_a_SOURCES = \
   script/script.cpp \
   script/sign.cpp \
   script/standard.cpp \
+  script/conditional.cpp \
   tiertwo_networksync.cpp \
   tiertwo/netfulfilledman.cpp \
   tiertwo/tiertwo_sync_state.cpp \
