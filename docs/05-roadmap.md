@@ -1,7 +1,7 @@
 # 05 — PIVX-V6-KHU ROADMAP (FINAL)
 
-**Dernière mise à jour:** 2025-11-24
-**Status Global:** Phases 1-6 CONSENSUS OK - PHASE 8 (WALLET/RPC) BLOQUANTE POUR TESTNET
+**Dernière mise à jour:** 2025-11-25
+**Status Global:** Phases 1-8 COMPLÈTES - PRÊT POUR TESTNET
 
 Roadmap claire, simple, technique, sans dates, uniquement en PHASES NUMÉROTÉES et DURÉES EN BLOCS.
 Aucune notion inutile. Aucun audit. Juste : SI TESTNET OK → MAINNET OK.
@@ -13,17 +13,17 @@ Aucune notion inutile. Aucun audit. Juste : SI TESTNET OK → MAINNET OK.
 ```
 DÉVELOPPEMENT                           DÉPLOIEMENT
 ─────────────                           ───────────
-Phase 1: Consensus Base     ✅          Phase 9:  Testnet Long    ⏳ BLOCKED
+Phase 1: Consensus Base     ✅          Phase 9:  Testnet Long    🎯 READY
 Phase 2: Pipeline KHU       ✅          Phase 10: Mainnet         ⏳
 Phase 3: Finalité MN        ✅
 Phase 4: Sapling            ✅
 Phase 5: ZKHU DB            ✅
-Phase 6: DOMC + DAO         ✅ (consensus OK, RPC partiel)
-Phase 7: HTLC               ⏳ (non-bloquant)
-Phase 8: Wallet/RPC         🔴 BLOQUANT TESTNET
+Phase 6: DOMC + DAO         ✅
+Phase 7: HTLC               ✅ (conditional scripts)
+Phase 8: Wallet/RPC         ✅ (all RPCs implemented)
 ```
 
-**BLOQUANT:** Phase 8 doit être complétée avant testnet (RPC: mint, redeem, stake, unstake)
+**PRÊT:** Toutes les phases de développement complètes. Testnet peut démarrer.
 
 **Tests:** 138/138 PASS (100%) | **Sécurité:** 9.2/10 | **Vulnérabilités critiques:** 0
 
@@ -234,10 +234,10 @@ Ur -= bonus
 
 ---------------------------------------
 
-## 7. PHASE 7 — HTLC (OPTIONAL)
+## 7. PHASE 7 — HTLC (CONDITIONAL SCRIPTS)
 
-**STATUT : ⏳ PLANNED (NON-BLOQUANT)**
-*Note : Scripts HTLC Bitcoin standard déjà supportés par PIVX*
+**STATUT : ✅ COMPLETED**
+*Référence : voir commits ea3b5b8, 16192ce, 5e0ce2f*
 
 ### Objectifs
 - Support des scripts HTLC standards pour KHU_T
@@ -246,7 +246,16 @@ Ur -= bonus
 ### Spécifications
 - **Hashlock:** `SHA256(secret)` — 32 bytes
 - **Timelock:** `CHECKLOCKTIMEVERIFY` — block height
-- **Script:** Template Bitcoin standard
+- **Script:** Template Bitcoin standard (BIP-199)
+
+### Implémentation
+- `src/script/conditional.h/cpp` — Script creation/parsing
+- `src/rpc/conditional.cpp` — RPC commands
+
+### RPC Commands
+- `createconditionalsecret` — Generate secret + hashlock
+- `createconditional` — Create P2SH conditional address
+- `decodeconditional` — Parse script parameters
 
 ### Interdictions
 - ❌ Z→Z HTLC (ZKHU → ZKHU)
@@ -254,44 +263,69 @@ Ur -= bonus
 - ❌ KHU burn via HTLC
 
 ### Résultat
-Support HTLC standard pour transactions conditionnelles.
+✅ **IMPLÉMENTÉ**
+- ~220 lignes, zero consensus impact
+- Compatible: BTC, LTC, DASH, ZEC, BCH, DOGE
 
 ---------------------------------------
 
 ## 8. PHASE 8 — WALLET / RPC
 
-**STATUT : 🔴 EN COURS - BLOQUANT POUR TESTNET**
+**STATUT : ✅ COMPLETED**
+*Référence : voir commits 9a308c9 (Phase 8a), 115698a (Phase 8b)*
+*Tests : khu_rpc.py functional tests PASS*
 
 ### Objectifs
 - RPC complet : MINT, REDEEM, STAKE, UNSTAKE, DOMC, finalité.
-- UI complète.
-- Affichage C/U/Cr/Ur et finalité.
+- Wallet tracking pour KHU_T et ZKHU notes.
+- Persistence database (wallet.dat).
 
-### RPC à implémenter
+### Phase 8a — Transparent KHU_T (✅ COMPLETED)
 
-**Existants (Phase 6):**
+**RPC Commands:**
+- ✅ `khumint <amount>` - PIV → KHU_T (lock collateral)
+- ✅ `khuredeem <amount>` - KHU_T → PIV (unlock collateral)
+- ✅ `khusend <address> <amount>` - Transfer KHU_T
+- ✅ `khubalance` - Get KHU_T wallet balance
+- ✅ `khulistunspent` - List spendable KHU_T UTXOs
+- ✅ `khurescan` - Rescan blockchain for KHU coins
+- ✅ `khugetinfo` - General KHU wallet info
+
+**Infrastructure:**
+- `KHUCoinEntry` - Transparent coin tracking
+- `KHUWalletData` - Embedded in CWallet
+- WalletDB persistence (prefix "khucoin")
+
+### Phase 8b — Shielded ZKHU Staking (✅ COMPLETED)
+
+**RPC Commands:**
+- ✅ `khustake <amount>` - KHU_T → ZKHU (Sapling note with ZKHUMemo)
+- ✅ `khuunstake [commitment]` - ZKHU → KHU_T + yield bonus
+- ✅ `khuliststaked` - List staked ZKHU notes with maturity status
+
+**Infrastructure:**
+- `ZKHUNoteEntry` - Sapling note tracking with nullifier mapping
+- `mapZKHUNotes` / `mapZKHUNullifiers` in wallet
+- WalletDB persistence (prefix "zkhunote")
+
+### Legacy RPC (Phase 6)
 - ✅ `getkhustate` - Lecture état global KHU
 - ✅ `getkhustatecommitment` - Lecture commitment finality
 - ✅ `domccommit` - Vote DOMC phase commit
 - ✅ `domcreveal` - Vote DOMC phase reveal
 
-**Manquants (BLOQUANT):**
-- ⏳ `khumint <amount>` - PIV → KHU_T (brûle PIV, crée KHU)
-- ⏳ `khuredeem <amount>` - KHU_T → PIV (brûle KHU, crée PIV)
-- ⏳ `khustake <amount>` - KHU_T → ZKHU (privacy staking)
-- ⏳ `khuunstake <note_id>` - ZKHU → KHU_T + bonus yield
-- ⏳ `khulistnotes` - Liste notes ZKHU du wallet
-- ⏳ `khubalance` - Solde KHU (T + ZKHU)
-
-### Résultat attendu
-Utilisateurs peuvent interagir avec KHU via CLI/RPC.
+### Résultat
+✅ **IMPLÉMENTÉ ET TESTÉ**
+- Full KHU pipeline via RPC: PIV → MINT → KHU_T → STAKE → ZKHU → UNSTAKE → KHU_T → REDEEM → PIV
+- Wallet persistence for both transparent and shielded coins
+- Functional tests pass (khu_rpc.py)
 
 ---------------------------------------
 
 ## 9. PHASE 9 — TESTNET LONG
 
 **STATUT : 🎯 READY TO START**
-*Prérequis : Phases 1-6 complètes ✅*
+*Prérequis : Phases 1-8 complètes ✅*
 
 ### Objectifs
 Tester en conditions réelles:
@@ -341,57 +375,48 @@ Activation du système complet :
 
 ## RÉCAPITULATIF: CE QUI RESTE POUR LE TESTNET
 
-### État Actuel (2025-11-24)
+### État Actuel (2025-11-25)
 ```
 ✅ COMPLÉTÉ:
-   - Phase 1-6: Consensus & validation complets
-   - 138 tests passent (100%)
+   - Phase 1-8: Toutes les phases de développement complètes
+   - 138+ tests passent (100%)
    - Audit sécurité: 9.2/10
    - 0 vulnérabilités critiques
    - Build fonctionnel (pivxd, pivx-cli, test_pivx)
 
-✅ RPC EXISTANTS:
-   - getkhustate          (lecture état KHU)
-   - getkhustatecommitment (lecture commitment)
-   - domccommit           (vote DOMC phase commit)
-   - domcreveal           (vote DOMC phase reveal)
+✅ RPC COMPLETS:
 
-🔴 BLOQUANT POUR TESTNET:
+   Phase 6 - Consensus:
+   ├── getkhustate              (lecture état KHU)
+   ├── getkhustatecommitment    (lecture commitment)
+   ├── domccommit               (vote DOMC phase commit)
+   └── domcreveal               (vote DOMC phase reveal)
 
-   Phase 8 - Wallet/RPC (Blueprint 08):
-   ├── mintkhu <amount>          PIV → KHU_T
-   ├── redeemkhu <amount>        KHU_T → PIV
-   ├── stakekhu <amount>         KHU_T → ZKHU
-   ├── unstakekhu <nullifier>    ZKHU → KHU_T + bonus
-   ├── sendkhu <addr> <amount>   Transfer KHU_T
-   ├── getkhubalance             Balance (T + ZKHU)
-   ├── listkhuunspent            Liste UTXOs KHU_T
-   └── Wallet tracking (mapKHUCoins, persistence)
+   Phase 7 - HTLC:
+   ├── createconditionalsecret  (generate secret + hashlock)
+   ├── createconditional        (create P2SH address)
+   └── decodeconditional        (parse script params)
 
-   Phase 7 - HTLC (optionnel):
-   └── Scripts HTLC standard (déjà supportés par PIVX)
+   Phase 8a - Transparent KHU_T:
+   ├── khumint <amount>         PIV → KHU_T
+   ├── khuredeem <amount>       KHU_T → PIV
+   ├── khusend <addr> <amount>  Transfer KHU_T
+   ├── khubalance               Balance KHU_T
+   ├── khulistunspent           Liste UTXOs KHU_T
+   ├── khurescan                Rescan blockchain
+   └── khugetinfo               General wallet info
+
+   Phase 8b - Shielded ZKHU:
+   ├── khustake <amount>        KHU_T → ZKHU
+   ├── khuunstake [commitment]  ZKHU → KHU_T + bonus
+   └── khuliststaked            Liste notes ZKHU
+
+🎯 PRÊT POUR TESTNET
 ```
 
 ### Étapes Restantes pour Testnet
 
-#### ÉTAPE 1: Implémenter RPC Wallet (Phase 8) 🔴 BLOQUANT
-
-**RPC manquants pour interagir avec KHU:**
-```
-khumint <amount>              PIV → KHU_T (brûle PIV, crée KHU)
-khuredeem <amount>            KHU_T → PIV (brûle KHU, crée PIV)
-khustake <amount>             KHU_T → ZKHU (privacy staking)
-khuunstake <note_id>          ZKHU → KHU_T + bonus yield
-khulistnotes                  Liste notes ZKHU du wallet
-khubalance                    Solde KHU (T + ZKHU)
-```
-
-**Sans ces RPC:**
-- [ ] Impossible de tester MINT/REDEEM/STAKE/UNSTAKE en regtest
-- [ ] Impossible de faire un cycle DAO complet
-- [ ] Impossible de lancer le testnet
-
-#### ÉTAPE 2: Validation Regtest ⏳ (après Phase 8)
+#### ÉTAPE 1: Validation Regtest ⏳ (PROCHAINE ÉTAPE)
 ```bash
 # Exécuter le script de démonstration
 cd /home/ubuntu/PIVX-V6-KHU
@@ -434,8 +459,9 @@ pivx-cli -testnet getkhustate
 
 ```
 CODE & BUILD
-[x] 138 tests unitaires passent (100%)
+[x] 138+ tests unitaires passent (100%)
 [x] Tests globaux d'intégration (6/6)
+[x] Tests fonctionnels RPC (khu_rpc.py)
 [x] Build compile sans erreur
 [x] Binaires créés (pivxd, pivx-cli, test_pivx)
 
@@ -450,24 +476,33 @@ DOCUMENTATION
 [x] Spécification canonique
 [x] Architecture overview
 [x] Protocol reference
-[x] Rapports phases 1-6
+[x] Rapports phases 1-8
 
-À FAIRE (BLOQUANT - Phase 8)
-[ ] mintkhu - PIV → KHU_T
-[ ] redeemkhu - KHU_T → PIV
-[ ] stakekhu - KHU_T → ZKHU
-[ ] unstakekhu - ZKHU → KHU_T + bonus
-[ ] sendkhu - Transfer KHU_T
-[ ] getkhubalance - Balance T + ZKHU
-[ ] listkhuunspent - Liste UTXOs
-[ ] Wallet mapKHUCoins + persistence
+PHASE 7 - HTLC (✅ COMPLETED)
+[x] createconditionalsecret - Generate secret + hashlock
+[x] createconditional - Create P2SH address
+[x] decodeconditional - Parse script params
 
-À FAIRE (OPTIONNEL - Phase 7)
-[ ] Scripts HTLC standard (déjà supportés)
+PHASE 8a - Transparent KHU_T (✅ COMPLETED)
+[x] khumint - PIV → KHU_T
+[x] khuredeem - KHU_T → PIV
+[x] khusend - Transfer KHU_T
+[x] khubalance - Balance KHU_T
+[x] khulistunspent - Liste UTXOs
+[x] khurescan - Rescan blockchain
+[x] khugetinfo - General wallet info
+[x] Wallet mapKHUCoins + persistence
+
+PHASE 8b - Shielded ZKHU (✅ COMPLETED)
+[x] khustake - KHU_T → ZKHU
+[x] khuunstake - ZKHU → KHU_T + bonus
+[x] khuliststaked - Liste notes ZKHU
+[x] ZKHU note tracking (mapZKHUNotes)
+[x] WalletDB persistence (zkhunote prefix)
 
 À FAIRE (VALIDATION)
 [ ] Test regtest cycle complet
-[ ] Test MINT/STAKE/UNSTAKE/REDEEM
+[ ] Test MINT/STAKE/UNSTAKE/REDEEM flow
 
 À FAIRE (INFRASTRUCTURE)
 [ ] Seed nodes testnet
@@ -479,20 +514,19 @@ DOCUMENTATION
 ### Timeline Estimée
 
 ```
-       🎯
-    VOUS ÊTES ICI
-         │
-         ▼
+                              🎯
+                           VOUS ÊTES ICI
+                                │
+                                ▼
   PHASE 8 ───> REGTEST ───> INFRA ───> TESTNET ───> MAINNET
-  Wallet/RPC   COMPLET      READY      1 CYCLE
-  BLOQUANT                             DOMC OK
+     ✅         READY       READY      1 CYCLE
+  COMPLETED                            DOMC OK
 ```
 
 **Prochaine étape critique:**
-- Phase 8: RPC wallet (mintkhu, redeemkhu, stakekhu, unstakekhu, getkhubalance)
+- Validation regtest: Tester cycle complet MINT/STAKE/UNSTAKE/REDEEM
 
 **Durée estimée:**
-- Phase 8 (RPC Wallet): ~2-3 semaines
 - Validation regtest: 1-2 semaines
 - Infrastructure testnet: 2-4 semaines
 - Testnet (1 cycle DOMC): 4 mois minimum

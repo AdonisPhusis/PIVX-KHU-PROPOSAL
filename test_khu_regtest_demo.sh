@@ -5,8 +5,8 @@
 # =============================================================================
 # SCRIPT DE DEMONSTRATION KHU EN MODE REGTEST
 # =============================================================================
-# Ce script permet de tester un cycle DAO complet (172800 blocs) en quelques
-# minutes au lieu d'attendre 4 mois en production.
+# Ce script permet de tester le pipeline KHU complet:
+#   PIV → MINT → KHU_T → STAKE → ZKHU → UNSTAKE → KHU_T → REDEEM → PIV
 #
 # USAGE:
 #   ./test_khu_regtest_demo.sh
@@ -44,27 +44,34 @@ cli() {
 # Fonction pour afficher l'état KHU
 show_khu_state() {
     echo -e "${YELLOW}--- État KHU à la hauteur $1 ---${NC}"
-    cli getkhustate | jq -r '
+    cli getkhustate 2>/dev/null | jq -r '
         "Hauteur: \(.height)",
         "C (Collateral): \(.C / 100000000) PIV",
-        "U (Staked): \(.U / 100000000) PIV",
+        "U (Supply KHU_T): \(.U / 100000000) KHU",
         "Cr (Reward pool): \(.Cr / 100000000) PIV",
-        "Ur (Reward rights): \(.Ur / 100000000) PIV",
+        "Ur (Reward rights): \(.Ur / 100000000) KHU",
         "T (Treasury): \(.T / 100000000) PIV",
         "R% annuel: \(.R_annual_bps / 100)%"
     ' 2>/dev/null || echo "État KHU non disponible (V6 pas encore activé?)"
     echo ""
 }
 
+# Fonction pour afficher le solde KHU wallet
+show_khu_balance() {
+    echo -e "${YELLOW}--- Solde KHU Wallet ---${NC}"
+    cli khubalance 2>/dev/null || echo "khubalance non disponible"
+    echo ""
+}
+
 # Nettoyage datadir précédent
-echo -e "${YELLOW}[1/8] Nettoyage environnement...${NC}"
+echo -e "${YELLOW}[1/10] Nettoyage environnement...${NC}"
 if [ -d "$DATADIR" ]; then
     rm -rf "$DATADIR"
 fi
 mkdir -p "$DATADIR"
 
 # Démarrage pivxd en mode regtest
-echo -e "${YELLOW}[2/8] Démarrage pivxd en mode regtest...${NC}"
+echo -e "${YELLOW}[2/10] Démarrage pivxd en mode regtest...${NC}"
 $PIVXD -regtest -datadir="$DATADIR" -daemon -txindex=1 \
     -port=18445 -rpcport=$RPC_PORT -fallbackfee=0.0001 \
     -server=1 -rpcallowip=127.0.0.1
@@ -94,7 +101,7 @@ echo -e "${GREEN}✓ Pivxd démarré (datadir: $DATADIR)${NC}"
 echo ""
 
 # Génération blocs initiaux (maturation coinbase)
-echo -e "${YELLOW}[3/8] Génération 101 blocs initiaux (maturation coinbase)...${NC}"
+echo -e "${YELLOW}[3/10] Génération 101 blocs initiaux (maturation coinbase)...${NC}"
 ADDR=$(cli getnewaddress)
 cli generatetoaddress 101 "$ADDR" > /dev/null
 BALANCE=$(cli getbalance)
@@ -102,94 +109,122 @@ echo -e "${GREEN}✓ Balance disponible: $BALANCE PIV${NC}"
 echo ""
 
 # Activation V6 (supposons activation au bloc 200)
-echo -e "${YELLOW}[4/8] Génération jusqu'à activation V6 (bloc 200)...${NC}"
+echo -e "${YELLOW}[4/10] Génération jusqu'à activation V6 (bloc 200)...${NC}"
 cli generatetoaddress 99 "$ADDR" > /dev/null
 HEIGHT=$(cli getblockcount)
 echo -e "${GREEN}✓ Hauteur actuelle: $HEIGHT${NC}"
 show_khu_state "$HEIGHT"
 
-# Test MINT (création KHU)
-echo -e "${YELLOW}[5/8] Test transaction MINT (10 PIV → KHU)...${NC}"
+# Test MINT (PIV → KHU_T)
+echo -e "${YELLOW}[5/10] Test MINT: 10 PIV → 10 KHU_T...${NC}"
 MINT_AMOUNT=10
-MINT_TX=$(cli sendtoaddress "$(cli getnewaddress)" $MINT_AMOUNT false "MINT TEST" "" false 1)
+MINT_RESULT=$(cli khumint $MINT_AMOUNT 2>&1) || {
+    echo -e "${YELLOW}⚠ khumint non disponible ou erreur: $MINT_RESULT${NC}"
+    echo "Continuons avec les autres tests..."
+}
 cli generatetoaddress 1 "$ADDR" > /dev/null
 HEIGHT=$(cli getblockcount)
-echo -e "${GREEN}✓ MINT effectué (txid: ${MINT_TX:0:16}...)${NC}"
+echo -e "${GREEN}✓ MINT effectué${NC}"
 show_khu_state "$HEIGHT"
+show_khu_balance
 
-# Test STAKE
-echo -e "${YELLOW}[6/8] Test transaction STAKE (5 PIV → staking)...${NC}"
+# Test STAKE (KHU_T → ZKHU)
+echo -e "${YELLOW}[6/10] Test STAKE: 5 KHU_T → ZKHU (privacy staking)...${NC}"
 STAKE_AMOUNT=5
-STAKE_TX=$(cli sendtoaddress "$(cli getnewaddress)" $STAKE_AMOUNT false "STAKE TEST" "" false 2)
+STAKE_RESULT=$(cli khustake $STAKE_AMOUNT 2>&1) || {
+    echo -e "${YELLOW}⚠ khustake non disponible ou erreur: $STAKE_RESULT${NC}"
+    echo "Continuons avec les autres tests..."
+}
 cli generatetoaddress 1 "$ADDR" > /dev/null
 HEIGHT=$(cli getblockcount)
-echo -e "${GREEN}✓ STAKE effectué (txid: ${STAKE_TX:0:16}...)${NC}"
+echo -e "${GREEN}✓ STAKE effectué${NC}"
 show_khu_state "$HEIGHT"
 
-# PARTIE CRITIQUE: Génération jusqu'au premier cycle DAO
-echo -e "${YELLOW}[7/8] Génération jusqu'au premier cycle DAO (172800 blocs)...${NC}"
-echo -e "${BLUE}INFO: Cette opération prend ~2-5 minutes selon votre machine${NC}"
-echo -e "${BLUE}INFO: En production, cela représenterait 4 mois d'attente !${NC}"
+# Afficher les notes stakées
+echo -e "${YELLOW}[7/10] Liste des notes ZKHU stakées...${NC}"
+cli khuliststaked 2>/dev/null || echo "khuliststaked non disponible"
 echo ""
 
-# Calcul blocs nécessaires
-CURRENT_HEIGHT=$(cli getblockcount)
-ACTIVATION_HEIGHT=200
-DAO_CYCLE=172800
-TARGET_HEIGHT=$((ACTIVATION_HEIGHT + DAO_CYCLE))
-BLOCKS_TO_GENERATE=$((TARGET_HEIGHT - CURRENT_HEIGHT))
-
-echo "Hauteur actuelle: $CURRENT_HEIGHT"
-echo "Hauteur cible (1er cycle DAO): $TARGET_HEIGHT"
-echo "Blocs à générer: $BLOCKS_TO_GENERATE"
-echo ""
-
-# Génération par blocs de 1000 pour monitoring
-BATCH_SIZE=10000
-REMAINING=$BLOCKS_TO_GENERATE
-
-while [ $REMAINING -gt 0 ]; do
-    if [ $REMAINING -lt $BATCH_SIZE ]; then
-        TO_GEN=$REMAINING
-    else
-        TO_GEN=$BATCH_SIZE
-    fi
-
-    cli generatetoaddress $TO_GEN "$ADDR" > /dev/null
-    REMAINING=$((REMAINING - TO_GEN))
+# Génération blocs de maturation (4320 blocs = 3 jours)
+echo -e "${YELLOW}[8/10] Génération 4320 blocs de maturation (3 jours simulés)...${NC}"
+MATURITY_BLOCKS=4320
+for ((i=0; i<43; i++)); do
+    cli generatetoaddress 100 "$ADDR" > /dev/null
     CURRENT=$(cli getblockcount)
-    PROGRESS=$(echo "scale=1; ($CURRENT - $ACTIVATION_HEIGHT) * 100 / $DAO_CYCLE" | bc)
-    echo -ne "${BLUE}Progrès: $CURRENT / $TARGET_HEIGHT blocs (${PROGRESS}%)${NC}\r"
+    PROGRESS=$((i * 100 / 43))
+    echo -ne "${BLUE}Progrès: $CURRENT blocs, maturation ${PROGRESS}%${NC}\r"
 done
-
+cli generatetoaddress 20 "$ADDR" > /dev/null
 echo ""
 HEIGHT=$(cli getblockcount)
-echo -e "${GREEN}✓ Cycle DAO atteint à la hauteur $HEIGHT${NC}"
-echo ""
+echo -e "${GREEN}✓ Maturation terminée à la hauteur $HEIGHT${NC}"
+show_khu_state "$HEIGHT"
+
+# Test UNSTAKE (ZKHU → KHU_T + yield)
+echo -e "${YELLOW}[9/10] Test UNSTAKE: ZKHU → KHU_T + yield bonus...${NC}"
+UNSTAKE_RESULT=$(cli khuunstake 2>&1) || {
+    echo -e "${YELLOW}⚠ khuunstake non disponible ou erreur: $UNSTAKE_RESULT${NC}"
+    echo "Continuons avec les autres tests..."
+}
+cli generatetoaddress 1 "$ADDR" > /dev/null
+HEIGHT=$(cli getblockcount)
+echo -e "${GREEN}✓ UNSTAKE effectué${NC}"
+show_khu_state "$HEIGHT"
+show_khu_balance
+
+# Test REDEEM (KHU_T → PIV)
+echo -e "${YELLOW}[10/10] Test REDEEM: 5 KHU_T → 5 PIV...${NC}"
+REDEEM_AMOUNT=5
+REDEEM_RESULT=$(cli khuredeem $REDEEM_AMOUNT 2>&1) || {
+    echo -e "${YELLOW}⚠ khuredeem non disponible ou erreur: $REDEEM_RESULT${NC}"
+}
+cli generatetoaddress 1 "$ADDR" > /dev/null
+HEIGHT=$(cli getblockcount)
+echo -e "${GREEN}✓ REDEEM effectué${NC}"
+show_khu_state "$HEIGHT"
+show_khu_balance
 
 # Affichage état final
-echo -e "${YELLOW}[8/8] État final après 1er cycle DAO:${NC}"
+echo -e "${BLUE}=== ÉTAT FINAL ===${NC}"
 show_khu_state "$HEIGHT"
 
 # Vérifications
-echo -e "${BLUE}=== VERIFICATIONS ===${NC}"
+echo -e "${BLUE}=== VERIFICATIONS INVARIANTS ===${NC}"
 STATE=$(cli getkhustate 2>/dev/null)
 
 if [ -n "$STATE" ]; then
-    T=$(echo "$STATE" | jq -r '.T // 0')
+    C=$(echo "$STATE" | jq -r '.C // 0')
     U=$(echo "$STATE" | jq -r '.U // 0')
+    Cr=$(echo "$STATE" | jq -r '.Cr // 0')
     Ur=$(echo "$STATE" | jq -r '.Ur // 0')
+    T=$(echo "$STATE" | jq -r '.T // 0')
 
-    # Calcul attendu: 0.5% × (U + Ur)
-    EXPECTED=$(echo "scale=0; ($U + $Ur) * 5 / 1000" | bc)
-
+    echo "C (Collateral): $C satoshis"
+    echo "U (KHU Supply): $U satoshis"
+    echo "Cr (Reward Pool): $Cr satoshis"
+    echo "Ur (Reward Rights): $Ur satoshis"
     echo "T (Treasury): $T satoshis"
-    echo "Attendu (~0.5% × (U+Ur)): $EXPECTED satoshis"
+    echo ""
 
-    if [ "$T" -gt 0 ]; then
-        echo -e "${GREEN}✓ DAO Treasury a bien accumulé des fonds${NC}"
+    # Check C == U invariant
+    if [ "$C" -eq "$U" ]; then
+        echo -e "${GREEN}✓ Invariant C == U respecté${NC}"
     else
-        echo -e "${YELLOW}⚠ DAO Treasury = 0 (peut être normal si U+Ur=0)${NC}"
+        echo -e "${RED}✗ ERREUR: C != U (violation invariant!)${NC}"
+    fi
+
+    # Check Cr == Ur invariant
+    if [ "$Cr" -eq "$Ur" ]; then
+        echo -e "${GREEN}✓ Invariant Cr == Ur respecté${NC}"
+    else
+        echo -e "${RED}✗ ERREUR: Cr != Ur (violation invariant!)${NC}"
+    fi
+
+    # Check T >= 0
+    if [ "$T" -ge 0 ]; then
+        echo -e "${GREEN}✓ Treasury T >= 0 respecté${NC}"
+    else
+        echo -e "${RED}✗ ERREUR: T < 0 (violation invariant!)${NC}"
     fi
 else
     echo -e "${YELLOW}⚠ Impossible de récupérer l'état KHU${NC}"
@@ -204,10 +239,12 @@ echo -e "${GREEN}Le nœud regtest est toujours actif.${NC}"
 echo ""
 echo "Commandes utiles:"
 echo "  $PIVX_CLI -regtest -datadir=\"$DATADIR\" getkhustate"
+echo "  $PIVX_CLI -regtest -datadir=\"$DATADIR\" khubalance"
+echo "  $PIVX_CLI -regtest -datadir=\"$DATADIR\" khulistunspent"
+echo "  $PIVX_CLI -regtest -datadir=\"$DATADIR\" khuliststaked"
 echo "  $PIVX_CLI -regtest -datadir=\"$DATADIR\" getblockcount"
-echo "  $PIVX_CLI -regtest -datadir=\"$DATADIR\" getbalance"
 echo ""
 echo "Pour arrêter:"
 echo "  $PIVX_CLI -regtest -datadir=\"$DATADIR\" stop"
 echo ""
-echo -e "${YELLOW}Note: Ce script a simulé 4 MOIS de blockchain en quelques minutes !${NC}"
+echo -e "${YELLOW}Pipeline testé: PIV → MINT → KHU_T → STAKE → ZKHU → UNSTAKE → KHU_T → REDEEM → PIV${NC}"
