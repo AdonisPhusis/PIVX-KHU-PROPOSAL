@@ -6,6 +6,7 @@
 
 #include "chain.h"
 #include "chainparams.h"
+#include "key_io.h"
 #include "khu/khu_commitment.h"
 #include "khu/khu_commitmentdb.h"
 #include "khu/khu_domc.h"
@@ -16,6 +17,7 @@
 #include "rpc/server.h"
 #include "sync.h"
 #include "txmempool.h"
+#include "utilmoneystr.h"
 #include "util/validation.h"
 #include "validation.h"
 
@@ -473,7 +475,15 @@ static UniValue domcreveal(const JSONRPCRequest& request)
     return result;
 }
 
+// ============================================================================
+// RPC Command Registration
+// ============================================================================
+
+// NOTE: Wallet RPCs (khubalance, khulistunspent, khumint, khuredeem) are in
+// wallet/rpc_khu.cpp and registered via RegisterKHUWalletRPCCommands.
+
 // RPC command table (to be registered in rpc/register.cpp)
+// NOTE: Wallet RPCs moved to wallet/rpc_khu.cpp
 static const CRPCCommand commands[] = {
     //  category    name                      actor (function)            okSafe  argNames
     //  ----------- ------------------------  ------------------------    ------  ----------

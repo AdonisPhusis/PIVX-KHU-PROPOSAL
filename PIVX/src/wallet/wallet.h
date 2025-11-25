@@ -32,6 +32,7 @@
 #include "sapling/saplingscriptpubkeyman.h"
 #include "validation.h"
 #include "wallet/walletdb.h"
+#include "wallet/khu_wallet.h"
 
 #include <algorithm>
 #include <atomic>
@@ -772,6 +773,9 @@ public:
 
     std::set<COutPoint> setLockedCoins;
     std::set<SaplingOutPoint> setLockedNotes;
+
+    //! KHU Wallet Data (Phase 8 — colored coin tracking)
+    KHUWalletData khuData;
 
     int64_t nTimeFirstKey;
 

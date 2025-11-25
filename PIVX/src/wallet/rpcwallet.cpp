@@ -28,6 +28,7 @@
 #include "utilmoneystr.h"
 #include "wallet/wallet.h"
 #include "wallet/walletdb.h"
+#include "wallet/rpc_khu.h"
 #include "wallet/walletutil.h"
 
 #include <stdint.h>
@@ -4858,4 +4859,7 @@ void RegisterWalletRPCCommands(CRPCTable &tableRPC)
     for (unsigned int vcidx = 0; vcidx < ARRAYLEN(commands); vcidx++) {
         tableRPC.appendCommand(commands[vcidx].name, &commands[vcidx]);
     }
+
+    // Register KHU wallet RPCs (Phase 8a)
+    RegisterKHUWalletRPCCommands(tableRPC);
 }

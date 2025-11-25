@@ -8,6 +8,7 @@
 #define PIVX_WALLET_WALLETDB_H
 
 #include "amount.h"
+#include "primitives/transaction.h"
 #include "wallet/db.h"
 #include "wallet/hdchain.h"
 #include "key.h"
@@ -35,6 +36,7 @@
 static const bool DEFAULT_FLUSHWALLET = true;
 
 struct CBlockLocator;
+struct KHUCoinEntry;
 class CKeyPool;
 class CMasterKey;
 class CScript;
@@ -199,6 +201,11 @@ public:
     bool WriteDestData(const std::string& address, const std::string& key, const std::string& value);
     /// Erase destination data tuple from wallet database
     bool EraseDestData(const std::string& address, const std::string& key);
+
+    //! Write KHU coin to wallet database (Phase 8a)
+    bool WriteKHUCoin(const COutPoint& outpoint, const KHUCoinEntry& entry);
+    //! Erase KHU coin from wallet database
+    bool EraseKHUCoin(const COutPoint& outpoint);
 
     DBErrors ReorderTransactions(CWallet* pwallet);
     DBErrors LoadWallet(CWallet* pwallet);

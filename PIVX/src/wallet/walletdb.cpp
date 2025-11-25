@@ -8,6 +8,7 @@
 #include "wallet/walletdb.h"
 
 #include "fs.h"
+#include "wallet/khu_wallet.h"
 
 #include "key_io.h"
 #include "protocol.h"
@@ -964,6 +965,17 @@ bool WalletBatch::WriteDestData(const std::string& address, const std::string& k
 bool WalletBatch::EraseDestData(const std::string& address, const std::string& key)
 {
     return EraseIC(std::make_pair(std::string(DBKeys::DESTDATA), std::make_pair(address, key)));
+}
+
+// KHU Coin persistence (Phase 8a)
+bool WalletBatch::WriteKHUCoin(const COutPoint& outpoint, const KHUCoinEntry& entry)
+{
+    return WriteIC(std::make_pair(std::string("khucoin"), outpoint), entry);
+}
+
+bool WalletBatch::EraseKHUCoin(const COutPoint& outpoint)
+{
+    return EraseIC(std::make_pair(std::string("khucoin"), outpoint));
 }
 
 bool WalletBatch::TxnBegin()

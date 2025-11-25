@@ -483,6 +483,8 @@ libbitcoin_wallet_a_SOURCES = \
   wallet/wallet.cpp \
   wallet/walletdb.cpp \
   wallet/walletutil.cpp \
+  wallet/khu_wallet.cpp \
+  wallet/rpc_khu.cpp \
   stakeinput.cpp \
   zpiv/zpos.cpp \
   $(BITCOIN_CORE_H) \
