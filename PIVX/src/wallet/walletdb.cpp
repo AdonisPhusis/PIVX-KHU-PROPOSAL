@@ -54,6 +54,10 @@ namespace DBKeys {
     const std::string SAP_HDCHAIN{"hdchain_sap"};
     const std::string SAP_WITNESS_CACHE_SIZE{"witnesscachesize"};
 
+    // KHU (Phase 8)
+    const std::string KHUCOIN{"khucoin"};
+    const std::string ZKHUNOTE{"zkhunote"};
+
     // Wallet custom settings
     const std::string AUTOCOMBINE{"autocombinesettings"};
     const std::string AUTOCOMBINE_V2{"autocombinesettingsV2"};
@@ -337,6 +341,8 @@ public:
     unsigned int nZKeys;
     unsigned int nZKeyMeta;
     unsigned int nSapZAddrs;
+    unsigned int nKHUCoins;  // KHU Phase 8
+    unsigned int nZKHUNotes; // KHU Phase 8b
     bool fIsEncrypted;
     bool fAnyUnordered;
     int nFileVersion;
@@ -344,7 +350,7 @@ public:
 
     CWalletScanState()
     {
-        nKeys = nCKeys = nKeyMeta = nZKeys = nZKeyMeta = nSapZAddrs = 0;
+        nKeys = nCKeys = nKeyMeta = nZKeys = nZKeyMeta = nSapZAddrs = nKHUCoins = nZKHUNotes = 0;
         fIsEncrypted = false;
         fAnyUnordered = false;
         nFileVersion = 0;
@@ -619,6 +625,27 @@ bool ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue, CW
             }
         } else if (strType == DBKeys::SAP_WITNESS_CACHE_SIZE) {
             ssValue >> pwallet->GetSaplingScriptPubKeyMan()->nWitnessCacheSize;
+        } else if (strType == DBKeys::KHUCOIN) {
+            // KHU Phase 8 - Load KHU colored coin entry
+            COutPoint outpoint;
+            ssKey >> outpoint;
+            KHUCoinEntry entry;
+            ssValue >> entry;
+
+            wss.nKHUCoins++;
+            pwallet->khuData.mapKHUCoins[outpoint] = entry;
+        } else if (strType == DBKeys::ZKHUNOTE) {
+            // KHU Phase 8b - Load ZKHU note entry
+            uint256 cm;
+            ssKey >> cm;
+            ZKHUNoteEntry entry;
+            ssValue >> entry;
+
+            wss.nZKHUNotes++;
+            pwallet->khuData.mapZKHUNotes[cm] = entry;
+            if (!entry.nullifier.IsNull()) {
+                pwallet->khuData.mapZKHUNullifiers[entry.nullifier] = cm;
+            }
         }
     } catch (...) {
         return false;
@@ -708,6 +735,13 @@ DBErrors WalletBatch::LoadWallet(CWallet* pwallet)
 
     LogPrintf("ZKeys: %u plaintext, -- encrypted, %u w/metadata, %u total\n",
               wss.nZKeys, wss.nZKeyMeta, wss.nZKeys + 0);
+
+    // KHU Phase 8 - Update cached KHU balances after loading
+    if (wss.nKHUCoins > 0 || wss.nZKHUNotes > 0) {
+        pwallet->khuData.UpdateBalance();
+        LogPrintf("KHU: %u coins, %u ZKHU notes loaded, balance=%d, staked=%d\n",
+                  wss.nKHUCoins, wss.nZKHUNotes, pwallet->khuData.nKHUBalance, pwallet->khuData.nKHUStaked);
+    }
 
     // nTimeFirstKey is only reliable if all keys have metadata
     if ((wss.nKeys + wss.nCKeys) != wss.nKeyMeta)
@@ -976,6 +1010,16 @@ bool WalletBatch::WriteKHUCoin(const COutPoint& outpoint, const KHUCoinEntry& en
 bool WalletBatch::EraseKHUCoin(const COutPoint& outpoint)
 {
     return EraseIC(std::make_pair(std::string("khucoin"), outpoint));
+}
+
+bool WalletBatch::WriteZKHUNote(const uint256& cm, const ZKHUNoteEntry& entry)
+{
+    return WriteIC(std::make_pair(std::string("zkhunote"), cm), entry);
+}
+
+bool WalletBatch::EraseZKHUNote(const uint256& cm)
+{
+    return EraseIC(std::make_pair(std::string("zkhunote"), cm));
 }
 
 bool WalletBatch::TxnBegin()

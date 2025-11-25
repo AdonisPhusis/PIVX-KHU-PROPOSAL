@@ -37,6 +37,7 @@ static const bool DEFAULT_FLUSHWALLET = true;
 
 struct CBlockLocator;
 struct KHUCoinEntry;
+struct ZKHUNoteEntry;
 class CKeyPool;
 class CMasterKey;
 class CScript;
@@ -206,6 +207,11 @@ public:
     bool WriteKHUCoin(const COutPoint& outpoint, const KHUCoinEntry& entry);
     //! Erase KHU coin from wallet database
     bool EraseKHUCoin(const COutPoint& outpoint);
+
+    //! Write ZKHU note to wallet database (Phase 8b)
+    bool WriteZKHUNote(const uint256& cm, const ZKHUNoteEntry& entry);
+    //! Erase ZKHU note from wallet database
+    bool EraseZKHUNote(const uint256& cm);
 
     DBErrors ReorderTransactions(CWallet* pwallet);
     DBErrors LoadWallet(CWallet* pwallet);

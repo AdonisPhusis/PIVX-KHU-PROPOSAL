@@ -125,6 +125,7 @@ BASE_SCRIPTS= [
     'feature_exchangeaddr.py',
 
     # vv Tests less than 60s vv
+    'khu_rpc.py',                               # KHU Phase 8 RPC tests
     'rpc_users.py',
     'wallet_labels.py',                         # ~ 57 sec
     'rpc_signmessage.py',                       # ~ 54 sec

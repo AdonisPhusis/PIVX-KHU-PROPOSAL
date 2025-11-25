@@ -11,6 +11,7 @@
 #include "khu/khu_validation.h"
 #include "logging.h"
 #include "primitives/transaction.h"
+#include "sapling/saplingscriptpubkeyman.h"
 #include "script/ismine.h"
 #include "validation.h"
 #include "wallet/wallet.h"
@@ -181,7 +182,15 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
 
     const uint256& txhash = tx->GetHash();
 
-    // Check transaction type
+    // STEP 1: Always check if any input spends our tracked KHU UTXOs
+    // This handles ALL transaction types including regular transfers via khusend
+    for (const auto& vin : tx->vin) {
+        if (pwallet->khuData.mapKHUCoins.count(vin.prevout)) {
+            RemoveKHUCoinFromWallet(pwallet, vin.prevout);
+        }
+    }
+
+    // STEP 2: Process KHU-specific transaction types for output creation
     if (tx->nType == CTransaction::TxType::KHU_MINT) {
         // MINT creates KHU_T output at vout[1]
         if (tx->vout.size() >= 2) {
@@ -190,18 +199,6 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
                 CKHUUTXO coin(out.nValue, out.scriptPubKey, nHeight);
                 AddKHUCoinToWallet(pwallet, COutPoint(txhash, 1), coin, nHeight);
             }
-        }
-    }
-    else if (tx->nType == CTransaction::TxType::KHU_REDEEM) {
-        // REDEEM spends KHU_T input
-        for (const auto& vin : tx->vin) {
-            RemoveKHUCoinFromWallet(pwallet, vin.prevout);
-        }
-    }
-    else if (tx->nType == CTransaction::TxType::KHU_STAKE) {
-        // STAKE spends KHU_T input, creates ZKHU note (Phase 8b)
-        for (const auto& vin : tx->vin) {
-            RemoveKHUCoinFromWallet(pwallet, vin.prevout);
         }
     }
     else if (tx->nType == CTransaction::TxType::KHU_UNSTAKE) {
@@ -214,16 +211,8 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
             }
         }
     }
-    else {
-        // Regular transaction - check for KHU transfers
-        // KHU_T outputs have the KHU marker in scriptPubKey
-        // For now, scan all outputs for IsMine
-        for (size_t i = 0; i < tx->vout.size(); ++i) {
-            const CTxOut& out = tx->vout[i];
-            // TODO: Add IsKHUOutput check once marker is defined
-            // For Phase 8a, we rely on TxType for KHU tracking
-        }
-    }
+    // KHU_REDEEM and KHU_STAKE only spend (no KHU outputs created)
+    // Their inputs are already handled in STEP 1 above
 }
 
 bool ScanForKHUCoins(CWallet* pwallet, int nStartHeight)
@@ -235,6 +224,10 @@ bool ScanForKHUCoins(CWallet* pwallet, int nStartHeight)
     // Clear existing KHU coins before full rescan
     if (nStartHeight == 0) {
         pwallet->khuData.Clear();
+        // Also clear from database
+        WalletBatch batch(pwallet->GetDBHandle());
+        // Note: Full clear would need cursor iteration; for now, coins are
+        // individually erased via RemoveKHUCoinFromWallet when spent
     }
 
     const CBlockIndex* pindex = chainActive[nStartHeight];
@@ -244,6 +237,8 @@ bool ScanForKHUCoins(CWallet* pwallet, int nStartHeight)
     }
 
     int nScanned = 0;
+    int nKHUTxProcessed = 0;
+
     while (pindex) {
         CBlock block;
         if (!ReadBlockFromDisk(block, pindex)) {
@@ -252,17 +247,24 @@ bool ScanForKHUCoins(CWallet* pwallet, int nStartHeight)
         }
 
         for (const auto& tx : block.vtx) {
-            // Check if KHU transaction
-            if (tx->nType >= CTransaction::TxType::KHU_MINT &&
-                tx->nType <= CTransaction::TxType::KHU_UNSTAKE) {
+            // Process ALL transactions to detect:
+            // 1. KHU-specific transactions (MINT, REDEEM, STAKE, UNSTAKE)
+            // 2. Regular transactions that spend our tracked KHU UTXOs (via khusend)
+            bool isKHUTx = (tx->nType >= CTransaction::TxType::KHU_MINT &&
+                           tx->nType <= CTransaction::TxType::KHU_UNSTAKE);
+
+            // For non-KHU transactions, only process if we have KHU coins
+            // that might be spent (optimization)
+            if (isKHUTx || !pwallet->khuData.mapKHUCoins.empty()) {
                 ProcessKHUTransactionForWallet(pwallet, tx, pindex->nHeight);
+                if (isKHUTx) nKHUTxProcessed++;
             }
         }
 
         nScanned++;
         if (nScanned % 10000 == 0) {
-            LogPrint(BCLog::KHU, "ScanForKHUCoins: Scanned %d blocks (height %d)\n",
-                     nScanned, pindex->nHeight);
+            LogPrint(BCLog::KHU, "ScanForKHUCoins: Scanned %d blocks (height %d), %d KHU coins tracked\n",
+                     nScanned, pindex->nHeight, pwallet->khuData.mapKHUCoins.size());
         }
 
         pindex = chainActive.Next(pindex);
@@ -271,8 +273,8 @@ bool ScanForKHUCoins(CWallet* pwallet, int nStartHeight)
     // Update final balances
     pwallet->khuData.UpdateBalance();
 
-    LogPrint(BCLog::KHU, "ScanForKHUCoins: Complete. Found %d KHU coins, balance=%d\n",
-             pwallet->khuData.mapKHUCoins.size(), pwallet->khuData.nKHUBalance);
+    LogPrint(BCLog::KHU, "ScanForKHUCoins: Complete. Scanned %d blocks, %d KHU tx, found %d coins, balance=%d\n",
+             nScanned, nKHUTxProcessed, pwallet->khuData.mapKHUCoins.size(), pwallet->khuData.nKHUBalance);
 
     return true;
 }
@@ -297,23 +299,200 @@ bool LoadKHUCoinsFromDB(CWallet* pwallet)
 {
     LOCK(pwallet->cs_wallet);
 
-    LogPrint(BCLog::KHU, "LoadKHUCoinsFromDB: Loading KHU coins from wallet.dat\n");
+    // NOTE: KHU coins are now loaded automatically during wallet load
+    // via ReadKeyValue() in walletdb.cpp, which handles "khucoin" records.
+    //
+    // This function is kept for explicit calls to finalize/refresh balances.
+    // The actual loading happens in WalletBatch::LoadWallet() -> ReadKeyValue().
 
-    // Clear existing data
-    pwallet->khuData.Clear();
+    if (pwallet->khuData.mapKHUCoins.empty()) {
+        LogPrint(BCLog::KHU, "LoadKHUCoinsFromDB: No KHU coins in wallet\n");
+        return true;
+    }
 
-    // Open cursor on database
-    WalletBatch batch(pwallet->GetDBHandle(), "r");
-
-    // Iterate through all entries with "khucoin" prefix
-    // Note: This requires iterating all keys - in production, use proper cursor
-    // For now, we'll reload via ScanForKHUCoins if DB load fails
-
-    // Update balances
+    // Recalculate cached balances from loaded coins
     pwallet->khuData.UpdateBalance();
 
-    LogPrint(BCLog::KHU, "LoadKHUCoinsFromDB: Loaded %d KHU coins\n",
-             pwallet->khuData.mapKHUCoins.size());
+    LogPrint(BCLog::KHU, "LoadKHUCoinsFromDB: Finalized %d KHU coins, balance=%d, staked=%d\n",
+             pwallet->khuData.mapKHUCoins.size(),
+             pwallet->khuData.nKHUBalance,
+             pwallet->khuData.nKHUStaked);
 
     return true;
+}
+
+// ============================================================================
+// ZKHU Note Functions (Phase 8b)
+// ============================================================================
+
+bool AddZKHUNoteToWallet(CWallet* pwallet, const SaplingOutPoint& op, const uint256& cm,
+                         const ZKHUMemo& memo, const uint256& nullifier, int nHeight)
+{
+    LOCK(pwallet->cs_wallet);
+
+    // Check if already tracked
+    if (pwallet->khuData.mapZKHUNotes.count(cm)) {
+        LogPrint(BCLog::KHU, "AddZKHUNoteToWallet: Already tracking note %s\n",
+                 cm.GetHex().substr(0, 16));
+        return true;
+    }
+
+    // Create entry
+    ZKHUNoteEntry entry(op, cm, memo.nStakeStartHeight, memo.amount, nullifier, nHeight);
+
+    // Add to map
+    pwallet->khuData.mapZKHUNotes[cm] = entry;
+
+    // Add nullifier mapping
+    if (!nullifier.IsNull()) {
+        pwallet->khuData.mapZKHUNullifiers[nullifier] = cm;
+    }
+
+    // Update cached balance
+    pwallet->khuData.UpdateBalance();
+
+    // Persist to database
+    if (!WriteZKHUNoteToDB(pwallet, cm, entry)) {
+        LogPrintf("ERROR: AddZKHUNoteToWallet: Failed to persist to DB\n");
+        return false;
+    }
+
+    LogPrint(BCLog::KHU, "AddZKHUNoteToWallet: Added note %s amount=%d stakeHeight=%d\n",
+             cm.GetHex().substr(0, 16), memo.amount, memo.nStakeStartHeight);
+
+    return true;
+}
+
+bool MarkZKHUNoteSpent(CWallet* pwallet, const uint256& nullifier)
+{
+    LOCK(pwallet->cs_wallet);
+
+    // Find note by nullifier
+    auto nullIt = pwallet->khuData.mapZKHUNullifiers.find(nullifier);
+    if (nullIt == pwallet->khuData.mapZKHUNullifiers.end()) {
+        return false; // Not our note
+    }
+
+    const uint256& cm = nullIt->second;
+    auto noteIt = pwallet->khuData.mapZKHUNotes.find(cm);
+    if (noteIt == pwallet->khuData.mapZKHUNotes.end()) {
+        return false;
+    }
+
+    // Mark as spent
+    noteIt->second.fSpent = true;
+
+    // Update cached balance
+    pwallet->khuData.UpdateBalance();
+
+    // Update database
+    if (!WriteZKHUNoteToDB(pwallet, cm, noteIt->second)) {
+        LogPrintf("ERROR: MarkZKHUNoteSpent: Failed to update DB\n");
+    }
+
+    LogPrint(BCLog::KHU, "MarkZKHUNoteSpent: Note %s marked spent\n",
+             cm.GetHex().substr(0, 16));
+
+    return true;
+}
+
+std::vector<ZKHUNoteEntry> GetUnspentZKHUNotes(const CWallet* pwallet)
+{
+    LOCK(pwallet->cs_wallet);
+
+    std::vector<ZKHUNoteEntry> result;
+    for (std::map<uint256, ZKHUNoteEntry>::const_iterator it = pwallet->khuData.mapZKHUNotes.begin();
+         it != pwallet->khuData.mapZKHUNotes.end(); ++it) {
+        if (!it->second.fSpent) {
+            result.push_back(it->second);
+        }
+    }
+    return result;
+}
+
+const ZKHUNoteEntry* GetZKHUNote(const CWallet* pwallet, const uint256& cm)
+{
+    LOCK(pwallet->cs_wallet);
+
+    auto it = pwallet->khuData.mapZKHUNotes.find(cm);
+    if (it == pwallet->khuData.mapZKHUNotes.end()) {
+        return nullptr;
+    }
+    return &it->second;
+}
+
+bool WriteZKHUNoteToDB(CWallet* pwallet, const uint256& cm, const ZKHUNoteEntry& entry)
+{
+    WalletBatch batch(pwallet->GetDBHandle());
+    return batch.WriteZKHUNote(cm, entry);
+}
+
+bool EraseZKHUNoteFromDB(CWallet* pwallet, const uint256& cm)
+{
+    WalletBatch batch(pwallet->GetDBHandle());
+    return batch.EraseZKHUNote(cm);
+}
+
+void ProcessKHUStakeForWallet(CWallet* pwallet, const CTransactionRef& tx, int nHeight)
+{
+    LOCK(pwallet->cs_wallet);
+
+    if (tx->nType != CTransaction::TxType::KHU_STAKE) return;
+    if (!tx->IsShieldedTx()) return;
+
+    // Get the Sapling script pub key manager
+    SaplingScriptPubKeyMan* saplingMan = pwallet->GetSaplingScriptPubKeyMan();
+    if (!saplingMan) return;
+
+    // Process each Sapling output
+    const uint256& txhash = tx->GetHash();
+
+    for (size_t i = 0; i < tx->sapData->vShieldedOutput.size(); ++i) {
+        const OutputDescription& output = tx->sapData->vShieldedOutput[i];
+        SaplingOutPoint op(txhash, i);
+
+        // Check if this output belongs to us
+        auto it = pwallet->mapWallet.find(txhash);
+        if (it == pwallet->mapWallet.end()) continue;
+
+        const CWalletTx& wtx = it->second;
+        auto noteIt = wtx.mapSaplingNoteData.find(op);
+        if (noteIt == wtx.mapSaplingNoteData.end()) continue;
+
+        const SaplingNoteData& nd = noteIt->second;
+        if (!nd.IsMyNote()) continue;
+
+        // Try to decode the memo as ZKHUMemo
+        if (!nd.memo) continue;
+
+        std::array<unsigned char, 512> memoBytes;
+        std::copy(nd.memo->begin(), nd.memo->end(), memoBytes.begin());
+        ZKHUMemo memo = ZKHUMemo::Deserialize(memoBytes);
+
+        // Verify ZKHU magic
+        if (memcmp(memo.magic, "ZKHU", 4) != 0) continue;
+
+        // Get nullifier
+        uint256 nullifier;
+        if (nd.nullifier) {
+            nullifier = *nd.nullifier;
+        }
+
+        // Add to wallet
+        AddZKHUNoteToWallet(pwallet, op, output.cmu, memo, nullifier, nHeight);
+    }
+}
+
+void ProcessKHUUnstakeForWallet(CWallet* pwallet, const CTransactionRef& tx)
+{
+    LOCK(pwallet->cs_wallet);
+
+    if (tx->nType != CTransaction::TxType::KHU_UNSTAKE) return;
+    if (!tx->IsShieldedTx()) return;
+
+    // Check each Sapling spend's nullifier
+    for (const SpendDescription& spend : tx->sapData->vShieldedSpend) {
+        // Mark the note as spent if it's ours
+        MarkZKHUNoteSpent(pwallet, spend.nullifier);
+    }
 }
