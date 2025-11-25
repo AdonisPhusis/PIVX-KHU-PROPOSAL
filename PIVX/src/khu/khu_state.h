@@ -42,6 +42,7 @@ struct KhuGlobalState
     uint32_t R_annual;        // Annual yield rate (basis points: 1500 = 15.00%)
     uint32_t R_MAX_dynamic;   // Maximum allowed R% voted by DOMC (basis points)
     uint32_t last_yield_update_height;  // Last block where daily yield was applied
+    CAmount last_yield_amount;          // Last yield amount applied (for exact undo)
 
     // DOMC Governance (Phase 6.2) - Scalaires uniquement
     uint32_t domc_cycle_start;           // Height where current DOMC cycle started
@@ -72,6 +73,7 @@ struct KhuGlobalState
         R_annual = 0;
         R_MAX_dynamic = 0;
         last_yield_update_height = 0;
+        last_yield_amount = 0;
         domc_cycle_start = 0;
         domc_cycle_length = 0;
         domc_commit_phase_start = 0;
@@ -137,6 +139,7 @@ struct KhuGlobalState
         READWRITE(obj.R_annual);
         READWRITE(obj.R_MAX_dynamic);
         READWRITE(obj.last_yield_update_height);
+        READWRITE(obj.last_yield_amount);
         READWRITE(obj.domc_cycle_start);
         READWRITE(obj.domc_cycle_length);
         READWRITE(obj.domc_commit_phase_start);

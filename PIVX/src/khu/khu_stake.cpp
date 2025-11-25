@@ -8,6 +8,7 @@
 #include "consensus/params.h"
 #include "consensus/validation.h"
 #include "hash.h"
+#include "khu/khu_coins.h"
 #include "khu/khu_utxo.h"
 #include "khu/khu_validation.h"
 #include "khu/zkhu_db.h"
@@ -16,6 +17,10 @@
 #include "logging.h"
 #include "primitives/transaction.h"
 #include "sapling/incrementalmerkletree.h"
+#include "sync.h"
+
+// External lock (defined in khu_validation.cpp)
+extern RecursiveMutex cs_khu;
 
 bool CheckKHUStake(
     const CTransaction& tx,
@@ -24,11 +29,11 @@ bool CheckKHUStake(
     const Consensus::Params& consensus)
 {
     // 1. TxType check
-    // TODO: Uncomment when TxType::KHU_STAKE is defined in transaction.h
-    // if (tx.nType != TxType::KHU_STAKE) {
-    //     return state.DoS(100, error("%s: wrong tx type", __func__),
-    //                     REJECT_INVALID, "bad-stake-type");
-    // }
+    if (tx.nType != CTransaction::TxType::KHU_STAKE) {
+        return state.DoS(100, error("%s: wrong tx type (got %d, expected KHU_STAKE)",
+                                   __func__, (int)tx.nType),
+                        REJECT_INVALID, "bad-stake-type");
+    }
 
     // 2. Input KHU_T UTXO exists, amount > 0
     if (tx.vin.empty()) {
@@ -36,51 +41,45 @@ bool CheckKHUStake(
                         REJECT_INVALID, "bad-stake-no-inputs");
     }
 
-    // TODO: Verify input is KHU_T UTXO
-    // const Coin& coin = view.AccessCoin(tx.vin[0].prevout);
-    // if (coin.IsSpent() || !IsKHUCoin(coin.out)) {
-    //     return state.DoS(100, error("%s: input not KHU_T", __func__),
-    //                     REJECT_INVALID, "bad-stake-input-type");
-    // }
+    // 3. Verify input is KHU_T UTXO and get amount
+    const COutPoint& prevout = tx.vin[0].prevout;
+    CKHUUTXO khuCoin;
+    if (!GetKHUCoin(view, prevout, khuCoin)) {
+        return state.DoS(100, error("%s: input not KHU_T at %s", __func__, prevout.ToString()),
+                        REJECT_INVALID, "bad-stake-input-type");
+    }
 
-    // TODO: Verify amount > 0
-    // CAmount amount = coin.out.nValue;
-    // if (!consensus.MoneyRange(amount)) {
-    //     return state.DoS(100, error("%s: invalid amount", __func__),
-    //                     REJECT_INVALID, "bad-stake-amount");
-    // }
+    // 4. Verify amount > 0
+    if (khuCoin.amount <= 0) {
+        return state.DoS(100, error("%s: invalid amount %d", __func__, khuCoin.amount),
+                        REJECT_INVALID, "bad-stake-amount");
+    }
 
-    // 3. Input KHU_T not already staked (fStaked == false)
-    // TODO: Check CKHUUTXO::fStaked flag
-    // if (khuUtxo.fStaked) {
-    //     return state.DoS(100, error("%s: input already staked", __func__),
-    //                     REJECT_INVALID, "bad-stake-already-staked");
-    // }
+    // 5. Input KHU_T not already staked (fStaked == false)
+    if (khuCoin.fStaked) {
+        return state.DoS(100, error("%s: input already staked at %s", __func__, prevout.ToString()),
+                        REJECT_INVALID, "bad-stake-already-staked");
+    }
 
-    // 4. Sapling output present (1 note ZKHU)
-    // TODO: Check tx.vShieldedOutput has exactly 1 output
-    // if (tx.vShieldedOutput.size() != 1) {
-    //     return state.DoS(100, error("%s: must have 1 shielded output", __func__),
-    //                     REJECT_INVALID, "bad-stake-output-count");
-    // }
+    // 6. Sapling output present (exactly 1 note ZKHU)
+    if (!tx.sapData) {
+        return state.DoS(100, error("%s: missing Sapling data", __func__),
+                        REJECT_INVALID, "bad-stake-no-sapdata");
+    }
 
-    // 5. Memo 512 bytes → ZKHUMemo::Deserialize OK, magic == "ZKHU"
-    // TODO: Decrypt memo and validate
-    // try {
-    //     ZKHUMemo memo = ZKHUMemo::Deserialize(memoBytes);
-    //     if (memcmp(memo.magic, "ZKHU", 4) != 0) {
-    //         return state.DoS(100, error("%s: invalid memo magic", __func__),
-    //                         REJECT_INVALID, "bad-stake-memo-magic");
-    //     }
-    // } catch (const std::exception& e) {
-    //     return state.DoS(100, error("%s: memo deserialize failed: %s", __func__, e.what()),
-    //                     REJECT_INVALID, "bad-stake-memo-format");
-    // }
+    if (tx.sapData->vShieldedOutput.size() != 1) {
+        return state.DoS(100, error("%s: must have exactly 1 shielded output (got %zu)",
+                                   __func__, tx.sapData->vShieldedOutput.size()),
+                        REJECT_INVALID, "bad-stake-output-count");
+    }
 
-    // 6. nStakeStartHeight cohérent
-    // TODO: Verify memo.nStakeStartHeight is reasonable (e.g., close to current height)
+    // 7. No transparent outputs allowed (pure T→Z conversion)
+    if (!tx.vout.empty()) {
+        return state.DoS(100, error("%s: STAKE must not have transparent outputs", __func__),
+                        REJECT_INVALID, "bad-stake-has-vout");
+    }
 
-    LogPrint(BCLog::KHU, "%s: STAKE validation passed (TODO: full implementation)\n", __func__);
+    LogPrint(BCLog::KHU, "%s: STAKE validation passed (amount=%d)\n", __func__, khuCoin.amount);
     return true;
 }
 
@@ -90,7 +89,8 @@ bool ApplyKHUStake(
     KhuGlobalState& state,
     int nHeight)
 {
-    // TODO Phase 6: AssertLockHeld(cs_khu);
+    // CRITICAL: cs_khu MUST be held to prevent race conditions
+    AssertLockHeld(cs_khu);
 
     // 1. Validate transaction has Sapling data
     if (!tx.sapData) {
@@ -177,7 +177,8 @@ bool UndoKHUStake(
     KhuGlobalState& state,
     int nHeight)
 {
-    // TODO Phase 6: AssertLockHeld(cs_khu);
+    // CRITICAL: cs_khu MUST be held to prevent race conditions
+    AssertLockHeld(cs_khu);
 
     // 1. Validate transaction structure
     if (!tx.sapData || tx.sapData->vShieldedOutput.empty()) {

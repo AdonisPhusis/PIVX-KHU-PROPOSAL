@@ -160,9 +160,11 @@ const uint32_t BLOCKS_PER_YEAR = 525600;
 const uint32_t MATURITY_BLOCKS = 4320;          // 3 jours
 const uint32_t FINALITY_DEPTH = 12;             // LLMQ finality
 
-// DOMC Cycle
-const uint32_t DOMC_CYCLE_LENGTH = 43200;       // 30 jours
-const uint32_t DOMC_PHASE_LENGTH = 4320;        // 3 jours
+// DOMC Cycle (Updated 2025-11-25)
+const uint32_t DOMC_CYCLE_LENGTH = 172800;      // 4 mois (~120 jours)
+const uint32_t DOMC_COMMIT_OFFSET = 132480;     // Début phase commit
+const uint32_t DOMC_REVEAL_OFFSET = 152640;     // Début phase reveal
+const uint32_t DOMC_PHASE_DURATION = 20160;     // Durée commit/reveal (~2 semaines)
 
 // Emission (formule sacrée)
 int64_t reward_year = std::max(6 - (int64_t)year, 0LL) * COIN;
@@ -194,10 +196,11 @@ struct KhuGlobalState {
     uint16_t R_MAX_dynamic;         // max(400, 3000 - year*100)
     uint32_t last_domc_height;
 
-    // DOMC cycle
+    // DOMC cycle (Updated 2025-11-25)
     uint32_t domc_cycle_start;
-    uint32_t domc_cycle_length;     // 43200 blocks (30 days)
-    uint32_t domc_phase_length;     // 4320 blocks (3 days)
+    uint32_t domc_cycle_length;          // 172800 blocks (4 mois)
+    uint32_t domc_commit_phase_start;    // cycle_start + 132480
+    uint32_t domc_reveal_deadline;       // cycle_start + 152640
 
     // Yield scheduler
     uint32_t last_yield_update_height;
@@ -396,18 +399,20 @@ test/functional/test_runner.py khu*
 L'ordre de sérialisation de `GetHash()` est **IMMUABLE**:
 
 ```cpp
-// Ces 14 champs dans CET ORDRE EXACT
+// Ces 16 champs dans CET ORDRE EXACT (Updated 2025-11-25)
 ss << C;
 ss << U;
 ss << Cr;
 ss << Ur;
+ss << T;                           // DAO Treasury (Phase 6.3)
 ss << R_annual;
 ss << R_MAX_dynamic;
-ss << last_domc_height;
+ss << last_yield_update_height;
+ss << last_yield_amount;           // For exact undo
 ss << domc_cycle_start;
 ss << domc_cycle_length;
-ss << domc_phase_length;
-ss << last_yield_update_height;
+ss << domc_commit_phase_start;
+ss << domc_reveal_deadline;
 ss << nHeight;
 ss << hashBlock;
 ss << hashPrevState;

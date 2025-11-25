@@ -183,6 +183,9 @@ bool ApplyDailyYield(KhuGlobalState& state, uint32_t nHeight, uint32_t nV6Activa
     // Note: Cr remains unchanged (Phase 6 doesn't affect Cr)
     state.Ur += totalYield;
 
+    // Store yield for exact undo (P1 fix: avoid recalculation on reorg)
+    state.last_yield_amount = totalYield;
+
     // Update last yield height
     state.last_yield_update_height = nHeight;
 
@@ -194,19 +197,28 @@ bool ApplyDailyYield(KhuGlobalState& state, uint32_t nHeight, uint32_t nV6Activa
 
 bool UndoDailyYield(KhuGlobalState& state, uint32_t nHeight, uint32_t nV6ActivationHeight)
 {
-    // Recalculate yield (same algorithm as Apply)
-    CAmount totalYield = 0;
-    if (!CalculateTotalYield(nHeight, state.R_annual, totalYield)) {
-        LogPrintf("ERROR: UndoDailyYield: Failed to recalculate yield at height %u\n", nHeight);
+    // P1 FIX: Use stored yield amount instead of recalculating
+    // This ensures exact undo even if note set changed during reorg
+    CAmount totalYield = state.last_yield_amount;
+
+    // Sanity check: yield must have been stored
+    if (totalYield < 0) {
+        LogPrintf("ERROR: UndoDailyYield: Invalid stored yield %d at height %u\n", totalYield, nHeight);
         return false;
     }
 
-    // Undo: Ur -= total_yield
+    // Undo: Ur -= total_yield (using stored value)
+    if (state.Ur < totalYield) {
+        LogPrintf("ERROR: UndoDailyYield: Underflow Ur=%d < totalYield=%d at height %u\n",
+                  state.Ur, totalYield, nHeight);
+        return false;
+    }
     state.Ur -= totalYield;
 
+    // Clear stored yield amount
+    state.last_yield_amount = 0;
+
     // Restore previous last_yield_update_height
-    // This is tricky: we need to find the previous yield height
-    // Simplest: set to (nHeight - YIELD_INTERVAL), or 0 if before activation
     if (nHeight == nV6ActivationHeight) {
         state.last_yield_update_height = 0;
     } else if (nHeight > nV6ActivationHeight + YIELD_INTERVAL) {
@@ -215,7 +227,7 @@ bool UndoDailyYield(KhuGlobalState& state, uint32_t nHeight, uint32_t nV6Activat
         state.last_yield_update_height = nV6ActivationHeight;
     }
 
-    LogPrint(BCLog::KHU, "UndoDailyYield: height=%u totalYield=%d Ur=%d\n",
+    LogPrint(BCLog::KHU, "UndoDailyYield: height=%u totalYield=%d (stored) Ur=%d\n",
              nHeight, totalYield, state.Ur);
 
     return true;
