@@ -108,10 +108,18 @@ bool DecodeConditionalScript(
     if (!script.GetOp(it, opcode) || opcode != OP_ELSE)
         return false;
 
-    // timelock
+    // timelock (use 5-byte max like CLTV, validate positive)
     if (!script.GetOp(it, opcode, data))
         return false;
-    timelock = CScriptNum(data, true).getint();
+    try {
+        CScriptNum num(data, true, 5);  // 5-byte max like CHECKLOCKTIMEVERIFY
+        int lockValue = num.getint();
+        if (lockValue <= 0)
+            return false;
+        timelock = static_cast<uint32_t>(lockValue);
+    } catch (const scriptnum_error&) {
+        return false;
+    }
 
     // OP_CHECKLOCKTIMEVERIFY
     if (!script.GetOp(it, opcode) || opcode != OP_CHECKLOCKTIMEVERIFY)
@@ -144,6 +152,10 @@ bool DecodeConditionalScript(
 
     // OP_CHECKSIG
     if (!script.GetOp(it, opcode) || opcode != OP_CHECKSIG)
+        return false;
+
+    // Verify we've reached the end of the script (no trailing garbage)
+    if (it != script.end())
         return false;
 
     return true;

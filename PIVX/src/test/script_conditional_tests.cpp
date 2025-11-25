@@ -95,6 +95,20 @@ BOOST_AUTO_TEST_CASE(is_conditional_script_negative)
     CScript random;
     random << OP_1 << OP_2 << OP_ADD;
     BOOST_CHECK(!IsConditionalScript(random));
+
+    // Valid conditional script with trailing garbage (should be rejected)
+    uint256 hashlock;
+    std::vector<unsigned char> secret(32, 0x42);
+    CSHA256().Write(secret.data(), secret.size()).Finalize(hashlock.begin());
+    CKey keyA, keyB;
+    keyA.MakeNewKey(true);
+    keyB.MakeNewKey(true);
+    CScript validScript = CreateConditionalScript(hashlock, 100000, keyA.GetPubKey().GetID(), keyB.GetPubKey().GetID());
+
+    // Add trailing garbage
+    CScript scriptWithGarbage = validScript;
+    scriptWithGarbage << OP_NOP;
+    BOOST_CHECK(!IsConditionalScript(scriptWithGarbage));
 }
 
 BOOST_AUTO_TEST_CASE(conditional_script_roundtrip)
@@ -173,6 +187,42 @@ BOOST_AUTO_TEST_CASE(conditional_spend_scripts)
         if (spendB[i] == OP_FALSE) hasOpFalse = true;
     }
     BOOST_CHECK(hasOpFalse);
+}
+
+BOOST_AUTO_TEST_CASE(conditional_timelock_boundaries)
+{
+    // Test timelock boundary conditions
+
+    uint256 hashlock;
+    std::vector<unsigned char> secret(32, 0x99);
+    CSHA256().Write(secret.data(), secret.size()).Finalize(hashlock.begin());
+
+    CKey keyA, keyB;
+    keyA.MakeNewKey(true);
+    keyB.MakeNewKey(true);
+
+    CKeyID destA = keyA.GetPubKey().GetID();
+    CKeyID destB = keyB.GetPubKey().GetID();
+
+    // Test with minimum valid timelock (1)
+    CScript scriptMin = CreateConditionalScript(hashlock, 1, destA, destB);
+    BOOST_CHECK(IsConditionalScript(scriptMin));
+    uint256 h; uint32_t t; CKeyID a, b;
+    BOOST_CHECK(DecodeConditionalScript(scriptMin, h, t, a, b));
+    BOOST_CHECK(t == 1);
+
+    // Test with large timelock (practical maximum - year 4000 at ~1 block/min)
+    // Note: CScriptNum::getint() clamps to INT_MAX, so we test with realistic values
+    CScript scriptLarge = CreateConditionalScript(hashlock, 0x7FFFFFFE, destA, destB);
+    BOOST_CHECK(IsConditionalScript(scriptLarge));
+    BOOST_CHECK(DecodeConditionalScript(scriptLarge, h, t, a, b));
+    BOOST_CHECK(t == 0x7FFFFFFE);  // ~2 billion blocks = thousands of years
+
+    // Test with typical block height
+    CScript scriptTypical = CreateConditionalScript(hashlock, 1500000, destA, destB);
+    BOOST_CHECK(IsConditionalScript(scriptTypical));
+    BOOST_CHECK(DecodeConditionalScript(scriptTypical, h, t, a, b));
+    BOOST_CHECK(t == 1500000);
 }
 
 BOOST_AUTO_TEST_CASE(conditional_script_bip199_compatible)
