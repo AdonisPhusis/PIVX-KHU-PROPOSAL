@@ -484,13 +484,8 @@ static UniValue khuredeem(const JSONRPCRequest& request)
     ds << payload;
     mtx.extraPayload = std::vector<uint8_t>(ds.begin(), ds.end());
 
-    // DEBUG: Log selected KHU inputs
-    LogPrintf("khuredeem: selecting %zu KHU inputs for redeem amount=%s\n",
+    LogPrint(BCLog::KHU, "khuredeem: %zu KHU inputs for amount=%s\n",
               vKHUInputs.size(), FormatMoney(nAmount));
-    for (const auto& op : vKHUInputs) {
-        LogPrintf("khuredeem: selected KHU input %s:%d\n",
-                  op.hash.ToString().substr(0,16).c_str(), op.n);
-    }
 
     // Add KHU inputs first
     for (const COutPoint& outpoint : vKHUInputs) {
@@ -560,14 +555,8 @@ static UniValue khuredeem(const JSONRPCRequest& request)
     // Broadcast transaction
     CTransactionRef txRef = MakeTransactionRef(std::move(mtx));
 
-    // DEBUG: Log final tx details
-    LogPrintf("khuredeem: final REDEEM tx %s with %zu inputs\n",
-              txRef->GetHash().ToString().substr(0,16).c_str(), txRef->vin.size());
-    for (size_t i = 0; i < txRef->vin.size(); i++) {
-        LogPrintf("khuredeem: tx vin[%zu] = %s:%d\n",
-                  i, txRef->vin[i].prevout.hash.ToString().substr(0,16).c_str(),
-                  txRef->vin[i].prevout.n);
-    }
+    LogPrint(BCLog::KHU, "khuredeem: broadcasting tx %s\n",
+              txRef->GetHash().ToString().substr(0,16).c_str());
 
     CValidationState state;
 

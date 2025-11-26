@@ -192,9 +192,8 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
 
     const uint256& txhash = tx->GetHash();
 
-    // Debug logging
-    LogPrintf("ProcessKHUTransactionForWallet: Processing tx %s type=%d at height=%d\n",
-              txhash.GetHex().substr(0, 16).c_str(), (int)tx->nType, nHeight);
+    LogPrint(BCLog::KHU, "%s: tx %s type=%d height=%d\n",
+              __func__, txhash.GetHex().substr(0, 16).c_str(), (int)tx->nType, nHeight);
 
     // STEP 1: Check if any input spends our tracked KHU UTXOs
     // This handles ALL transaction types including regular transfers via khusend
@@ -238,20 +237,17 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
         // 2. KHU_T change output (if any)
         // 3. PIV change output for fee (NOT tracked as KHU)
 
-        LogPrintf("ProcessKHUTransactionForWallet: KHU_STAKE detected, vout.size=%zu\n", tx->vout.size());
+        LogPrint(BCLog::KHU, "%s: KHU_STAKE detected, vout.size=%zu\n", __func__, tx->vout.size());
 
         // Step 1: Get staked amount from Sapling valueBalance and add ZKHU note
         CAmount stakedAmount = 0;
         bool hasSapData = tx->sapData.is_initialized();
         size_t sapOutputs = hasSapData ? tx->sapData->vShieldedOutput.size() : 0;
-        LogPrintf("ProcessKHUTransactionForWallet: hasSapData=%d, sapOutputs=%zu\n", hasSapData, sapOutputs);
 
         if (hasSapData && sapOutputs > 0) {
             // In STAKE, valueBalance is negative (outflow to Sapling)
             CAmount valueBalance = tx->sapData->valueBalance;
             stakedAmount = -valueBalance;
-            LogPrintf("ProcessKHUTransactionForWallet: valueBalance=%d, stakedAmount=%d\n",
-                      valueBalance, stakedAmount);
 
             if (stakedAmount > 0) {
                 // Add ZKHU note entry to mapZKHUNotes so UpdateBalance() will count it
@@ -264,8 +260,8 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
 
                 // Add to map (this will be counted by UpdateBalance)
                 pwallet->khuData.mapZKHUNotes[cm] = noteEntry;
-                LogPrintf("ProcessKHUTransactionForWallet: Added ZKHU note cm=%s amount=%d\n",
-                         cm.GetHex().substr(0, 16).c_str(), stakedAmount);
+                LogPrint(BCLog::KHU, "%s: added ZKHU note cm=%s amount=%d\n",
+                         __func__, cm.GetHex().substr(0, 16).c_str(), stakedAmount);
             }
         }
 
@@ -277,24 +273,14 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
         if (tx->vout.size() > 0) {
             const CTxOut& out = tx->vout[0];
             isminetype mine = ::IsMine(*pwallet, out.scriptPubKey);
-            LogPrintf("ProcessKHUTransactionForWallet: vout[0] (KHU change) value=%d ismine=%d\n",
-                      out.nValue, (int)mine);
             if (mine != ISMINE_NO) {
                 CKHUUTXO coin(out.nValue, out.scriptPubKey, nHeight);
                 AddKHUCoinToWallet(pwallet, COutPoint(txhash, 0), coin, nHeight);
-                LogPrintf("ProcessKHUTransactionForWallet: Added KHU change %s:0 = %d\n",
-                         txhash.GetHex().substr(0, 16).c_str(), out.nValue);
+                LogPrint(BCLog::KHU, "%s: added KHU change %s:0 = %s\n",
+                         __func__, txhash.GetHex().substr(0, 16).c_str(), FormatMoney(out.nValue));
             }
         }
-
         // vout[1] if present is PIV fee change - NOT tracked as KHU
-        if (tx->vout.size() > 1) {
-            LogPrintf("ProcessKHUTransactionForWallet: vout[1] (PIV change) value=%d - NOT tracked as KHU\n",
-                      tx->vout[1].nValue);
-        }
-
-        LogPrintf("ProcessKHUTransactionForWallet: After STAKE: nKHUBalance=%d, nKHUStaked=%d\n",
-                  pwallet->khuData.nKHUBalance, pwallet->khuData.nKHUStaked);
     }
     // KHU_REDEEM only spends (no KHU outputs created)
     // Its inputs are already handled in STEP 1 above

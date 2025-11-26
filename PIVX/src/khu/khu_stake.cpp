@@ -177,8 +177,8 @@ bool ApplyKHUStake(
             if (!SpendKHUCoin(view, in.prevout)) {
                 return error("%s: failed to spend KHU coin at %s", __func__, in.prevout.ToString());
             }
-            LogPrintf("ApplyKHUStake: spent KHU input %s:%d value=%s\n",
-                     in.prevout.hash.ToString().substr(0,16).c_str(), in.prevout.n,
+            LogPrint(BCLog::KHU, "%s: spent KHU input %s:%d value=%s\n",
+                     __func__, in.prevout.hash.ToString().substr(0,16).c_str(), in.prevout.n,
                      FormatMoney(khuCoin.amount));
         }
         // Non-KHU inputs (PIV fee) are skipped - they're not in mapKHUUTXOs
@@ -201,8 +201,8 @@ bool ApplyKHUStake(
             if (!AddKHUCoin(view, khuOutpoint, newCoin)) {
                 return error("%s: failed to add KHU change coin", __func__);
             }
-            LogPrintf("ApplyKHUStake: created KHU change %s:%d value=%s\n",
-                     khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n,
+            LogPrint(BCLog::KHU, "%s: created KHU change %s:%d value=%s\n",
+                     __func__, khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n,
                      FormatMoney(out.nValue));
         }
     }
@@ -277,8 +277,8 @@ bool UndoKHUStake(
                 if (!SpendKHUCoin(view, khuOutpoint)) {
                     return error("%s: failed to remove KHU change coin at %s", __func__, khuOutpoint.ToString());
                 }
-                LogPrintf("UndoKHUStake: removed KHU change %s:%d\n",
-                         khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n);
+                LogPrint(BCLog::KHU, "%s: removed KHU change %s:%d\n",
+                         __func__, khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n);
             }
         }
     }

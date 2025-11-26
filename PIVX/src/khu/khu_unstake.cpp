@@ -282,8 +282,8 @@ bool ApplyKHUUnstake(
         return error("%s: failed to add KHU_T coin to tracking", __func__);
     }
 
-    LogPrintf("ApplyKHUUnstake: created KHU_T %s:%d value=%s\n",
-             khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n,
+    LogPrint(BCLog::KHU, "%s: created KHU_T %s:%d value=%s\n",
+             __func__, khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n,
              FormatMoney(expectedOutput));
 
     // 12. ✅ CRITICAL: Verify invariants AFTER mutations
@@ -391,8 +391,8 @@ bool UndoKHUUnstake(
         return error("%s: failed to remove KHU_T coin from tracking", __func__);
     }
 
-    LogPrintf("UndoKHUUnstake: removed KHU_T %s:%d\n",
-             khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n);
+    LogPrint(BCLog::KHU, "%s: removed KHU_T %s:%d\n",
+             __func__, khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n);
 
     // 10. ✅ CRITICAL: Verify invariants AFTER undo
     if (!state.CheckInvariants()) {

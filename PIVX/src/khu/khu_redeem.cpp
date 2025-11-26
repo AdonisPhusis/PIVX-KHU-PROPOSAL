@@ -171,38 +171,30 @@ bool ApplyKHURedeem(const CTransaction& tx, KhuGlobalState& state, CCoinsViewCac
     // Only spend inputs that are actually KHU coins (exist in mapKHUUTXOs).
     // PIV fee inputs are NOT in the KHU tracking and should be skipped.
 
-    // DEBUG: Log what we're processing
-    LogPrintf("ApplyKHURedeem: Processing tx %s with %zu inputs, redeem amount=%lld\n",
-              tx.GetHash().ToString().substr(0,16).c_str(), tx.vin.size(), amount);
+    LogPrint(BCLog::KHU, "%s: processing tx %s with %zu inputs\n",
+              __func__, tx.GetHash().ToString().substr(0,16).c_str(), tx.vin.size());
 
     CAmount totalKHUSpent = 0;
     for (size_t i = 0; i < tx.vin.size(); i++) {
         const auto& in = tx.vin[i];
-        // DEBUG: Log each input we're inspecting
-        LogPrintf("ApplyKHURedeem: inspecting vin[%zu] %s:%d\n",
-                  i, in.prevout.hash.ToString().substr(0,16).c_str(), in.prevout.n);
 
         // Check if this input is a KHU coin (exists in tracking)
         CKHUUTXO khuCoin;
         if (GetKHUCoin(view, in.prevout, khuCoin)) {
             // This is a KHU input - spend it
-            LogPrintf("ApplyKHURedeem: vin[%zu] IS a KHU coin, value=%s\n",
-                     i, FormatMoney(khuCoin.amount));
             if (!SpendKHUCoin(view, in.prevout)) {
-                return error("ApplyKHURedeem: Failed to spend KHU coin at %s", in.prevout.ToString());
+                return error("%s: failed to spend KHU coin at %s", __func__, in.prevout.ToString());
             }
             totalKHUSpent += khuCoin.amount;
-            LogPrintf("ApplyKHURedeem: Spent KHU input %s:%d value=%s (totalKHUSpent now=%s)\n",
-                     in.prevout.hash.ToString().substr(0,16).c_str(), in.prevout.n,
-                     FormatMoney(khuCoin.amount), FormatMoney(totalKHUSpent));
-        } else {
-            // This is NOT a KHU input (likely PIV fee input) - skip it
-            LogPrintf("ApplyKHURedeem: vin[%zu] NOT a KHU coin (PIV fee input) - skipping\n", i);
+            LogPrint(BCLog::KHU, "%s: spent KHU input %s:%d value=%s\n",
+                     __func__, in.prevout.hash.ToString().substr(0,16).c_str(), in.prevout.n,
+                     FormatMoney(khuCoin.amount));
         }
+        // PIV fee inputs are silently skipped - they're not in mapKHUUTXOs
     }
 
-    LogPrintf("ApplyKHURedeem: totalKHUSpent=%s, required=%s\n",
-              FormatMoney(totalKHUSpent), FormatMoney(amount));
+    LogPrint(BCLog::KHU, "%s: totalKHUSpent=%s, required=%s\n",
+              __func__, FormatMoney(totalKHUSpent), FormatMoney(amount));
 
     // Verify we spent at least the payload amount in KHU
     if (totalKHUSpent < amount) {

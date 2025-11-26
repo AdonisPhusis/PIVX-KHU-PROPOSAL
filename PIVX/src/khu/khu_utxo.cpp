@@ -21,27 +21,26 @@ bool AddKHUCoin(CCoinsViewCache& view, const COutPoint& outpoint, const CKHUUTXO
 {
     LOCK(cs_khu_utxos);
 
-    // DEBUG: Always log for troubleshooting
-    LogPrintf("AddKHUCoin: ADDING %s KHU at %s:%d (height %d, current map size=%zu)\n",
-             FormatMoney(coin.amount), outpoint.hash.ToString().substr(0,16).c_str(),
-             outpoint.n, coin.nHeight, mapKHUUTXOs.size());
+    LogPrint(BCLog::KHU, "%s: adding %s KHU at %s:%d (height %d)\n",
+             __func__, FormatMoney(coin.amount), outpoint.hash.ToString().substr(0,16).c_str(),
+             outpoint.n, coin.nHeight);
 
     // Vérifier que le coin n'existe pas déjà
     auto it = mapKHUUTXOs.find(outpoint);
     if (it != mapKHUUTXOs.end()) {
         bool isSpent = it->second.IsSpent();
-        LogPrintf("AddKHUCoin: outpoint=%s already exists (spent=%d, amount=%s)\n",
-                 outpoint.ToString(), isSpent, FormatMoney(it->second.amount));
+        LogPrint(BCLog::KHU, "%s: outpoint=%s already exists (spent=%d)\n",
+                 __func__, outpoint.ToString(), isSpent);
         if (!isSpent) {
-            return error("AddKHUCoin: coin already exists and not spent at %s", outpoint.ToString());
+            return error("%s: coin already exists and not spent at %s", __func__, outpoint.ToString());
         }
     }
 
     // Ajouter le coin
     mapKHUUTXOs[outpoint] = coin;
 
-    LogPrintf("AddKHUCoin: SUCCESS added %s KHU at %s (map size now=%zu)\n",
-             FormatMoney(coin.amount), outpoint.ToString(), mapKHUUTXOs.size());
+    LogPrint(BCLog::KHU, "%s: added %s KHU at %s\n",
+             __func__, FormatMoney(coin.amount), outpoint.ToString());
 
     return true;
 }
@@ -50,15 +49,14 @@ bool SpendKHUCoin(CCoinsViewCache& view, const COutPoint& outpoint)
 {
     LOCK(cs_khu_utxos);
 
-    // DEBUG: Always log for troubleshooting
-    LogPrintf("SpendKHUCoin: looking for %s:%d (mapKHUUTXOs size=%zu)\n",
-              outpoint.hash.ToString().substr(0,16).c_str(), outpoint.n, mapKHUUTXOs.size());
+    LogPrint(BCLog::KHU, "%s: looking for %s:%d\n",
+              __func__, outpoint.hash.ToString().substr(0,16).c_str(), outpoint.n);
 
     auto it = mapKHUUTXOs.find(outpoint);
     if (it == mapKHUUTXOs.end()) {
-        LogPrintf("SpendKHUCoin: coin NOT FOUND for %s:%d\n",
-                 outpoint.hash.ToString().substr(0,16).c_str(), outpoint.n);
-        return error("SpendKHUCoin: coin not found at %s", outpoint.ToString());
+        LogPrint(BCLog::KHU, "%s: coin not found for %s:%d\n",
+                 __func__, outpoint.hash.ToString().substr(0,16).c_str(), outpoint.n);
+        return error("%s: coin not found at %s", __func__, outpoint.ToString());
     }
 
     if (it->second.IsSpent()) {
@@ -80,14 +78,14 @@ bool GetKHUCoin(const CCoinsViewCache& view, const COutPoint& outpoint, CKHUUTXO
 {
     LOCK(cs_khu_utxos);
 
-    // DEBUG: Always log for troubleshooting
-    LogPrintf("GetKHUCoin: looking for %s:%d (mapKHUUTXOs size=%zu)\n",
-              outpoint.hash.ToString().substr(0,16).c_str(), outpoint.n, mapKHUUTXOs.size());
+    LogPrint(BCLog::KHU, "%s: looking for %s:%d\n",
+              __func__, outpoint.hash.ToString().substr(0,16).c_str(), outpoint.n);
 
     auto it = mapKHUUTXOs.find(outpoint);
     if (it == mapKHUUTXOs.end()) {
-        LogPrintf("GetKHUCoin: coin NOT FOUND for %s:%d\n",
-                 outpoint.hash.ToString().substr(0,16).c_str(), outpoint.n);
+        // Not found is normal for PIV inputs - only log at debug level
+        LogPrint(BCLog::KHU, "%s: coin not found for %s:%d\n",
+                 __func__, outpoint.hash.ToString().substr(0,16).c_str(), outpoint.n);
         return false;
     }
 

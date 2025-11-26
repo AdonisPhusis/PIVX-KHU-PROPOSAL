@@ -133,10 +133,8 @@ bool ProcessKHUBlock(const CBlock& block,
 
     CKHUStateDB* db = GetKHUStateDB();
     if (!db) {
-        LogPrintf("ProcessKHUBlock: FAIL - db not initialized\n");
         return validationState.Error("khu-db-not-initialized");
     }
-    LogPrintf("ProcessKHUBlock: KHU DB is initialized\n");
 
     // Load previous state (or genesis if first KHU block)
     KhuGlobalState prevState;
