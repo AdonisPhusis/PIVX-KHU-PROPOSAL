@@ -1,6 +1,6 @@
-# 04 — PIVX-V6-KHU ECONOMICS: CD=1, R%
+# 04 — PIVX-V6-KHU ECONOMICS: CD=1, R%, T
 
-Version: 1.0.0
+Version: 1.2.0
 Status: CANONICAL
 Style: Pure Mathematics
 
@@ -14,7 +14,7 @@ Style: Pure Mathematics
 - ✅ **Phases 1-3** : Foundation, MINT/REDEEM, Finality - **OPÉRATIONNELLES**
 - ✅ **Tests** : 52/52 PASS (100% success rate)
 - ✅ **Sécurité** : 20/20 vecteurs d'attaque bloqués (100%)
-- ✅ **Invariants** : C==U et Cr==Ur mathématiquement garantis
+- ✅ **Invariants** : C==U+Z et Cr==Ur mathématiquement garantis
 - ✅ **Finalité** : Système de finalité masternode opérationnel (12 blocs)
 - ✅ **Émission** : Formule déflationnaire 6→0 PIV/an implémentée
 - ✅ **Activation V6** : Migration V5→V6 validée sans split de consensus
@@ -43,13 +43,14 @@ C  ∈ ℤ≥0     Collateral (PIV locked, satoshis)
 U  ∈ ℤ≥0     Supply (KHU_T in circulation, satoshis)
 Cr ∈ ℤ≥0     Reward pool (PIV allocated for yield)
 Ur ∈ ℤ≥0     Reward rights (accumulated yield claims)
+T  ∈ ℤ≥0     DAO Treasury pool (satoshis)
 ```
 
 ### 1.2 DOMC Parameters
 
 ```
 R_annual      ∈ [0, R_MAX_dynamic]     Yield rate (basis points, ∈ ℕ)
-R_MAX_dynamic ∈ [400, 3000]             Maximum votable rate (basis points, ∈ ℕ)
+R_MAX_dynamic ∈ [400, 3700]             Maximum votable rate (basis points, ∈ ℕ)
 ```
 
 ### 1.3 Time Parameters
@@ -68,15 +69,24 @@ MATURITY = 4320                Staking maturity (blocks)
 
 ### 2.1 Collateralization Ratio
 
-```
-CD = C / U
+**Soit Z = Σ(active ZKHU notes) la somme des montants ZKHU stakés (calculé dynamiquement).**
 
-INVARIANT_1:  CD = 1  ⟺  C = U
+```
+CD = C / (U + Z)
+
+INVARIANT_1:  CD = 1  ⟺  C = U + Z
+
+où:
+  C = PIV collateral total
+  U = KHU_T en circulation (transparent)
+  Z = ZKHU stakés (shielded, via GetTotalStakedZKHU())
 ```
 
 **Proof of Preservation:**
 ```
-∀ operations:  ΔC = ΔU  ⇒  C' = U'
+Pour MINT/REDEEM:  ΔC = ΔU  ∧  ΔZ = 0  ⇒  C' = U' + Z
+Pour STAKE:        ΔC = 0   ∧  ΔU = -a  ∧  ΔZ = +a  ⇒  C' = U' + Z'
+Pour UNSTAKE:      ΔC = +B  ∧  ΔU = +P+B  ∧  ΔZ = -P  ⇒  C' = U' + Z'
 ```
 
 ### 2.2 Reward Collateralization Ratio
@@ -333,20 +343,23 @@ PROPERTY P_NO_OPTIMIZATION:
 ### 8.1 R_MAX_dynamic Function
 
 ```
-R_MAX_dynamic(h) = max(400, 3000 - year(h) × 100)
+R_MAX_dynamic(h) = max(400, 3700 - year(h) × 100)  // 37%→4% over 33 years
 ```
 
 **Schedule (basis points):**
 ```
 year | R_MAX_dynamic
 -----|---------------
-  0  |     3000
-  1  |     2900
-  2  |     2800
-  ...
- 25  |      500
- 26  |      400
- 27+ |      400
+  0  |     3700      (37%)
+  1  |     3600
+  5  |     3200
+ 10  |     2700
+ 15  |     2200
+ 20  |     1700
+ 25  |     1200
+ 30  |      700
+ 33  |      400      (4% - floor)
+ 34+ |      400
 ```
 
 ### 8.2 R_annual Domain
@@ -358,8 +371,13 @@ R_annual(h) ∈ [0, R_MAX_dynamic(h)] ∩ ℕ
 ### 8.3 Genesis Value
 
 ```
-R_annual(h₀) = 500  (5.00%)
+R_annual(h₀) = 3700  (37.00%)
+
+R% is active IMMEDIATELY at V6 activation (alongside 6/6/6 emission).
+First DOMC cycle starts at: h₀ + 172800 (4 months)
 ```
+
+**Note:** R% = 37% for the first 4 months provides strong incentive for early stakers. After the first DOMC cycle, masternodes vote to adjust R_annual (bounded by R_MAX_dynamic).
 
 ### 8.4 DOMC Update Rule
 
@@ -513,12 +531,13 @@ STAKE: KHU_T → ZKHU
 ```
 Given:  amount ∈ ℤ>0
 
-Pre-state:   (C, U, Cr, Ur)
-Post-state:  (C', U', Cr', Ur')
+Pre-state:   (C, U, Z, Cr, Ur)  où Z = GetTotalStakedZKHU()
+Post-state:  (C', U', Z', Cr', Ur')
 
 Equations:
 C'  = C
-U'  = U
+U'  = U - amount      // KHU_T supply decreases
+Z'  = Z + amount      // ZKHU supply increases (computed dynamically)
 Cr' = Cr
 Ur' = Ur
 ```
@@ -526,16 +545,22 @@ Ur' = Ur
 ### 11.3 Invariant Preservation
 
 ```
-No change to C, U, Cr, Ur
-⇒ CD' = CD = 1  ✓
+ΔC = 0
+ΔU = -amount
+ΔZ = +amount
+
+C' = C = U + Z = (U - amount) + (Z + amount) = U' + Z'
+
+⇒ CD' = C' / (U' + Z') = C / (U + Z) = 1  ✓
 ⇒ CDr' = CDr = 1  ✓
 ```
 
 ### 11.4 Economic Neutrality
 
 ```
-STAKE does not create or destroy value
-Only changes representation: KHU_T → ZKHU
+STAKE does not create or destroy collateral value
+Transfers value from transparent pool (U) to shielded pool (Z)
+Total supply preserved: U' + Z' = U + Z
 ```
 
 ---
@@ -640,9 +665,11 @@ where T(h) = set of transactions at height h
 
 ```
 ∀h ≥ h₀:
-    C(h) = U(h)
+    C(h) = U(h) + Z(h)   où Z(h) = GetTotalStakedZKHU(h)
     Cr(h) = Ur(h)
     C(h) ≥ 0
+    U(h) ≥ 0
+    Z(h) ≥ 0
     Cr(h) ≥ 0
     R_annual(h) ≤ R_MAX_dynamic(h)
 ```
@@ -653,13 +680,19 @@ where T(h) = set of transactions at height h
 Law 1 (Collateral):
     ΔC = ∑ MINT - ∑ REDEEM + ∑ UNSTAKE_bonus
 
-Law 2 (Supply):
-    ΔU = ∑ MINT - ∑ REDEEM + ∑ UNSTAKE_bonus
+Law 2 (Transparent Supply):
+    ΔU = ∑ MINT - ∑ REDEEM - ∑ STAKE + ∑ UNSTAKE_principal + ∑ UNSTAKE_bonus
 
-Law 3 (Reward Pool):
+Law 3 (Shielded Supply):
+    ΔZ = ∑ STAKE - ∑ UNSTAKE_principal
+
+Law 4 (Total Supply Conservation):
+    Δ(U + Z) = ∑ MINT - ∑ REDEEM + ∑ UNSTAKE_bonus = ΔC
+
+Law 5 (Reward Pool):
     ΔCr = ∑ DAILY_YIELD - ∑ UNSTAKE_bonus
 
-Law 4 (Reward Rights):
+Law 6 (Reward Rights):
     ΔUr = ∑ DAILY_YIELD - ∑ UNSTAKE_bonus
 ```
 
@@ -720,16 +753,20 @@ KHU_staked(h) = ∑(j ∈ ZKHU_notes) value_j
 ### 16.3 Total KHU
 
 ```
-KHU_total(h) = KHU_circulating(h) + KHU_staked(h) = U(h)
+KHU_total(h) = KHU_circulating(h) + KHU_staked(h) = U(h) + Z(h)
+
+où:
+  U(h) = KHU_T supply (transparent)
+  Z(h) = ZKHU supply (shielded/staked)
 ```
 
 ### 16.4 Collateralization Verification
 
 ```
 PIV_locked(h) = C(h)
-KHU_total(h)  = U(h)
+KHU_total(h)  = U(h) + Z(h)
 
-Verify:  PIV_locked(h) = KHU_total(h)
+Verify:  PIV_locked(h) = KHU_total(h)  ⟺  C = U + Z
 ```
 
 ### 16.5 APY Calculation
@@ -858,7 +895,8 @@ Only operation decreasing Cr:
 
 ```
 ∀h ∈ [h₀, h_test]:
-    assert C(h) = U(h)
+    Z(h) = GetTotalStakedZKHU(h)
+    assert C(h) = U(h) + Z(h)
     assert Cr(h) = Ur(h)
 ```
 
@@ -867,8 +905,8 @@ Only operation decreasing Cr:
 ```
 ∀h:
     ΔC = ∑ MINT - ∑ REDEEM + ∑ UNSTAKE_bonus
-    ΔU = ∑ MINT - ∑ REDEEM + ∑ UNSTAKE_bonus
-    assert ΔC = ΔU
+    Δ(U + Z) = ∑ MINT - ∑ REDEEM + ∑ UNSTAKE_bonus
+    assert ΔC = Δ(U + Z)
 ```
 
 ### 20.3 Yield Accumulation Tests
@@ -937,11 +975,13 @@ Equality holds when all KHU_T are accounted.
 
 ```
 System is NEVER fractional reserve:
-    C / U = 1  (always)
+    C / (U + Z) = 1  (always)
+
+où Z = GetTotalStakedZKHU()
 
 Not partially collateralized.
 Not over-collateralized.
-Exactly 1:1.
+Exactly 1:1 backing for ALL KHU (transparent + shielded).
 ```
 
 ---
@@ -951,16 +991,16 @@ Exactly 1:1.
 ### 22.1 Invariant Theorems
 
 ```
-Theorem 1:  ∀h ≥ h₀,  C(h) = U(h)
+Theorem 1:  ∀h ≥ h₀,  C(h) = U(h) + Z(h)    où Z(h) = GetTotalStakedZKHU(h)
 Theorem 2:  ∀h ≥ h₀,  Cr(h) = Ur(h)
-Theorem 3:  ∀h,      C(h) ≥ 0 ∧ U(h) ≥ 0
+Theorem 3:  ∀h,      C(h) ≥ 0 ∧ U(h) ≥ 0 ∧ Z(h) ≥ 0
 Theorem 4:  ∀h,      Cr(h) ≥ 0 ∧ Ur(h) ≥ 0
 ```
 
 ### 22.2 Conservation Theorems
 
 ```
-Theorem 5:  ∀h,  ΔC(h) = ΔU(h)
+Theorem 5:  ∀h,  ΔC(h) = Δ(U(h) + Z(h))     (total supply conservation)
 Theorem 6:  ∀h,  ΔCr(h) = ΔUr(h)
 ```
 
@@ -1031,6 +1071,161 @@ System converges to:
 
 ---
 
+## 25. DAO TREASURY (T)
+
+### 25.1 T Accumulation Formula
+
+```
+T_daily(h) = ⌊(U(h) + Ur(h)) / 182500⌋
+
+where:
+    182500 = 10000 × 365 / 200
+    200 = T_ANNUAL_RATE (2% in basis points)
+```
+
+### 25.2 Annual Rate
+
+```
+T_ANNUAL_RATE = 200  (2.00% annual)
+
+T_annual = (U + Ur) × 2%
+T_daily  = T_annual / 365
+         = (U + Ur) × 200 / 10000 / 365
+         = (U + Ur) / 182500
+```
+
+### 25.3 Accumulation Trigger
+
+```
+Trigger: Every 1440 blocks (same as Yield)
+
+At h where (h - last_yield_height) = BLOCKS_PER_DAY:
+    T' = T + T_daily(h)
+```
+
+### 25.4 T Independence
+
+```
+T does NOT affect invariants:
+    C = U   (unchanged by T accumulation)
+    Cr = Ur (unchanged by T accumulation)
+
+T is an independent pool:
+    T ≥ 0
+    T ∈ ℤ≥0
+```
+
+### 25.5 Example Calculation
+
+```
+Given:
+    U = 1,000,000 KHU (10^6 × 10^8 satoshis)
+    Ur = 50,000 KHU (5×10^4 × 10^8 satoshis)
+
+T_daily = (U + Ur) / 182500
+        = (1,050,000 × 10^8) / 182500
+        = 575,342,465,753 satoshis
+        ≈ 5,753.42 KHU per day
+        ≈ 21,000 KHU per year (≈2% of 1,050,000)
+```
+
+### 25.6 T vs Yield: Critical Distinction
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│              T (DAO Treasury)  vs  YIELD (Staking R%)               │
+├──────────────────────────────┬──────────────────────────────────────┤
+│ Métrique                     │ T                  │ Yield            │
+├──────────────────────────────┼──────────────────────────────────────┤
+│ Type de calcul               │ GLOBAL             │ INDIVIDUEL       │
+│ Base de calcul               │ (U + Ur) total     │ note.amount      │
+│ Fréquence                    │ 1× par jour        │ 1× par note/jour │
+│ Destination                  │ state.T            │ note.accumulated │
+│ Affect Cr/Ur                 │ NON                │ OUI              │
+│ Affect C/U                   │ NON                │ NON              │
+└──────────────────────────────┴──────────────────────────────────────┘
+
+T Calculation (ONE global):
+    T_daily = (U + Ur) / 182500  // Single calculation
+
+Yield Calculation (PER note):
+    for each staked_note:
+        note_yield = (note.amount × R_annual) / 10000 / 365
+        note.accumulated += note_yield
+        total_yield += note_yield
+
+    Cr += total_yield
+    Ur += total_yield
+```
+
+---
+
+## 26. DAO FUNDING TRANSITION
+
+### 26.1 Dual Funding System
+
+```
+Year 0-5:  DAO receives BOTH:
+    1. Block reward: reward_year × 6 → 1 PIV/block
+    2. T accumulation: 2%/year of (U+Ur)
+
+Year 6+:   DAO receives ONLY:
+    1. T accumulation: 2%/year of (U+Ur)
+    (Block reward = 0)
+```
+
+### 26.2 Transition Timeline
+
+```
+year | DAO Block Reward | T Available | Primary Source
+-----|------------------|-------------|----------------
+  0  |     6 PIV/block  |     Yes     | Block Reward
+  1  |     5 PIV/block  |     Yes     | Block Reward + T
+  2  |     4 PIV/block  |     Yes     | Block Reward + T
+  3  |     3 PIV/block  |     Yes     | Block Reward + T
+  4  |     2 PIV/block  |     Yes     | Block Reward + T
+  5  |     1 PIV/block  |     Yes     | Mixed (transition)
+  6+ |     0 PIV/block  |     Yes     | T only
+```
+
+### 26.3 T Spending (Phase 7)
+
+```
+Phase 6: T accumulates only (no spending)
+Phase 7: T spending via DAO proposals
+
+Spending requires:
+    - MN vote approval (>50% quorum)
+    - Proposal specifies amount and recipient
+    - T -= spending_amount
+    - T ≥ 0 (cannot overspend)
+```
+
+### 26.4 Long-term Sustainability
+
+```
+After year 6 (emission = 0):
+    - DAO funded SOLELY by T
+    - T grows proportionally to KHU ecosystem size
+    - Larger ecosystem → larger DAO budget
+    - Self-sustaining governance model
+```
+
+### 26.5 Mathematical Properties
+
+```
+Property 1 (T Non-decreasing during accumulation phase):
+    T(h+1) ≥ T(h)  when no spending
+
+Property 2 (T bounded):
+    T ≤ total_accumulated_over_time
+
+Property 3 (T proportional to ecosystem):
+    T_daily ∝ (U + Ur)
+```
+
+---
+
 ## END OF ECONOMIC SPECIFICATION
 
 All economic rules of PIVX-V6-KHU are defined above.
@@ -1045,7 +1240,8 @@ Mathematical precision absolute.
 
 Invariants sacred.
 
-CD = 1.
-CDr = 1.
+CD = C / (U + Z) = 1.
+CDr = Cr / Ur = 1.
+T ≥ 0.
 
 Always.

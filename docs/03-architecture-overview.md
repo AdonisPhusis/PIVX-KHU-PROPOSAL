@@ -1,6 +1,6 @@
 # 03 — PIVX-V6-KHU ARCHITECTURE OVERVIEW
 
-Version: 1.1.0
+Version: 1.2.0
 Status: FINAL
 Base: PIVX Core v5.6.1 + KHU Extensions
 
@@ -78,8 +78,8 @@ struct KhuGlobalState {
     int64_t T;                      // DAO Treasury Pool (accumulation automatique)
 
     // DOMC
-    uint16_t R_annual;              // Basis points (0-3000)
-    uint16_t R_MAX_dynamic;         // max(400, 3000 - year*100)
+    uint16_t R_annual;              // Basis points (0-3700)
+    uint16_t R_MAX_dynamic;         // max(400, 3700 - year*100) → 37%→4% sur 33 ans
     uint32_t last_domc_height;
 
     // Cycle DOMC
@@ -96,13 +96,15 @@ struct KhuGlobalState {
     uint256 hashPrevState;
 
     // Invariant verification
-    bool CheckInvariants() const {
+    // NOTE: Z (total ZKHU staked) is computed via GetTotalStakedZKHU()
+    bool CheckInvariants(int64_t Z) const {
         // Verify non-negativity
-        if (C < 0 || U < 0 || Cr < 0 || Ur < 0 || T < 0)
+        if (C < 0 || U < 0 || Cr < 0 || Ur < 0 || T < 0 || Z < 0)
             return false;
 
-        // INVARIANT 1: Collateralization
-        bool cd_ok = (U == 0 || C == U);
+        // INVARIANT 1: Total Collateralization (C == U + Z)
+        // C = PIV collateral, U = transparent KHU, Z = shielded ZKHU
+        bool cd_ok = (C == U + Z);
 
         // INVARIANT 2: Reward Collateralization
         bool cdr_ok = (Ur == 0 || Cr == Ur);
@@ -682,7 +684,8 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
                 break;
 
             case TxType::KHU_STAKE:
-                // Marquer la note ZKHU (sans changer C/U/Cr/Ur)
+                // KHU_T → ZKHU: U decreases (U -= amount), Z increases dynamically
+                // C unchanged (collateral still backs U + Z)
                 // CRITICAL: Check return value and reject block immediately on failure
                 if (!ApplyKHUStake(*tx, newState, view, state))
                     return false;  // DO NOT CONTINUE - block is invalid
@@ -793,17 +796,29 @@ bool ApplyKHUTransaction(const CTransaction& tx,
             break;
         }
 
+        case CTransaction::TX_KHU_STAKE: {
+            CKHUStakePayload payload;
+            GetTxPayload(tx, payload);
+            // KHU_T → ZKHU: U decreases, Z increases (Z computed dynamically)
+            state.U -= payload.khuAmount;
+            // C unchanged - collateral still backs U + Z
+            break;
+        }
+
         case CTransaction::TX_KHU_UNSTAKE: {
             int64_t bonus = CalculateUnstakeBonus(tx, view, state);
-            state.U += bonus;
-            state.C += bonus;
-            state.Cr -= bonus;
-            state.Ur -= bonus;
+            int64_t principal = GetUnstakePrincipal(tx);  // Original stake amount
+            // Double-flux atomique:
+            state.U  += principal + bonus;  // Create KHU_T for principal + bonus
+            state.C  += bonus;              // Only bonus adds to collateral
+            state.Cr -= bonus;              // Consume reward pool
+            state.Ur -= bonus;              // Consume reward rights
             break;
         }
     }
 
-    return state.CheckInvariants();
+    int64_t Z = GetTotalStakedZKHU();
+    return state.CheckInvariants(Z);
 }
 ```
 
@@ -859,13 +874,13 @@ class CCoinsViewCache {
 
 ```
 PIV (transparent)
-  ↓ MINT
+  ↓ MINT (C += a, U += a)
 KHU_T (UTXO coloré interne)
-  ↓ STAKE
+  ↓ STAKE (U -= a, Z += a dynamique)
 ZKHU (Sapling note)
-  ↓ UNSTAKE (after 4320 blocks)
+  ↓ UNSTAKE after 4320 blocks (U += P+B, C += B, Cr -= B, Ur -= B)
 KHU_T (UTXO)
-  ↓ REDEEM
+  ↓ REDEEM (C -= a, U -= a)
 PIV (transparent)
 ```
 
@@ -873,6 +888,7 @@ PIV (transparent)
 - Aucun Z→Z ZKHU
 - Aucun BURN KHU (seul REDEEM détruit)
 - Aucun transfert KHU_T hors pipeline
+- STAKE modifie U (U -= amount) — CRITIQUE
 
 ---
 
@@ -925,7 +941,7 @@ Quorum type: LLMQ_400_60 (400 MN, 60% threshold)
 **Protection:**
 - État KHU finalisé après 12 blocs
 - Reorg impossible au-delà de 12 blocs
-- Invariants C==U et Cr==Ur protégés par finalité
+- Invariants C==U+Z et Cr==Ur protégés par finalité
 
 ---
 
@@ -1090,7 +1106,7 @@ void UpdateDailyYield(KhuGlobalState& state, uint32_t nHeight, const CCoinsViewC
 ```cpp
 void UpdateRMaxDynamic(KhuGlobalState& state, uint32_t nHeight) {
     uint32_t year = (nHeight - ACTIVATION_HEIGHT) / 525600;
-    state.R_MAX_dynamic = std::max(400, 3000 - year * 100);  // basis points
+    state.R_MAX_dynamic = std::max(400, 3700 - year * 100);  // basis points (37%→4% sur 33 ans)
 
     // Clamp R_annual if needed
     if (state.R_annual > state.R_MAX_dynamic)
@@ -1167,15 +1183,16 @@ int64_t CalculateUnstakeBonus(const CTransaction& tx, const CCoinsViewCache& vie
 ### 9.3 State Update
 
 ```cpp
-void ApplyUnstake(KhuGlobalState& state, int64_t bonus) {
-    state.U += bonus;
-    state.C += bonus;
-    state.Cr -= bonus;
-    state.Ur -= bonus;
+void ApplyUnstake(KhuGlobalState& state, int64_t principal, int64_t bonus) {
+    // Double-flux atomique:
+    state.U  += principal + bonus;  // Create KHU_T for principal + bonus
+    state.C  += bonus;              // Only bonus adds to collateral (principal was already in C)
+    state.Cr -= bonus;              // Consume reward pool
+    state.Ur -= bonus;              // Consume reward rights
 
     // Invariants preserved:
-    // C == U (U increased, C increased by same amount)
-    // Cr == Ur (both decreased by same amount)
+    // C == U + Z: principal returns from Z to U (net zero on C), bonus adds to both C and U
+    // Cr == Ur: both decreased by same amount (bonus)
 }
 ```
 
@@ -1672,9 +1689,16 @@ height < ACTIVATION_HEIGHT
 
 ### 16.1 Invariants Stricts
 
+**Soit `Z = Σ(active ZKHU notes)` la somme des montants ZKHU stakés.**
+
 ```
-INVARIANT_1: C == U               (toujours, aucune exception)
+INVARIANT_1: C == U + Z           (toujours, aucune exception)
 INVARIANT_2: Cr == Ur             (toujours, aucune exception)
+
+où:
+  C = PIV collateral total
+  U = KHU_T en circulation (transparent)
+  Z = ZKHU stakés (shielded, calculé via GetTotalStakedZKHU())
 ```
 
 **Enforcement:**
@@ -1688,7 +1712,8 @@ INVARIANT_2: Cr == Ur             (toujours, aucune exception)
 Toute modification de C, U, Cr, Ur en dehors des opérations suivantes est INTERDITE:
   - MINT:         C += amount, U += amount
   - REDEEM:       C -= amount, U -= amount
-  - UNSTAKE:      C += bonus, U += bonus, Cr -= bonus, Ur -= bonus
+  - STAKE:        U -= amount (Z increases dynamically via note creation)
+  - UNSTAKE:      U += principal + bonus, C += bonus, Cr -= bonus, Ur -= bonus
   - DAILY_YIELD:  Cr += total, Ur += total
 
 Aucune autre fonction ne peut modifier ces variables.
@@ -1730,6 +1755,24 @@ STAKE/UNSTAKE: O(1) Sapling operation
 Daily yield: O(n) where n = active ZKHU notes
 DOMC tally: O(m) where m = masternode votes
 HTLC: O(1) UTXO operations
+```
+
+---
+
+## 18. VERSION HISTORY
+
+```
+1.0.0 - Initial architecture overview
+1.1.0 - Phase 6: Added T (DAO Treasury Pool) support
+        - Updated KhuGlobalState with T field
+        - Added DAO accumulation logic
+1.2.0 - Double-Entry Accounting Clarification & STAKE Fix:
+        - CRITICAL: STAKE now modifies U (U -= amount)
+        - Updated ConnectBlock KHU_STAKE case (Section 4.2)
+        - Added TX_KHU_STAKE case in ApplyKHUTransaction (Section 4.3)
+        - Updated Pipeline Autorisé with state changes (Section 5.4)
+        - Fixed ApplyUnstake to include principal (Section 9.3)
+        - Updated INTERDICTION ABSOLUE to include STAKE (Section 16.1)
 ```
 
 ---

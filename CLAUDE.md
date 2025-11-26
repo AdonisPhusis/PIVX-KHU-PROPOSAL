@@ -25,27 +25,31 @@ KHU est un **colored coin collatéralisé 1:1** par PIV.
 
 Ces invariants doivent être vérifiés **à chaque commit**:
 
+**Soit `Z = Σ(active ZKHU notes)` la somme des montants ZKHU stakés.**
+
 ```cpp
-C == U                    // collateral == supply (toujours)
+C == U + Z                // collateral == supply transparent + shielded
 Cr == Ur                  // reward pool == reward rights (toujours)
 T >= 0                    // DAO Treasury (Phase 6)
 ```
 
 ### Opérations Autorisées
 
-| Opération | Effet sur C/U | Effet sur Cr/Ur |
-|-----------|---------------|-----------------|
-| MINT      | C+, U+        | -               |
-| REDEEM    | C-, U-        | -               |
-| DAILY_YIELD | -           | Cr+, Ur+        |
-| UNSTAKE   | C+, U+        | Cr-, Ur-        |
+| Opération | Effet sur C/U/Z | Effet sur Cr/Ur |
+|-----------|-----------------|-----------------|
+| MINT      | C+, U+          | -               |
+| REDEEM    | C-, U-          | -               |
+| STAKE     | U-, Z+          | -               |
+| DAILY_YIELD | -             | Cr+, Ur+        |
+| UNSTAKE   | C+, U+, Z-      | Cr-, Ur-        |
 
 **UNSTAKE = Double Flux Atomique:**
 ```cpp
-state.U  += B;   // (1) Create B units of KHU_T
-state.C  += B;   // (2) Increase collateral by B
-state.Cr -= B;   // (3) Consume reward pool
-state.Ur -= B;   // (4) Consume reward rights
+// Soit: a = principal (note.amount), y = yield accumulé (note.accumulatedYield)
+state.U  += a + y;  // (1) Create KHU_T for principal + yield
+state.C  += y;      // (2) Increase collateral by yield only (principal was already in C)
+state.Cr -= y;      // (3) Consume reward pool
+state.Ur -= y;      // (4) Consume reward rights
 // Ces 4 lignes doivent être adjacentes, AUCUN code entre elles
 ```
 
@@ -72,6 +76,33 @@ PIV → MINT → KHU_T → [trade] → REDEEM → PIV
 
 ---
 
+## 2.1 FRAIS DE TRANSACTION (RÈGLE CANONIQUE)
+
+**Tous les frais KHU sont payés en PIV non-bloqué.**
+
+```
+✅ Système classique PIVX: fees en PIV → mineurs
+✅ Aucun impact sur C/U/Cr/Ur (invariants préservés)
+✅ PIV utilisé pour fees = PIV libre du wallet (pas le collateral)
+
+❌ JAMAIS de fees en KHU
+❌ JAMAIS de fees prélevés sur le collateral C
+```
+
+**Implémentation:**
+- Chaque tx KHU (MINT, REDEEM, STAKE, UNSTAKE) inclut un input PIV séparé pour les fees
+- Le change PIV retourne au wallet comme PIV normal
+- Le change KHU retourne au wallet comme KHU_T
+
+**Exemple STAKE:**
+```
+Inputs:  10 KHU_T + 0.001 PIV (pour fee)
+Outputs: 5 ZKHU (staked) + 5 KHU_T (change) + ~0.00085 PIV (change)
+Fee:     ~0.00015 PIV (au mineur)
+```
+
+---
+
 ## 3. ORDRE CONNECTBLOCK (CANONIQUE)
 
 **L'ordre d'exécution dans ConnectBlock est IMMUABLE:**
@@ -83,31 +114,30 @@ bool ConnectBlock(...) {
     KhuGlobalState prevState = LoadKhuState(pindex->pprev);
     KhuGlobalState newState = prevState;
 
-    // (1) DAO Treasury accumulation (Phase 6)
-    AccumulateDaoTreasuryIfNeeded(newState, nHeight);
+    // (1) Apply daily updates (T accumulation + Yield) — UNIFIED
+    ApplyDailyUpdatesIfNeeded(newState, nHeight);
 
-    // (2) Apply daily yield AVANT transactions
-    ApplyDailyYieldIfNeeded(newState, nHeight);
-
-    // (3) Process KHU transactions (MINT, REDEEM, STAKE, UNSTAKE, DOMC)
+    // (2) Process KHU transactions (MINT, REDEEM, STAKE, UNSTAKE, DOMC)
     for (const auto& tx : block.vtx) {
         if (!ProcessKHUTransaction(tx, newState, view, state))
             return false;  // Stop immediately
     }
 
-    // (4) Apply block reward (emission)
+    // (3) Apply block reward (emission)
     ApplyBlockReward(newState, nHeight);
 
-    // (5) Check invariants (MANDATORY)
+    // (4) Check invariants (MANDATORY)
     if (!newState.CheckInvariants())
         return state.Invalid("khu-invariant-violation");
 
-    // (6) Persist state
+    // (5) Persist state
     pKHUStateDB->WriteKHUState(newState);
 }
 ```
 
-**CRITIQUE: Yield AVANT transactions (jamais l'inverse)**
+**Note:** T accumulation (2%/an) et Yield (R%) sont unifiés dans `ApplyDailyUpdatesIfNeeded()` — tous les 1440 blocs.
+
+**CRITIQUE: Daily updates AVANT transactions (jamais l'inverse)**
 
 ---
 
@@ -171,7 +201,7 @@ int64_t reward_year = std::max(6 - (int64_t)year, 0LL) * COIN;
 // Cette formule est IMMUABLE - pas d'interpolation, pas de table
 
 // R_MAX_dynamic
-uint16_t R_MAX = std::max(400, 3000 - year * 100);  // Décroît 30%→4%
+uint16_t R_MAX = std::max(400, 3700 - year * 100);  // Décroît 37%→4% sur 33 ans
 ```
 
 ---
@@ -192,8 +222,8 @@ struct KhuGlobalState {
     int64_t T;                      // DAO Treasury Pool (satoshis)
 
     // DOMC parameters
-    uint16_t R_annual;              // Basis points (0-3000)
-    uint16_t R_MAX_dynamic;         // max(400, 3000 - year*100)
+    uint16_t R_annual;              // Basis points (0-3700), INITIAL = 3700 (37%)
+    uint16_t R_MAX_dynamic;         // max(400, 3700 - year*100) → 37%→4% sur 33 ans
     uint32_t last_domc_height;
 
     // DOMC cycle (Updated 2025-11-25)
@@ -210,11 +240,12 @@ struct KhuGlobalState {
     uint256 hashBlock;
     uint256 hashPrevState;
 
-    bool CheckInvariants() const {
-        if (C < 0 || U < 0 || Cr < 0 || Ur < 0 || T < 0)
+    // NOTE: Z (total ZKHU) est calculé via GetTotalStakedZKHU()
+    bool CheckInvariants(int64_t Z) const {
+        if (C < 0 || U < 0 || Cr < 0 || Ur < 0 || T < 0 || Z < 0)
             return false;
-        bool cd_ok = (U == 0 || C == U);
-        bool cdr_ok = (Ur == 0 || Cr == Ur);
+        bool cd_ok = (C == U + Z);           // INVARIANT_1
+        bool cdr_ok = (Ur == 0 || Cr == Ur); // INVARIANT_2
         return cd_ok && cdr_ok;
     }
 };
@@ -334,7 +365,7 @@ daily = (principal * R_annual) / 10000 / 365;
 **Ce n'est PAS une "dilution des stakers".**
 **C'est une "dilution des arbitrageurs tardifs":**
 
-- R% diminue au fil du temps (30% → 4% sur 26 ans via DOMC/R_MAX)
+- R% diminue au fil du temps (37% → 4% sur 33 ans via DOMC/R_MAX)
 - Un arbitrageur qui arrive TARD reçoit un R% plus faible que s'il était arrivé tôt
 - Mais à un instant donné, TOUS les stakers actifs reçoivent le MÊME taux
 
@@ -343,6 +374,94 @@ daily = (principal * R_annual) / 10000 / 365;
 // Le MÊME R_annual pour toutes les notes
 CAmount dailyYield = CalculateDailyYieldForNote(note.amount, R_annual);
 ```
+
+---
+
+## 12.2 ACTIVATION V6 ET R% — RÈGLE CRITIQUE
+
+> ⚠️ **À l'activation V6, DEUX systèmes démarrent EN PARALLÈLE:**
+
+### Système 1: Émission PIVX (Block Reward)
+```
+- 6/6/6 PIV par bloc (Staker/MN/DAO)
+- Décroît de 1 PIV/an: 6→5→4→3→2→1→0
+- Formule: max(6 - year, 0) × COIN
+- IMMUABLE - pas de vote possible
+```
+
+### Système 2: Yield KHU (R%)
+```
+- R% = 37% initial (3700 basis points)
+- Actif IMMÉDIATEMENT à l'activation V6
+- Premier cycle DOMC démarre à V6 + 172800 blocs (4 mois)
+- Après 4 mois, les MN votent pour ajuster R%
+- R_MAX_dynamic = max(400, 3700 - year×100) // 37%→4% sur 33 ans
+- R% RESTE ACTIF pendant les phases commit/reveal
+```
+
+### Timeline
+```
+V6 Activation:
+  ├─ Émission: 6/6/6 PIV/bloc démarre
+  ├─ R%: 37% actif immédiatement
+  └─ DOMC: Premier cycle dans 4 mois
+
+V6 + 4 mois (172800 blocs):
+  └─ DOMC: Premier vote MN pour R%
+
+V6 + 6 ans:
+  ├─ Émission: 0/0/0 PIV/bloc
+  └─ R%: Continue via DOMC (R_MAX → 4% minimum)
+```
+
+**Ces deux systèmes sont INDÉPENDANTS et ADDITIFS.**
+
+---
+
+## 12.3 DAO TREASURY (T) — RÈGLE CRITIQUE
+
+> ⚠️ **T s'accumule à 2% par an, quotidiennement (même timing que Yield).**
+
+### Formule T
+```cpp
+// 2% annual = 200 basis points / 365 days
+T_daily = (U + Ur) / 182500;  // ~0.00548% par jour
+```
+
+### Timing
+```
+T et Yield sont unifiés dans ApplyDailyUpdatesIfNeeded():
+  1. T += (U + Ur) / 182500    // DAO Treasury (GLOBAL)
+  2. Pour chaque note: yield  // Staking Yield (INDIVIDUEL)
+
+Trigger: tous les 1440 blocs (1 jour)
+```
+
+### T vs YIELD — Distinction Critique
+```
+┌──────────────┬─────────────────────┬──────────────────────────┐
+│ Métrique     │ T (DAO Treasury)    │ YIELD (Staking R%)       │
+├──────────────┼─────────────────────┼──────────────────────────┤
+│ Calcul       │ GLOBAL (1×)         │ INDIVIDUEL (par note)    │
+│ Base         │ (U + Ur) total      │ note.amount              │
+│ Formule      │ (U+Ur) / 182500     │ note.amt × R / 10000/365 │
+│ Destination  │ state.T             │ note.accumulated + Cr/Ur │
+└──────────────┴─────────────────────┴──────────────────────────┘
+```
+
+### Transition DAO (Année 1+)
+```
+Année 0:   DAO = 6 PIV/bloc + T accumule
+Année 1:   DAO = 5 PIV/bloc + T disponible pour proposals
+Année 2-5: DAO emission décroît, T devient source principale
+Année 6+:  DAO = 0 PIV/bloc → T seule source de funding
+```
+
+### Propriétés
+- **T >= 0** (invariant)
+- **T indépendant de C/U/Cr/Ur** (pas d'impact sur invariants principaux)
+- **Phase 6**: Accumulation uniquement
+- **Phase 7**: Spending via DAO proposals (MN vote)
 
 ---
 
@@ -449,7 +568,7 @@ Ces documents évoluent au fur et à mesure:
 
 Avant chaque commit, vérifier:
 
-- [ ] `C == U` préservé après toutes mutations
+- [ ] `C == U + Z` préservé après toutes mutations (où Z = Σ ZKHU notes)
 - [ ] `Cr == Ur` préservé après toutes mutations
 - [ ] `AssertLockHeld(cs_khu)` dans fonctions mutation
 - [ ] `CheckInvariants()` appelé après mutations
@@ -472,6 +591,10 @@ En cas d'incertitude sur une implémentation:
 
 ---
 
-**Version:** 1.0
-**Date:** 2025-11-24
+**Version:** 1.3
+**Date:** 2025-11-26
 **Status:** ACTIF
+**Changelog:**
+- v1.3: Double-entry accounting clarification (a/y notation), UNSTAKE formula corrected, R% = 37% everywhere
+- v1.2: T (DAO Treasury) daily accumulation 2%/year, DAO transition Year 1+, unified ApplyDailyUpdatesIfNeeded()
+- v1.1: R% = 37% initial at V6 activation, DOMC cycle 172800 blocks (4 months)
