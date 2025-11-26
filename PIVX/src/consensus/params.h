@@ -191,7 +191,7 @@ struct Params {
     static constexpr CAmount MAX_REWARD_YEAR = 6 * COIN;  // Year 0 max reward per compartment
 
     // KHU DAO Treasury (Phase 6 - Automatic budget)
-    // Budget = 0.5% × (U + Ur) every 172800 blocks (4 months)
+    // Budget = (U + Ur) / 182500 every 1440 blocks (daily) = 2% annual
     // Runs in PARALLEL with block reward DAO (years 0-6)
     // CONTINUES after block reward ends (year 6+)
     std::string strDaoTreasuryAddress;

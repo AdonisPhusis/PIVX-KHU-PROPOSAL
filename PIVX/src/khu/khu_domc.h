@@ -51,6 +51,9 @@ static const uint16_t R_DEFAULT = 3700; // Default R% at V6 activation: 37.00%
 // R_MAX_dynamic formula: max(400, 3700 - year × 100)
 // Year 0:  3700 bp (37%)
 // Year 33: 400 bp (4%) - minimum guaranteed
+static const uint16_t R_MAX_DYNAMIC_INITIAL = 3700;  // 37% at V6 activation
+static const uint16_t R_MAX_DYNAMIC_MIN = 400;       // 4% minimum (floor)
+static const uint16_t R_MAX_DYNAMIC_DECAY = 100;     // -1% per year
 
 // DAO Treasury (T) - Phase 6.3
 // T accumulates 2% annual, daily (same trigger as yield)
@@ -283,6 +286,41 @@ bool UndoFinalizeDomcCycle(
     KhuGlobalState& state,
     uint32_t nHeight,
     const Consensus::Params& consensusParams
+);
+
+/**
+ * CalculateRMaxDynamic - Calculate R_MAX_dynamic based on year since activation
+ *
+ * FORMULA CONSENSUS:
+ *   R_MAX_dynamic = max(400, 3700 - year × 100)
+ *
+ * Timeline:
+ *   Year 0:  3700 bp (37%)
+ *   Year 1:  3600 bp (36%)
+ *   ...
+ *   Year 33: 400 bp (4%) - minimum
+ *   Year 34+: 400 bp (4%) - floor
+ *
+ * @param nHeight Current block height
+ * @param nActivationHeight V6.0 activation height
+ * @return R_MAX_dynamic in basis points
+ */
+uint16_t CalculateRMaxDynamic(uint32_t nHeight, uint32_t nActivationHeight);
+
+/**
+ * UpdateRMaxDynamic - Update R_MAX_dynamic in state if at year boundary
+ *
+ * Called during ConnectBlock to update R_MAX_dynamic when entering a new year.
+ * R_MAX_dynamic decreases by 100 basis points (1%) each year.
+ *
+ * @param state [IN/OUT] Global state to update
+ * @param nHeight Current block height
+ * @param nActivationHeight V6.0 activation height
+ */
+void UpdateRMaxDynamic(
+    KhuGlobalState& state,
+    uint32_t nHeight,
+    uint32_t nActivationHeight
 );
 
 } // namespace khu_domc

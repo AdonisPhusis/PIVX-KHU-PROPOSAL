@@ -183,6 +183,12 @@ bool ProcessKHUBlock(const CBlock& block,
     // STEP 6: CheckInvariants()
     // STEP 7: PersistState()
 
+    // STEP 0: Update R_MAX_dynamic based on year since activation
+    // Formula: R_MAX_dynamic = max(400, 3700 - year × 100)
+    // Decreases by 1% per year from 37% to 4% floor
+    khu_domc::UpdateRMaxDynamic(newState, nHeight,
+        consensusParams.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight);
+
     // STEP 1: DOMC cycle boundary (Phase 6.2)
     // At cycle boundary: finalize previous cycle (calculate median R), initialize new cycle
     if (khu_domc::IsDomcCycleBoundary(nHeight, consensusParams.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight)) {
@@ -194,8 +200,9 @@ bool ProcessKHUBlock(const CBlock& block,
         // Initialize new cycle: update cycle_start, commit_phase_start, reveal_deadline
         khu_domc::InitializeDomcCycle(newState, nHeight);
 
-        LogPrint(BCLog::KHU, "ProcessKHUBlock: DOMC cycle boundary at height %u, R_annual=%u (%.2f%%)\n",
-                 nHeight, newState.R_annual, newState.R_annual / 100.0);
+        LogPrint(BCLog::KHU, "ProcessKHUBlock: DOMC cycle boundary at height %u, R_annual=%u (%.2f%%), R_MAX=%u (%.2f%%)\n",
+                 nHeight, newState.R_annual, newState.R_annual / 100.0,
+                 newState.R_MAX_dynamic, newState.R_MAX_dynamic / 100.0);
     }
 
     // STEP 2: DAO Treasury accumulation (Phase 6.3)

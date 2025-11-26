@@ -328,4 +328,48 @@ bool UndoFinalizeDomcCycle(
     return true;
 }
 
+// ============================================================================
+// R_MAX_dynamic calculation
+// ============================================================================
+
+uint16_t CalculateRMaxDynamic(uint32_t nHeight, uint32_t nActivationHeight)
+{
+    // Before activation: return initial value
+    if (nHeight < nActivationHeight) {
+        return R_MAX_DYNAMIC_INITIAL;
+    }
+
+    // Calculate year since activation
+    // year = (nHeight - activation) / BLOCKS_PER_YEAR
+    uint32_t blocks_since_activation = nHeight - nActivationHeight;
+    uint32_t year = blocks_since_activation / 525600; // BLOCKS_PER_YEAR
+
+    // FORMULA CONSENSUS: R_MAX_dynamic = max(400, 3700 - year × 100)
+    int32_t calculated = R_MAX_DYNAMIC_INITIAL - (year * R_MAX_DYNAMIC_DECAY);
+
+    // Clamp to minimum (floor at 4%)
+    if (calculated < R_MAX_DYNAMIC_MIN) {
+        return R_MAX_DYNAMIC_MIN;
+    }
+
+    return static_cast<uint16_t>(calculated);
+}
+
+void UpdateRMaxDynamic(
+    KhuGlobalState& state,
+    uint32_t nHeight,
+    uint32_t nActivationHeight
+)
+{
+    uint16_t newRMax = CalculateRMaxDynamic(nHeight, nActivationHeight);
+
+    if (newRMax != state.R_MAX_dynamic) {
+        LogPrint(BCLog::KHU, "UpdateRMaxDynamic: R_MAX_dynamic updated %u → %u (%.2f%% → %.2f%%) at height %u\n",
+                 state.R_MAX_dynamic, newRMax,
+                 state.R_MAX_dynamic / 100.0, newRMax / 100.0,
+                 nHeight);
+        state.R_MAX_dynamic = newRMax;
+    }
+}
+
 } // namespace khu_domc
