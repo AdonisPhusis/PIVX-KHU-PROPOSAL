@@ -37,8 +37,16 @@ CAmount CalculateDAOBudget(const KhuGlobalState& state)
         return 0;
     }
 
-    // budget = total × 5 / 1000 = 0.5%
-    int128_t budget = (total * 5) / 1000;
+    // ═══════════════════════════════════════════════════════════════════════
+    // FORMULA CONSENSUS (2% annual, daily trigger):
+    //   T_daily = (U + Ur) / 182500
+    //
+    // Derivation:
+    //   2% annual = 200 basis points
+    //   daily_rate = 200 / 365 / 10000 = 1 / 182500
+    //   T_daily = (U + Ur) / 182500
+    // ═══════════════════════════════════════════════════════════════════════
+    int128_t budget = total / T_DAILY_DIVISOR;
 
     // Check if budget exceeds CAmount limits
     if (budget < 0 || budget > std::numeric_limits<CAmount>::max()) {
@@ -60,7 +68,7 @@ bool AccumulateDaoTreasuryIfNeeded(
         return true; // Not at boundary, nothing to do
     }
 
-    LogPrint(BCLog::KHU, "AccumulateDaoTreasury: height=%u, U=%lld, Ur=%lld, T_before=%lld\n",
+    LogPrint(BCLog::KHU, "AccumulateDaoTreasury: height=%u, U=%lld, Ur=%lld, T_before=%lld (daily 2%% annual)\n",
              nHeight, (long long)state.U, (long long)state.Ur, (long long)state.T);
 
     CAmount budget = CalculateDAOBudget(state);

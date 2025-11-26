@@ -13,17 +13,31 @@ struct KhuGlobalState;
 
 namespace khu_dao {
 
-// Constants
-static const uint32_t DAO_CYCLE_LENGTH = 172800;  // 4 months (172800 blocks)
+// ============================================================================
+// Constants (consensus-critical)
+// ============================================================================
 
 /**
- * Check if current height is a DAO cycle boundary
+ * DAO Treasury accumulates 2% annual, calculated daily (same trigger as yield).
+ * Formula: T_daily = (U + Ur) / T_DAILY_DIVISOR
+ * Where T_DAILY_DIVISOR = 10000 / (200 / 365) = 182500
  *
- * DAO budget accumulation happens every 172800 blocks (4 months).
+ * Verification: 2% annual = 200 basis points
+ *   daily_rate = 200 / 365 / 10000 = 1 / 182500
+ *   T_daily = (U + Ur) * (1 / 182500) = (U + Ur) / 182500
+ */
+static const uint32_t DAO_CYCLE_LENGTH = 1440;    // Daily (same as yield)
+static const int64_t T_DAILY_DIVISOR = 182500;    // (U+Ur) / 182500 = daily T (2% annual)
+
+/**
+ * Check if current height is a DAO cycle boundary (daily)
+ *
+ * DAO Treasury accumulation happens every 1440 blocks (daily, same as yield).
+ * Unified with ApplyDailyUpdatesIfNeeded() in ConnectBlock.
  *
  * @param nHeight Current block height
  * @param nActivationHeight KHU V6.0 activation height
- * @return true if (nHeight - activation) % 172800 == 0
+ * @return true if daily yield should be applied
  */
 bool IsDaoCycleBoundary(
     uint32_t nHeight,
@@ -31,14 +45,20 @@ bool IsDaoCycleBoundary(
 );
 
 /**
- * Calculate DAO budget from current global state
+ * Calculate daily DAO Treasury budget from current global state
  *
- * Formula: 0.5% × (U + Ur) = (U + Ur) × 5 / 1000
+ * FORMULA CONSENSUS (2% annual):
+ *   T_daily = (U + Ur) / 182500
+ *
+ * Example:
+ * - U + Ur = 1,000,000 KHU (1e14 satoshis)
+ * - T_daily = 1e14 / 182500 = 547,945,205 satoshis (~547.9 KHU/day)
+ * - Annual: 547.9 × 365 = 199,985 KHU ≈ 2% of 1M
  *
  * Uses 128-bit arithmetic to prevent overflow.
  *
  * @param state Current global state (uses U and Ur)
- * @return DAO budget in satoshis (0 on overflow)
+ * @return Daily DAO budget in satoshis (0 on overflow)
  */
 CAmount CalculateDAOBudget(
     const KhuGlobalState& state
