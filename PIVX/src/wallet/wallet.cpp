@@ -26,6 +26,7 @@
 #include "util/validation.h"
 #include "utilmoneystr.h"
 #include "wallet/fees.h"
+#include "wallet/khu_wallet.h"
 
 #include <future>
 #include <boost/algorithm/string/replace.hpp>
@@ -1329,6 +1330,9 @@ void CWallet::BlockConnected(const std::shared_ptr<const CBlock>& pblock, const 
                                             m_last_block_processed, index);
             SyncTransaction(pblock->vtx[index], confirm);
             TransactionRemovedFromMempool(pblock->vtx[index], MemPoolRemovalReason::BLOCK);
+
+            // KHU: Process KHU transactions for wallet tracking
+            ProcessKHUTransactionForWallet(this, pblock->vtx[index], pindex->nHeight);
         }
 
         // Sapling: notify about the connected block
