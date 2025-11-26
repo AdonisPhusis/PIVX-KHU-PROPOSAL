@@ -171,17 +171,18 @@ enum TxType : int16_t {
     // PIVX standard
     NORMAL = 0,
     PROREG = 1,
-    // ... (2-5)
+    PROUPSERV = 2,
+    PROUPREG = 3,
+    PROUPREV = 4,
+    LLMQCOMM = 5,
 
-    // KHU types
-    KHU_MINT = 10,      // PIV → KHU_T
-    KHU_REDEEM = 11,    // KHU_T → PIV
-    KHU_STAKE = 12,     // KHU_T → ZKHU
-    KHU_UNSTAKE = 13,   // ZKHU → KHU_T
-    DOMC_VOTE = 14,     // DOMC R% vote
-    HTLC_CREATE = 15,   // Create HTLC
-    HTLC_CLAIM = 16,    // Claim HTLC
-    HTLC_REFUND = 17,   // Refund HTLC
+    // KHU types (Phase 2-6)
+    KHU_MINT = 6,           // PIV → KHU_T
+    KHU_REDEEM = 7,         // KHU_T → PIV
+    KHU_STAKE = 8,          // KHU_T → ZKHU
+    KHU_UNSTAKE = 9,        // ZKHU → KHU_T + yield
+    KHU_DOMC_COMMIT = 10,   // DOMC commit (Hash(R || salt))
+    KHU_DOMC_REVEAL = 11,   // DOMC reveal (R + salt)
 };
 ```
 
@@ -647,10 +648,11 @@ En cas d'incertitude sur une implémentation:
 
 ---
 
-**Version:** 1.6
+**Version:** 1.7
 **Date:** 2025-11-26
 **Status:** ACTIF
 **Changelog:**
+- v1.7: TxType corrigés (6-11 au lieu de 10-17), DOMC_COMMIT/REVEAL séparés, alignement code/doc vérifié
 - v1.6: Simplification structure docs (SPEC, ARCHITECTURE, ROADMAP, IMPLEMENTATION), dossier comprendre/ pour normies, archive/
 - v1.5: Ajout section 12.0 MATURITY explicite (3 jours, aucun yield avant), Y (Yield) au lieu de B (Bonus), calcul yield détaillé
 - v1.4: Z stocké dans KhuGlobalState (pas calculé dynamiquement), CheckInvariants() sans paramètre
