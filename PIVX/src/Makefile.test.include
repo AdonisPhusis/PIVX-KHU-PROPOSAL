@@ -132,6 +132,7 @@ BITCOIN_TESTS =\
   test/khu_v6_activation_tests.cpp \
   test/khu_global_integration_tests.cpp \
   test/khu_pipeline_demo_test.cpp \
+  test/khu_testnet_readiness_tests.cpp \
   test/dbwrapper_tests.cpp \
   test/validation_tests.cpp \
   test/main_tests.cpp \
