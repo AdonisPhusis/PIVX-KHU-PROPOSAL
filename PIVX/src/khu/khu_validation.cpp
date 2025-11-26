@@ -414,8 +414,21 @@ bool DisconnectKHUBlock(const CBlock& block,
                     strprintf("Failed to undo DOMC COMMIT at height %d (tx %s)",
                               nHeight, tx->GetHash().ToString()));
             }
+        } else if (tx->nType == CTransaction::TxType::KHU_MINT) {
+            // Phase 2: Undo MINT (C-, U-)
+            if (!UndoKHUMint(*tx, khuState, view)) {
+                return validationState.Invalid(false, REJECT_INVALID, "khu-undo-mint-failed",
+                    strprintf("Failed to undo KHU MINT at height %d (tx %s)",
+                              nHeight, tx->GetHash().ToString()));
+            }
+        } else if (tx->nType == CTransaction::TxType::KHU_REDEEM) {
+            // Phase 2: Undo REDEEM (C+, U+)
+            if (!UndoKHURedeem(*tx, khuState, view)) {
+                return validationState.Invalid(false, REJECT_INVALID, "khu-undo-redeem-failed",
+                    strprintf("Failed to undo KHU REDEEM at height %d (tx %s)",
+                              nHeight, tx->GetHash().ToString()));
+            }
         }
-        // Note: MINT/REDEEM undo logic handled elsewhere (Phase 2 compatibility)
     }
 
     // PHASE 6: Undo Daily Yield (Phase 6.1)
