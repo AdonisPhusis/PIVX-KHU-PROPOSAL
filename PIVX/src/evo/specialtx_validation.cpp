@@ -462,14 +462,18 @@ static bool CheckSpecialTxBasic(const CTransaction& tx, CValidationState& state)
                          REJECT_INVALID, "bad-txns-special-coinbase");
     }
 
-    // Special txes must have a non-empty payload
-    if (!hasExtraPayload) {
+    // KHU_STAKE and KHU_UNSTAKE use Sapling outputs/spends instead of extraPayload
+    bool isKHUSaplingType = (tx.nType == CTransaction::TxType::KHU_STAKE ||
+                             tx.nType == CTransaction::TxType::KHU_UNSTAKE);
+
+    // Special txes must have a non-empty payload (except KHU Sapling types)
+    if (!hasExtraPayload && !isKHUSaplingType) {
         return state.DoS(100, error("%s: Special tx (type=%d) without extra payload", __func__, tx.nType),
                          REJECT_INVALID, "bad-txns-payload-empty");
     }
 
-    // Size limits
-    if (tx.extraPayload->size() > MAX_SPECIALTX_EXTRAPAYLOAD) {
+    // Size limits (only check if payload exists)
+    if (hasExtraPayload && tx.extraPayload->size() > MAX_SPECIALTX_EXTRAPAYLOAD) {
         return state.DoS(100, error("%s: Special tx payload oversize (%d)", __func__, tx.extraPayload->size()),
                          REJECT_INVALID, "bad-txns-payload-oversize");
     }

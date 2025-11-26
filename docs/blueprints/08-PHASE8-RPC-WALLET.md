@@ -42,7 +42,7 @@ Implémenter les commandes RPC et l'infrastructure wallet permettant aux utilisa
 ├── Infrastructure ZKHU (mapZKHUNotes, witness tracking)
 ├── khulistnotes (lecture notes ZKHU)
 ├── khustake (KHU_T → ZKHU)
-└── khuunstake (ZKHU → KHU_T + bonus)
+└── khuunstake (ZKHU → KHU_T + yield)
 ```
 **Complexité:** Haute — Witness Sapling, nullifier tracking, maturity
 
@@ -282,7 +282,7 @@ bool CWallet::ScanForKHUCoins(const CBlockIndex* pindexStart) {
 | `khuredeem` | KHU_T → PIV | Moyenne |
 | `khulistnotes` | Liste notes ZKHU | Moyenne |
 | `khustake` | KHU_T → ZKHU | Haute |
-| `khuunstake` | ZKHU → KHU_T + bonus | Haute |
+| `khuunstake` | ZKHU → KHU_T + yield | Haute |
 
 ### 3.3 RPC Phase 8 — P1 (Post-Testnet)
 
@@ -468,7 +468,7 @@ Result:
 {
   "txid": "hash",
   "principal": n,
-  "bonus": n,               // Yield R%
+  "yield": n,               // Yield R%
   "total": n,
   "stake_duration": n       // Blocs
 }
@@ -655,7 +655,7 @@ Semaine 3-4:
 ├── 9. Persistence wallet.dat (zkhunote)
 ├── 10. khulistnotes
 ├── 11. khustake (KHU_T → ZKHU)
-├── 12. khuunstake (ZKHU → KHU_T + bonus)
+├── 12. khuunstake (ZKHU → KHU_T + yield)
 ├── 13. khubalance (update: inclure staked + yield)
 └── 14. Tests reorg ZKHU
 
@@ -805,7 +805,7 @@ static const CRPCCommand commands[] = {
 - [ ] `khulistunspent`
 - [ ] `khumint` + tests
 - [ ] `khuredeem` + tests
-- [ ] Invariants C==U préservés
+- [ ] Invariants C==U+Z préservés
 - [ ] 0 régression tests Phases 1-7
 
 ### Phase 8b — Testnet Beta

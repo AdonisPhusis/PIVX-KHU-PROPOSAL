@@ -57,7 +57,7 @@ Sans finalité, un reorg pourrait :
 ❌ Annuler des MINT/REDEEM (double-spend)
 ❌ Modifier l'état global KHU (C, U, Cr, Ur)
 ❌ Invalider des UNSTAKE (perte de rewards)
-❌ Casser les invariants (C==U, Cr==Ur)
+❌ Casser les invariants (C==U+Z, Cr==Ur)
 ❌ Détruire la confiance dans le système
 ```
 
@@ -344,7 +344,7 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
 │ • Trouve solution PoS                                  │
 │ • Applique transactions (incluant KHU)                 │
 │ • Calcule nouvel état KHU                              │
-│ • Vérifie invariants (C==U, Cr==Ur)                    │
+│ • Vérifie invariants (C==U+Z, Cr==Ur)                  │
 │ • Broadcast bloc au réseau                             │
 └────────────────────────────────────────────────────────┘
                           ↓
@@ -752,8 +752,8 @@ BOOST_AUTO_TEST_SUITE_END()
 
 **Documents liés :**
 - `01-blueprint-master-flow.md` — Flow général
-- `02-canonical-specification.md` — Section 6 (Masternode Finality)
-- `03-architecture-overview.md` — Section 8 (Consensus)
+- `SPEC.md` — Section 6 (Masternode Finality)
+- `ARCHITECTURE.md` — Section 8 (Consensus)
 
 **Standards BLS :**
 - BLS Signatures (RFC draft-irtf-cfrg-bls-signature)

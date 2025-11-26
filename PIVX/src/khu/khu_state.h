@@ -36,10 +36,13 @@ struct KhuGlobalState
     CAmount Ur;  // Unstake rights (total accumulated yield across all stakers)
 
     // DAO Treasury (Phase 6.3)
+    // T accumulates 2% annual, daily: T_daily = (U + Ur) / 182500
+    // Year 1+: DAO proposals can spend from T
+    // Year 6+: T becomes sole DAO funding source (emission = 0)
     CAmount T;   // DAO Treasury internal pool
 
     // Governance parameters
-    uint32_t R_annual;        // Annual yield rate (basis points: 1500 = 15.00%)
+    uint32_t R_annual;        // Annual yield rate (basis points: 3000 = 30.00% at V6 activation)
     uint32_t R_MAX_dynamic;   // Maximum allowed R% voted by DOMC (basis points)
     uint32_t last_yield_update_height;  // Last block where daily yield was applied
     CAmount last_yield_amount;          // Last yield amount applied (for exact undo)

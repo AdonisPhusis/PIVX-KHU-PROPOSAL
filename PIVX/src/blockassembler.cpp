@@ -385,6 +385,8 @@ void BlockAssembler::addPackageTxs()
     // and modifying them for their already included ancestors
     UpdatePackagesForAdded(inBlock, mapModifiedTx);
 
+    LogPrint(BCLog::KHU, "BlockAssembler::addPackageTxs - mempool size=%u\n", mempool.size());
+
     CTxMemPool::indexed_transaction_set::index<ancestor_score>::type::iterator mi = mempool.mapTx.get<ancestor_score>().begin();
     CTxMemPool::txiter iter;
     while (mi != mempool.mapTx.get<ancestor_score>().end() || !mapModifiedTx.empty())
@@ -435,12 +437,21 @@ void BlockAssembler::addPackageTxs()
             packageSigOps = modit->nSigOpCountWithAncestors;
         }
 
-        if (packageFees < ::minRelayTxFee.GetFee(packageSize)) {
+        const CTransaction& txCheck = iter->GetTx();
+        LogPrint(BCLog::KHU, "BlockAssembler: Evaluating tx %s type=%d size=%lu fees=%lld\n",
+                 txCheck.GetHash().ToString().substr(0, 16), (int)txCheck.nType, packageSize, packageFees);
+
+        CAmount minFee = ::minRelayTxFee.GetFee(packageSize);
+        if (packageFees < minFee) {
+            LogPrint(BCLog::KHU, "BlockAssembler: SKIP tx %s - low fees (%lld < %lld)\n",
+                     txCheck.GetHash().ToString().substr(0, 16), packageFees, minFee);
             // Everything else we might consider has a lower fee rate
             return;
         }
 
         if (!TestPackage(packageSize, packageSigOps)) {
+            LogPrint(BCLog::KHU, "BlockAssembler: SKIP tx %s - failed TestPackage\n",
+                     txCheck.GetHash().ToString().substr(0, 16));
             if (fUsingModified) {
                 // Since we always look at the best entry in mapModifiedTx,
                 // we must erase failed entries so that we can consider the
@@ -461,6 +472,8 @@ void BlockAssembler::addPackageTxs()
 
         // Test if all tx's are Final
         if (!TestPackageFinality(ancestors)) {
+            LogPrint(BCLog::KHU, "BlockAssembler: SKIP tx %s - failed TestPackageFinality\n",
+                     txCheck.GetHash().ToString().substr(0, 16));
             if (fUsingModified) {
                 mapModifiedTx.get<ancestor_score>().erase(modit);
                 failedTx.insert(iter);
@@ -468,24 +481,50 @@ void BlockAssembler::addPackageTxs()
             continue;
         }
 
+        LogPrint(BCLog::KHU, "BlockAssembler: tx %s PASSED all checks, adding package\n",
+                 txCheck.GetHash().ToString().substr(0, 16));
+
         // Package can be added. Sort the entries in a valid order.
         std::vector<CTxMemPool::txiter> sortedEntries;
         SortForBlock(ancestors, iter, sortedEntries);
 
         for (size_t i = 0; i < sortedEntries.size(); ++i) {
             CTxMemPool::txiter& iterSortedEntries = sortedEntries[i];
-            if (iterSortedEntries->IsShielded()) {
+            const CTransaction& tx = iterSortedEntries->GetTx();
+            bool isShielded = iterSortedEntries->IsShielded();
+
+            // KHU_STAKE and KHU_UNSTAKE use Sapling for privacy but are NOT regular Sapling transfers
+            // They should NOT be blocked by SPORK_20_SAPLING_MAINTENANCE or shielded size limits
+            bool isKHUSaplingType = (tx.nType == CTransaction::TxType::KHU_STAKE ||
+                                     tx.nType == CTransaction::TxType::KHU_UNSTAKE);
+
+            LogPrint(BCLog::KHU, "BlockAssembler: Considering tx %s (type=%d, isShielded=%d, isKHUSapling=%d)\n",
+                     tx.GetHash().ToString().substr(0, 16), (int)tx.nType, isShielded, isKHUSaplingType);
+
+            // Apply Sapling restrictions only to regular shielded txes, NOT to KHU Sapling types
+            if (isShielded && !isKHUSaplingType) {
                 // Don't add SHIELD transactions if in maintenance (SPORK_20)
-                if (sporkManager.IsSporkActive(SPORK_20_SAPLING_MAINTENANCE)) {
+                bool spork20Active = sporkManager.IsSporkActive(SPORK_20_SAPLING_MAINTENANCE);
+                LogPrint(BCLog::KHU, "BlockAssembler: Regular shielded tx - SPORK_20 active=%d\n", spork20Active);
+                if (spork20Active) {
+                    LogPrint(BCLog::KHU, "BlockAssembler: SKIPPING shielded tx due to SPORK_20\n");
                     break;
                 }
                 // Don't add SHIELD transactions if there's no reserved space left in the block
-                if (nSizeShielded + iterSortedEntries->GetTxSize() > MAX_BLOCK_SHIELDED_TXES_SIZE) {
+                unsigned int txSize = iterSortedEntries->GetTxSize();
+                LogPrint(BCLog::KHU, "BlockAssembler: Shielded size check: current=%u + tx=%u = %u vs max=%u\n",
+                         nSizeShielded, txSize, nSizeShielded + txSize, MAX_BLOCK_SHIELDED_TXES_SIZE);
+                if (nSizeShielded + txSize > MAX_BLOCK_SHIELDED_TXES_SIZE) {
+                    LogPrint(BCLog::KHU, "BlockAssembler: SKIPPING shielded tx due to size limit\n");
                     break;
                 }
                 // Update cumulative size of SHIELD transactions in this block
-                nSizeShielded += iterSortedEntries->GetTxSize();
+                nSizeShielded += txSize;
+            } else if (isKHUSaplingType) {
+                LogPrint(BCLog::KHU, "BlockAssembler: KHU Sapling tx - EXEMPT from Sapling restrictions\n");
             }
+
+            LogPrint(BCLog::KHU, "BlockAssembler: Adding tx %s to block\n", tx.GetHash().ToString().substr(0, 16));
             AddToBlock(iterSortedEntries);
             // Erase from the modified set, if present
             mapModifiedTx.erase(iterSortedEntries);

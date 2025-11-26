@@ -104,6 +104,10 @@ public:
 
     void SetFee(CAmount _fee);
 
+    // Set transaction type (e.g., for KHU_STAKE, KHU_UNSTAKE)
+    // MUST be called before Build() for special transaction types
+    void SetType(CTransaction::TxType _type);
+
     // Throws if the anchor does not match the anchor used by
     // previously-added Sapling spends.
     void AddSaplingSpend(

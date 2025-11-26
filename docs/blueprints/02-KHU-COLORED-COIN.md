@@ -12,7 +12,7 @@ Ce sous-blueprint définit **KHU_T comme colored coin UTXO**.
 
 **KHU_T est un token UTXO transparent avec structure IDENTIQUE à PIV.**
 
-**RÈGLE ABSOLUE : KHU_T utilise le même modèle UTXO que PIVX, pas de burn direct, supply protégée par invariant C==U.**
+**RÈGLE ABSOLUE : KHU_T utilise le même modèle UTXO que PIVX, pas de burn direct, supply protégée par invariant C==U+Z.**
 
 ---
 
@@ -70,7 +70,7 @@ Un **colored coin** est un UTXO standard (comme PIV) avec metadata supplémentai
 | Scripts | Bitcoin standard | Bitcoin standard (identique) |
 | HTLC | Supporté | Supporté (identique) |
 | Fees | PIV burn | PIV burn (identique) |
-| Supply | Variable (émission) | Fixe (invariant C==U) |
+| Supply | Variable (émission) | Fixe (invariant C==U+Z) |
 | Burn | Non | Non (sauf REDEEM) |
 
 **La SEULE différence : KHU_T a un flag "fIsKHU" pour tracking.**
@@ -193,20 +193,20 @@ struct CKHUUTXO {
 ```cpp
 // ❌ INTERDIT : Burn direct
 void BurnKHU(CAmount amount) {
-    state.U -= amount;  // ❌ VIOLATION INVARIANT C==U
+    state.U -= amount;  // ❌ VIOLATION INVARIANT C==U+Z
 }
 
 // ✅ CORRECT : Destruction via REDEEM uniquement
 void RedeemKHU(CAmount amount) {
     state.C -= amount;  // Atomique
     state.U -= amount;  // Atomique
-    // Invariant C==U préservé
+    // Invariant C==U+Z préservé
 }
 ```
 
 ### 3.2 Supply Inchangeable (Sauf MINT/REDEEM)
 
-**L'invariant C==U protège la supply KHU.**
+**L'invariant C==U+Z protège la supply KHU (transparent + shielded).**
 
 ```
 ┌────────────────────────────────────────────────┐
@@ -214,7 +214,7 @@ void RedeemKHU(CAmount amount) {
 ├────────────────────────────────────────────────┤
 │ MINT:    C+, U+  (création KHU)                │
 │ REDEEM:  C-, U-  (destruction KHU)             │
-│ UNSTAKE: C+, U+, Cr-, Ur-  (bonus KHU)         │
+│ UNSTAKE: Z-, C+, U+, Cr-, Ur-  (yield Y)       │
 └────────────────────────────────────────────────┘
 
 ┌────────────────────────────────────────────────┐
@@ -227,7 +227,7 @@ void RedeemKHU(CAmount amount) {
 └────────────────────────────────────────────────┘
 ```
 
-**L'invariant C==U FORCE l'atomicité et empêche la manipulation de supply.**
+**L'invariant C==U+Z FORCE l'atomicité et empêche la manipulation de supply.**
 
 ### 3.3 Pourquoi Pas de Burn ?
 
@@ -236,7 +236,7 @@ void RedeemKHU(CAmount amount) {
 1. **Prévisibilité** : Supply KHU = f(MINT, REDEEM, UNSTAKE) uniquement
 2. **Auditabilité** : Chaque KHU traçable depuis création (MINT)
 3. **Sécurité** : Impossibilité de détruire KHU par erreur
-4. **Invariant** : C==U ne peut être maintenu avec burn arbitraire
+4. **Invariant** : C==U+Z ne peut être maintenu avec burn arbitraire
 
 **Exemple d'attaque évitée :**
 ```cpp
@@ -244,7 +244,7 @@ void RedeemKHU(CAmount amount) {
 if (malicious_condition) {
     BurnKHU(1000000 * COIN);  // ❌ Détruire 1M KHU
     // → C inchangé, U diminué
-    // → C != U (violation invariant)
+    // → C != U+Z (violation invariant)
     // → Système cassé
 }
 
@@ -291,7 +291,7 @@ if (malicious_condition) {
 2. **Simplicité** : Pas besoin de dual-fee system
 3. **Sécurité** : Évite spam via KHU
 4. **Déflationniste** : Fees PIV burn = réduction supply PIV
-5. **Invariant** : Fees en KHU compliqueraient C==U
+5. **Invariant** : Fees en KHU compliqueraient C==U+Z
 
 ### 4.3 Exemples Transactions
 
@@ -623,7 +623,7 @@ WriteKHUCoin(coin);  // Violation C==U
 CAmount fee_khu = 0.01 * COIN;  // ❌ Fees = PIV uniquement
 
 // ❌ INTERDIT : Modifier supply sans atomicité C/U
-state.U += bonus;  // Sans state.C += bonus
+state.U += Y;  // Sans state.C += Y (yield doit être atomique)
 
 // ❌ INTERDIT : Structure CKHUUTXO différente de Coin
 struct CKHUUTXO {
@@ -762,7 +762,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 **Documents liés :**
 - `01-blueprint-master-flow.md` — Flow général
-- `02-canonical-specification.md` — Spécifications canoniques
+- `SPEC.md` — Spécifications canoniques
 - `06-protocol-reference.md` — Référence protocole
 
 ---
@@ -775,7 +775,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 1. **KHU_T = Colored Coin** : Structure UTXO identique à PIV
 2. **Pas de burn direct** : Destruction uniquement via REDEEM
-3. **Supply protégée** : Invariant C==U empêche manipulation
+3. **Supply protégée** : Invariant C==U+Z empêche manipulation
 4. **Fees en PIV** : Fees burn comme chaîne principale PIVX
 5. **Namespace séparé** : 'K' + 'U' pour isolation LevelDB
 

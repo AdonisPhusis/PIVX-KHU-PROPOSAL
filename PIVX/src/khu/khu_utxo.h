@@ -68,4 +68,16 @@ bool GetKHUCoin(const CCoinsViewCache& view, const COutPoint& outpoint, CKHUUTXO
  */
 bool HaveKHUCoin(const CCoinsViewCache& view, const COutPoint& outpoint);
 
+/**
+ * GetKHUCoinFromTracking - Retrieve KHU_T UTXO from global tracking map
+ *
+ * Used when the CCoinsViewCache may not have the coin (e.g., after
+ * standard tx validation spent it, but KHU tracking still has it).
+ *
+ * @param outpoint Transaction outpoint
+ * @param coin Output parameter for KHU UTXO
+ * @return true if coin exists and is unspent
+ */
+bool GetKHUCoinFromTracking(const COutPoint& outpoint, CKHUUTXO& coin);
+
 #endif // PIVX_KHU_UTXO_H

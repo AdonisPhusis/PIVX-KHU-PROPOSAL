@@ -27,7 +27,7 @@ namespace Consensus {
  * - Loads previous state
  * - Creates new state with updated height/hash
  * - Validates invariants
- * - Persists state to DB
+ * - Persists state to DB (when fJustCheck=false)
  *
  * FUTURE PHASES (NOT IMPLEMENTED YET):
  * - Phase 2: MINT/REDEEM operations
@@ -40,13 +40,15 @@ namespace Consensus {
  * @param view Coins view cache
  * @param state Validation state (for errors)
  * @param consensusParams Consensus parameters
+ * @param fJustCheck If true, only validate without persisting to DB
  * @return true if KHU processing succeeded
  */
 bool ProcessKHUBlock(const CBlock& block,
                      CBlockIndex* pindex,
                      CCoinsViewCache& view,
                      CValidationState& state,
-                     const Consensus::Params& consensusParams);
+                     const Consensus::Params& consensusParams,
+                     bool fJustCheck = false);
 
 /**
  * DisconnectKHUBlock - Rollback KHU state during reorg

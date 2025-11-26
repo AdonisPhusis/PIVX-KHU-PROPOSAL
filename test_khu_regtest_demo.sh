@@ -38,7 +38,7 @@ echo ""
 
 # Fonction utilitaire
 cli() {
-    $PIVX_CLI -regtest -datadir="$DATADIR" "$@"
+    $PIVX_CLI -regtest -datadir="$DATADIR" -rpcconnect=127.0.0.1 -rpcport=$RPC_PORT "$@"
 }
 
 # Fonction pour afficher l'état KHU

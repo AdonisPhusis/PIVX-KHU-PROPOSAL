@@ -46,18 +46,25 @@ static UniValue khubalance(const JSONRPCRequest& request)
     if (request.fHelp || request.params.size() != 0) {
         throw std::runtime_error(
             "khubalance\n"
-            "\nReturns the KHU balance for this wallet (Phase 8a).\n"
+            "\nReturns the KHU and PIV balance for this wallet.\n"
             "\nResult:\n"
             "{\n"
-            "  \"transparent\": n,         (numeric) KHU_T balance in satoshis\n"
-            "  \"staked\": n,              (numeric) ZKHU staked balance in satoshis\n"
-            "  \"pending_yield_estimated\": n,  (numeric) Estimated pending yield (approximation!)\n"
-            "  \"total\": n,               (numeric) Total KHU balance\n"
-            "  \"utxo_count\": n,          (numeric) Number of KHU UTXOs\n"
-            "  \"note_count\": n           (numeric) Number of ZKHU notes\n"
+            "  \"khu\": {                   (object) KHU balance details\n"
+            "    \"transparent\": n,        (numeric) KHU_T balance\n"
+            "    \"staked\": n,             (numeric) ZKHU staked balance\n"
+            "    \"pending_yield_estimated\": n,  (numeric) Estimated pending yield\n"
+            "    \"total\": n,              (numeric) Total KHU balance\n"
+            "    \"utxo_count\": n,         (numeric) Number of KHU UTXOs\n"
+            "    \"note_count\": n          (numeric) Number of ZKHU notes\n"
+            "  },\n"
+            "  \"piv\": {                   (object) PIV balance (for fees)\n"
+            "    \"available\": n,          (numeric) PIV available for fees\n"
+            "    \"immature\": n,           (numeric) PIV immature (coinbase)\n"
+            "    \"locked\": n              (numeric) PIV locked (collateral)\n"
+            "  }\n"
             "}\n"
             "\nNote: pending_yield_estimated is an APPROXIMATION for display purposes.\n"
-            "The actual yield is calculated by the consensus engine.\n"
+            "PIV 'available' is used to pay transaction fees for KHU operations.\n"
             "\nExamples:\n"
             + HelpExampleCli("khubalance", "")
             + HelpExampleRpc("khubalance", "")
@@ -71,6 +78,7 @@ static UniValue khubalance(const JSONRPCRequest& request)
 
     LOCK2(cs_main, pwallet->cs_wallet);
 
+    // KHU balances
     CAmount nTransparent = GetKHUBalance(pwallet);
     CAmount nStaked = GetKHUStakedBalance(pwallet);
 
@@ -82,13 +90,30 @@ static UniValue khubalance(const JSONRPCRequest& request)
 
     CAmount nPendingYield = GetKHUPendingYieldEstimate(pwallet, R_annual);
 
+    // PIV balances (for fees)
+    CAmount nPIVAvailable = pwallet->GetAvailableBalance();
+    CAmount nPIVImmature = pwallet->GetImmatureBalance();
+    CAmount nPIVLocked = pwallet->GetLockedCoins();
+
+    // Build KHU object
+    UniValue khuObj(UniValue::VOBJ);
+    khuObj.pushKV("transparent", ValueFromAmount(nTransparent));
+    khuObj.pushKV("staked", ValueFromAmount(nStaked));
+    khuObj.pushKV("pending_yield_estimated", ValueFromAmount(nPendingYield));
+    khuObj.pushKV("total", ValueFromAmount(nTransparent + nStaked + nPendingYield));
+    khuObj.pushKV("utxo_count", (int64_t)pwallet->khuData.mapKHUCoins.size());
+    khuObj.pushKV("note_count", (int64_t)GetUnspentZKHUNotes(pwallet).size());
+
+    // Build PIV object
+    UniValue pivObj(UniValue::VOBJ);
+    pivObj.pushKV("available", ValueFromAmount(nPIVAvailable));
+    pivObj.pushKV("immature", ValueFromAmount(nPIVImmature));
+    pivObj.pushKV("locked", ValueFromAmount(nPIVLocked));
+
+    // Build result
     UniValue result(UniValue::VOBJ);
-    result.pushKV("transparent", ValueFromAmount(nTransparent));
-    result.pushKV("staked", ValueFromAmount(nStaked));
-    result.pushKV("pending_yield_estimated", ValueFromAmount(nPendingYield));
-    result.pushKV("total", ValueFromAmount(nTransparent + nStaked + nPendingYield));
-    result.pushKV("utxo_count", (int64_t)pwallet->khuData.mapKHUCoins.size());
-    result.pushKV("note_count", (int64_t)GetUnspentZKHUNotes(pwallet).size());
+    result.pushKV("khu", khuObj);
+    result.pushKV("piv", pivObj);
 
     return result;
 }
@@ -861,19 +886,28 @@ static UniValue khustake(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_INVALID_REQUEST, "Sapling not yet activated (required for ZKHU)");
     }
 
-    // Check balance
-    CAmount nBalance = GetKHUBalance(pwallet);
-    CAmount nFee = 10000; // 0.0001 PIV minimum fee
+    // Check KHU balance (fee is paid in PIV, not KHU - per CLAUDE.md §2.1)
+    CAmount nKHUBalance = GetKHUBalance(pwallet);
+    // Sapling STAKE transactions are ~1200-1500 bytes, need ~15000 satoshis at 10 sat/byte
+    CAmount nFee = 15000; // 0.00015 PIV
 
-    if (nAmount + nFee > nBalance) {
+    if (nAmount > nKHUBalance) {
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
-            strprintf("Insufficient KHU balance: have %s, need %s + fee",
-                     FormatMoney(nBalance), FormatMoney(nAmount)));
+            strprintf("Insufficient KHU balance: have %s, need %s",
+                     FormatMoney(nKHUBalance), FormatMoney(nAmount)));
     }
 
-    // Select KHU_T UTXOs
-    CAmount nValueIn = 0;
-    std::vector<COutPoint> vInputs;
+    // Check PIV balance for fee
+    CAmount nPIVBalance = pwallet->GetAvailableBalance();
+    if (nFee > nPIVBalance) {
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+            strprintf("Insufficient PIV for fee: have %s, need %s",
+                     FormatMoney(nPIVBalance), FormatMoney(nFee)));
+    }
+
+    // Select KHU_T UTXOs (for stake amount only)
+    CAmount nKHUValueIn = 0;
+    std::vector<COutPoint> vKHUInputs;
 
     for (std::map<COutPoint, KHUCoinEntry>::const_iterator it = pwallet->khuData.mapKHUCoins.begin();
          it != pwallet->khuData.mapKHUCoins.end(); ++it) {
@@ -881,15 +915,45 @@ static UniValue khustake(const JSONRPCRequest& request)
         const KHUCoinEntry& entry = it->second;
 
         if (entry.coin.fStaked) continue;
-        if (nValueIn >= nAmount + nFee) break;
+        if (nKHUValueIn >= nAmount) break;
 
-        vInputs.push_back(outpoint);
-        nValueIn += entry.coin.amount;
+        vKHUInputs.push_back(outpoint);
+        nKHUValueIn += entry.coin.amount;
     }
 
-    if (nValueIn < nAmount + nFee) {
+    if (nKHUValueIn < nAmount) {
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
             "Unable to select sufficient KHU UTXOs");
+    }
+
+    // Select PIV UTXO for fee (smallest one >= fee to minimize change)
+    std::vector<COutput> vPIVCoins;
+    pwallet->AvailableCoins(&vPIVCoins);
+    COutPoint pivFeeInput;
+    CAmount nPIVInputValue = 0;
+    CScript pivFeeScript;
+    bool foundPIVInput = false;
+    CAmount bestExcess = std::numeric_limits<CAmount>::max();
+
+    for (const COutput& coin : vPIVCoins) {
+        if (coin.tx->tx->IsShieldedTx()) continue; // Skip shielded
+        CAmount value = coin.Value();
+        if (value >= nFee) {
+            CAmount excess = value - nFee;
+            if (excess < bestExcess) {
+                pivFeeInput = COutPoint(coin.tx->GetHash(), coin.i);
+                nPIVInputValue = value;
+                pivFeeScript = coin.tx->tx->vout[coin.i].scriptPubKey;
+                foundPIVInput = true;
+                bestExcess = excess;
+                if (excess == 0) break; // Perfect match
+            }
+        }
+    }
+
+    if (!foundPIVInput) {
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+            "No suitable PIV UTXO found for fee payment");
     }
 
     // Generate or get Sapling address for ZKHU note
@@ -921,9 +985,10 @@ static UniValue khustake(const JSONRPCRequest& request)
     // Build transaction using TransactionBuilder
     TransactionBuilder builder(consensus, pwallet);
     builder.SetFee(nFee);
+    builder.SetType(CTransaction::TxType::KHU_STAKE);  // Set type BEFORE building
 
     // Add KHU_T transparent inputs
-    for (const COutPoint& outpoint : vInputs) {
+    for (const COutPoint& outpoint : vKHUInputs) {
         auto it = pwallet->khuData.mapKHUCoins.find(outpoint);
         if (it == pwallet->khuData.mapKHUCoins.end()) {
             throw JSONRPCError(RPC_WALLET_ERROR, "KHU input not found");
@@ -931,17 +996,34 @@ static UniValue khustake(const JSONRPCRequest& request)
         builder.AddTransparentInput(outpoint, it->second.coin.scriptPubKey, it->second.coin.amount);
     }
 
+    // Add PIV transparent input (for fee)
+    builder.AddTransparentInput(pivFeeInput, pivFeeScript, nPIVInputValue);
+
     // Add Sapling output (ZKHU note) with ZKHUMemo
     builder.AddSaplingOutput(ovk, saplingAddr, nAmount, memoBytes);
 
-    // Calculate change back to transparent KHU_T (if any)
-    CAmount nChange = nValueIn - nAmount - nFee;
-    if (nChange > 0) {
-        CPubKey changeKey;
-        if (!pwallet->GetKeyFromPool(changeKey, true)) {
-            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for change");
+    // IMPORTANT: Output ordering for wallet tracking (per CLAUDE.md §2.1)
+    // vout[0] = KHU change (tracked as KHU)
+    // vout[1] = PIV change (NOT tracked as KHU)
+
+    // Calculate KHU change (fee is paid from PIV, not KHU)
+    CAmount nKHUChange = nKHUValueIn - nAmount;
+    if (nKHUChange > 0) {
+        CPubKey khuChangeKey;
+        if (!pwallet->GetKeyFromPool(khuChangeKey, true)) {
+            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for KHU change");
         }
-        builder.AddTransparentOutput(changeKey.GetID(), nChange);
+        builder.AddTransparentOutput(khuChangeKey.GetID(), nKHUChange);
+    }
+
+    // Calculate PIV change (PIV input minus fee)
+    CAmount nPIVChange = nPIVInputValue - nFee;
+    if (nPIVChange > 0) {
+        CPubKey pivChangeKey;
+        if (!pwallet->GetKeyFromPool(pivChangeKey, true)) {
+            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for PIV change");
+        }
+        builder.AddTransparentOutput(pivChangeKey.GetID(), nPIVChange);
     }
 
     // Build with dummy signatures first (to calculate size)
@@ -950,6 +1032,10 @@ static UniValue khustake(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_WALLET_ERROR,
             strprintf("Failed to build stake transaction: %s", buildResult.GetError()));
     }
+
+    // Clear dummy signatures/proofs before creating real ones
+    // (required for TransactionBuilder workflow)
+    builder.ClearProofsAndSignatures();
 
     // Now prove and sign
     TransactionBuilderResult proveResult = builder.ProveAndSign();
@@ -960,13 +1046,9 @@ static UniValue khustake(const JSONRPCRequest& request)
 
     CTransaction finalTx = proveResult.GetTxOrThrow();
 
-    // Set transaction type to KHU_STAKE
-    // Note: TransactionBuilder creates a CMutableTransaction internally
-    // We need to modify the type before broadcasting
-    CMutableTransaction mtxFinal(finalTx);
-    mtxFinal.nType = CTransaction::TxType::KHU_STAKE;
-
-    CTransactionRef txRef = MakeTransactionRef(std::move(mtxFinal));
+    // Transaction type was already set via builder.SetType() before Build()
+    // DO NOT modify the transaction after Build() - it would invalidate Sapling proofs
+    CTransactionRef txRef = MakeTransactionRef(finalTx);
 
     // Broadcast transaction
     CValidationState state;
@@ -1053,7 +1135,8 @@ static UniValue khuunstake(const JSONRPCRequest& request)
     }
 
     const uint32_t ZKHU_MATURITY_BLOCKS = 4320;
-    CAmount nFee = 10000; // 0.0001 PIV minimum fee
+    // Sapling UNSTAKE transactions are ~1200-1500 bytes, need ~15000 satoshis at 10 sat/byte
+    CAmount nFee = 15000; // 0.00015 PIV for Sapling tx
 
     // Find the ZKHU note to unstake
     ZKHUNoteEntry* targetNote = nullptr;
@@ -1100,41 +1183,35 @@ static UniValue khuunstake(const JSONRPCRequest& request)
                      blocksRemaining, blocksRemaining / 1440.0));
     }
 
-    // Get the corresponding Sapling note from wallet
+    // Get the corresponding Sapling note from wallet using GetNotes()
+    // This properly decrypts the note and retrieves the correct rcm (randomness)
     const SaplingOutPoint& saplingOp = targetNote->op;
-    auto wtxIt = pwallet->mapWallet.find(saplingOp.hash);
-    if (wtxIt == pwallet->mapWallet.end()) {
-        throw JSONRPCError(RPC_WALLET_ERROR, "Transaction containing ZKHU note not found");
+    std::vector<SaplingOutPoint> saplingOutpoints = {saplingOp};
+    std::vector<SaplingNoteEntry> saplingEntries;
+
+    SaplingScriptPubKeyMan* saplingMan = pwallet->GetSaplingScriptPubKeyMan();
+    if (!saplingMan) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "Sapling not enabled in wallet");
     }
 
-    const CWalletTx& wtx = wtxIt->second;
-    auto noteDataIt = wtx.mapSaplingNoteData.find(saplingOp);
-    if (noteDataIt == wtx.mapSaplingNoteData.end()) {
-        throw JSONRPCError(RPC_WALLET_ERROR, "Sapling note data not found");
+    saplingMan->GetNotes(saplingOutpoints, saplingEntries);
+
+    if (saplingEntries.empty()) {
+        throw JSONRPCError(RPC_WALLET_ERROR,
+            "Could not retrieve Sapling note data. The note may not belong to this wallet "
+            "or the wallet may need to be rescanned.");
     }
 
-    const SaplingNoteData& noteData = noteDataIt->second;
-    if (!noteData.IsMyNote()) {
-        throw JSONRPCError(RPC_WALLET_ERROR, "Note does not belong to this wallet");
-    }
-
-    // Get the Sapling payment address
-    if (!noteData.address) {
-        throw JSONRPCError(RPC_WALLET_ERROR, "Note address not cached");
-    }
-    libzcash::SaplingPaymentAddress saplingAddr = *noteData.address;
+    const SaplingNoteEntry& noteEntry = saplingEntries[0];
+    const libzcash::SaplingNote& note = noteEntry.note;  // Contains correct rcm!
+    libzcash::SaplingPaymentAddress saplingAddr = noteEntry.address;
+    CAmount principal = note.value();
 
     // Get the spending key
     libzcash::SaplingExtendedSpendingKey sk;
     if (!pwallet->GetSaplingExtendedSpendingKey(saplingAddr, sk)) {
         throw JSONRPCError(RPC_WALLET_ERROR, "Spending key not found for note address");
     }
-
-    // Get the note amount from cached data
-    if (!noteData.amount) {
-        throw JSONRPCError(RPC_WALLET_ERROR, "Note amount not cached");
-    }
-    CAmount principal = *noteData.amount;
 
     // Calculate yield bonus based on stake duration and R_annual
     KhuGlobalState state;
@@ -1162,7 +1239,7 @@ static UniValue khuunstake(const JSONRPCRequest& request)
     std::vector<SaplingOutPoint> ops = {saplingOp};
     std::vector<Optional<SaplingWitness>> witnesses;
     uint256 anchor;
-    pwallet->GetSaplingScriptPubKeyMan()->GetSaplingNoteWitnesses(ops, witnesses, anchor);
+    saplingMan->GetSaplingNoteWitnesses(ops, witnesses, anchor);
 
     if (witnesses.empty() || !witnesses[0]) {
         throw JSONRPCError(RPC_WALLET_ERROR,
@@ -1170,13 +1247,10 @@ static UniValue khuunstake(const JSONRPCRequest& request)
             "Try restarting the wallet or running a rescan.");
     }
 
-    // Reconstruct the Sapling note for spending
-    // We need to decrypt the output to get the full note data
-    libzcash::SaplingNote note(saplingAddr.d, saplingAddr.pk_d, principal, uint256());
-
     // Build transaction using TransactionBuilder
     TransactionBuilder builder(consensus, pwallet);
     builder.SetFee(nFee);
+    builder.SetType(CTransaction::TxType::KHU_UNSTAKE);  // Set type BEFORE building
 
     // Add the Sapling spend
     builder.AddSaplingSpend(sk.expsk, note, anchor, witnesses[0].get());
@@ -1195,6 +1269,9 @@ static UniValue khuunstake(const JSONRPCRequest& request)
             strprintf("Failed to build unstake transaction: %s", buildResult.GetError()));
     }
 
+    // Clear dummy signatures/proofs before creating real ones
+    builder.ClearProofsAndSignatures();
+
     // Prove and sign
     TransactionBuilderResult proveResult = builder.ProveAndSign();
     if (proveResult.IsError()) {
@@ -1204,11 +1281,9 @@ static UniValue khuunstake(const JSONRPCRequest& request)
 
     CTransaction finalTx = proveResult.GetTxOrThrow();
 
-    // Set transaction type to KHU_UNSTAKE
-    CMutableTransaction mtxFinal(finalTx);
-    mtxFinal.nType = CTransaction::TxType::KHU_UNSTAKE;
-
-    CTransactionRef txRef = MakeTransactionRef(std::move(mtxFinal));
+    // Transaction type was already set via builder.SetType() before Build()
+    // DO NOT modify the transaction after Build() - it would invalidate Sapling proofs
+    CTransactionRef txRef = MakeTransactionRef(finalTx);
 
     // Broadcast transaction
     CValidationState validationState;

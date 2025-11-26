@@ -1762,6 +1762,19 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     nTimeProcessSpecial += nTime3 - nTime2;
     LogPrint(BCLog::BENCHMARK, "    - Process special tx: %.2fms [%.2fs]\n", 0.001 * (nTime3 - nTime2), nTimeProcessSpecial * 0.000001);
 
+    // KHU: Process KHU state transitions (Phase 1+ - runs for both fJustCheck and !fJustCheck)
+    // When fJustCheck=true: validates without persisting to DB
+    // When fJustCheck=false: validates and persists to DB
+    if (consensus.NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_V6_0)) {
+        LogPrint(BCLog::KHU, "ConnectBlock: Calling ProcessKHUBlock height=%d fJustCheck=%d\n",
+                 pindex->nHeight, fJustCheck);
+        if (!ProcessKHUBlock(block, pindex, view, state, consensus, fJustCheck)) {
+            LogPrint(BCLog::KHU, "ConnectBlock: ProcessKHUBlock FAILED at height=%d\n", pindex->nHeight);
+            return error("%s: ProcessKHUBlock failed for %s", __func__, block.GetHash().ToString());
+        }
+        LogPrint(BCLog::KHU, "ConnectBlock: ProcessKHUBlock SUCCESS at height=%d\n", pindex->nHeight);
+    }
+
     //IMPORTANT NOTE: Nothing before this point should actually store to disk (or even memory)
     if (fJustCheck)
         return true;
@@ -1820,14 +1833,8 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
         invalid_out::setInvalidOutPoints.clear();
     }
 
-    // KHU: Process KHU state transitions (Phase 1 - Foundation only)
-    // TODO: Add UPGRADE_KHU to consensus/params.h when ready
-    // For now, this hook is dormant (NetworkUpgradeActive will return false)
-    if (!fJustCheck && consensus.NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_V6_0)) {
-        if (!ProcessKHUBlock(block, pindex, view, state, consensus)) {
-            return error("%s: ProcessKHUBlock failed for %s", __func__, block.GetHash().ToString());
-        }
-    }
+    // NOTE: ProcessKHUBlock is now called earlier, before fJustCheck return,
+    // so it runs for both test validation (fJustCheck=true) and real connect (fJustCheck=false)
 
     return true;
 }

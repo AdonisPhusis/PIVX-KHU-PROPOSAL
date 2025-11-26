@@ -664,8 +664,8 @@ if __name__ == '__main__':
 
 **Documents liés :**
 - `01-blueprint-master-flow.md` — Section 1.3.3 (émission PIVX)
-- `02-canonical-specification.md` — Section 5 (block reward)
-- `03-architecture-overview.md` — Section 5 (consensus)
+- `SPEC.md` — Section 5 (block reward)
+- `ARCHITECTURE.md` — Section 5 (consensus)
 - `06-protocol-reference.md` — Section 12 (code C++ émission)
 
 ---

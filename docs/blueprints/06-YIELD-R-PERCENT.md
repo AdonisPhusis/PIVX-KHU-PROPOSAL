@@ -32,7 +32,7 @@ Exemple :
 
   Alice unstake → reçoit :
   Principal : 1000 KHU_T
-  Bonus :       50 KHU_T
+  Yield :       50 KHU_T
   Total :     1050 KHU_T
 ```
 
@@ -164,9 +164,12 @@ Cr et Ur évoluent EXCLUSIVEMENT via:
    où Δ = (stake_total × R_annual / 10000) / 365
 
 2. UNSTAKE (ProcessUNSTAKE):
-   Cr -= B
-   Ur -= B
-   où B = note.Ur_accumulated
+   Z  -= P       (principal retiré du shielded)
+   U  += P + Y   (principal + yield vers transparent)
+   C  += Y       (yield ajoute au collateral)
+   Cr -= Y       (yield consommé du pool)
+   Ur -= Y       (yield consommé des droits)
+   où P = principal, Y = note.Ur_accumulated (0 si immature)
 
 AUCUNE autre source (ni émission PIV, ni fees, ni injection externe).
 
@@ -195,24 +198,27 @@ Jour 1 (1440 blocs plus tard) :
   → Pool AUGMENTE chaque jour
   → Notes ZKHU accumulent Ur
 
-Quand Alice UNSTAKE :
-  Alice avait 1000 KHU staké
-  Ur_accumulated = 50 KHU (1 an)
+Quand Alice UNSTAKE (après maturity de 4320 blocs = 3 jours) :
+  Alice avait P = 1000 KHU staké
+  Y = Ur_accumulated = 50 KHU (1 an de yield)
 
-  state.Cr -= 50  (consommation pool virtuel)
-  state.Ur -= 50  (consommation droits)
-  state.C  += 50  (MINT nouveaux KHU_T pour bonus)
-  state.U  += 50  (MINT nouveaux KHU_T pour bonus)
+  state.Z  -= 1000 (principal retiré du shielded)
+  state.U  += 1050 (principal + yield vers transparent)
+  state.C  += 50   (yield = inflation contrôlée)
+  state.Cr -= 50   (yield consommé du pool)
+  state.Ur -= 50   (yield consommé des droits)
 
-  Alice reçoit : 1000 KHU_T (principal) + 50 KHU_T (bonus MINTÉ)
+  Alice reçoit : 1000 KHU_T (principal P) + 50 KHU_T (yield Y)
                = 1050 KHU_T total
+
+MATURITY: AUCUN yield si note < 4320 blocs (3 jours)
 ```
 
 **Cr/Ur = système de création monétaire différée (deferred minting).**
 
-Les KHU_T de bonus sont **créés lors de l'UNSTAKE**, pas lors du yield quotidien.
+Les KHU_T de yield sont **créés lors de l'UNSTAKE**, pas lors du yield quotidien.
 Le yield quotidien augmente seulement les compteurs Cr/Ur (promesses virtuelles).
-L'UNSTAKE matérialise ces promesses en KHU_T réels via MINT.
+L'UNSTAKE matérialise ces promesses en KHU_T réels (inflation contrôlée).
 
 ### 2.4 Axiome Injection Pool — RÈGLE CANONIQUE IMMUABLE
 
@@ -253,10 +259,10 @@ Le système Cr/Ur est **complètement fermé**, **endogène**, et **auto-déterm
 
 ```cpp
 // Validation ConnectBlock
-if (state_new.Cr != state_old.Cr + Δ_yield - Σ_unstake_bonuses) {
+if (state_new.Cr != state_old.Cr + Δ_yield - Σ_unstake_yields) {
     return state.Invalid(REJECT_INVALID, "khu-invalid-cr-mutation");
 }
-if (state_new.Ur != state_old.Ur + Δ_yield - Σ_unstake_bonuses) {
+if (state_new.Ur != state_old.Ur + Δ_yield - Σ_unstake_yields) {
     return state.Invalid(REJECT_INVALID, "khu-invalid-ur-mutation");
 }
 ```
@@ -402,7 +408,7 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
 }
 ```
 
-**ORDRE CRITIQUE :** Yield AVANT transactions (voir blueprint 02-canonical-specification section 11.1).
+**ORDRE CRITIQUE :** Yield AVANT transactions (voir blueprint SPEC.md section 11.1).
 
 ### 4.2 ApplyDailyYield Implementation
 
@@ -471,7 +477,7 @@ void OnZKHUStake(const uint256& nullifier, const ZKHUNoteData& noteData) {
  */
 void OnZKHUUnstake(const uint256& nullifier) {
     activeZKHUNotes.erase(nullifier);
-    // note.Ur_accumulated utilisé pour bonus
+    // note.Ur_accumulated utilisé pour yield (Y)
 }
 ```
 
@@ -487,14 +493,14 @@ void OnZKHUUnstake(const uint256& nullifier) {
 /**
  * Calculer R_MAX_dynamic pour une hauteur donnée
  *
- * Année 0-25 : Décroît de 30% à 4% (-1%/an)
- * Année 26+ : Plancher 4% (jamais en dessous)
+ * Année 0-33 : Décroît de 37% à 4% (-1%/an)
+ * Année 34+ : Plancher 4% (jamais en dessous)
  */
 uint16_t GetRMaxDynamic(uint32_t nHeight, uint32_t nActivationHeight) {
     uint32_t year = (nHeight - nActivationHeight) / BLOCKS_PER_YEAR;
 
-    // Formule : max(400, 3000 - year × 100)
-    uint16_t r_max = std::max(400, 3000 - year * 100);
+    // Formule : max(400, 3700 - year × 100)
+    uint16_t r_max = std::max(400, 3700 - year * 100);
 
     return r_max;
 }
@@ -504,13 +510,11 @@ uint16_t GetRMaxDynamic(uint32_t nHeight, uint32_t nActivationHeight) {
 
 | Année | R_MAX_dynamic | Pourcentage |
 |-------|---------------|-------------|
-| 0     | 3000 bp       | 30.00%      |
-| 1     | 2900 bp       | 29.00%      |
-| 2     | 2800 bp       | 28.00%      |
-| ...   | ...           | ...         |
-| 25    | 500 bp        | 5.00%       |
-| 26    | 400 bp        | 4.00%       |
-| 27+   | 400 bp        | 4.00%       |
+| 0     | 3700 bp       | 37.00%      |
+| 10    | 2700 bp       | 27.00%      |
+| 20    | 1700 bp       | 17.00%      |
+| 33    | 400 bp        | 4.00%       |
+| 34+   | 400 bp        | 4.00%       |
 
 **Graphique :**
 ```
@@ -1366,7 +1370,7 @@ Bloc 370320 (365 jours après stake) :
 
 Alice UNSTAKE :
   Principal : 1000 KHU_T
-  Bonus :       50 KHU_T (Ur_accumulated)
+  Yield :       50 KHU_T (Ur_accumulated)
   Total :     1050 KHU_T
 ```
 
@@ -1471,7 +1475,7 @@ BOOST_AUTO_TEST_SUITE_END()
 - `05-ZKHU-STAKE-UNSTAKE.md` — Application yield dans UNSTAKE
 
 **Documents liés :**
-- `02-canonical-specification.md` — Section 8 (Yield Mechanism)
+- `SPEC.md.md` — Section 8 (Yield Mechanism)
 - `06-protocol-reference.md` — Section 15 (Yield code C++)
 
 ---

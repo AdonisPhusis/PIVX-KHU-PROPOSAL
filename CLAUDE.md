@@ -1,5 +1,10 @@
 # CLAUDE.md — PIVX-V6-KHU Development Context
 
+**Last Sync:** 2025-11-26
+**Documents Synchronized:** SPEC.md, ARCHITECTURE.md, ROADMAP.md, IMPLEMENTATION.md, blueprints/*
+
+---
+
 ## Role & Context
 
 Tu es un **développeur C++ senior** travaillant sur le projet PIVX-V6-KHU.
@@ -25,7 +30,7 @@ KHU est un **colored coin collatéralisé 1:1** par PIV.
 
 Ces invariants doivent être vérifiés **à chaque commit**:
 
-**Soit `Z = Σ(active ZKHU notes)` la somme des montants ZKHU stakés.**
+**Z est stocké dans KhuGlobalState** et mis à jour atomiquement par STAKE/UNSTAKE.
 
 ```cpp
 C == U + Z                // collateral == supply transparent + shielded
@@ -45,12 +50,13 @@ T >= 0                    // DAO Treasury (Phase 6)
 
 **UNSTAKE = Double Flux Atomique:**
 ```cpp
-// Soit: a = principal (note.amount), y = yield accumulé (note.accumulatedYield)
-state.U  += a + y;  // (1) Create KHU_T for principal + yield
-state.C  += y;      // (2) Increase collateral by yield only (principal was already in C)
-state.Cr -= y;      // (3) Consume reward pool
-state.Ur -= y;      // (4) Consume reward rights
-// Ces 4 lignes doivent être adjacentes, AUCUN code entre elles
+// Soit: P = principal (note.amount), Y = yield accumulé (note.accumulatedYield)
+state.Z  -= P;       // (1) Principal retiré du shielded
+state.U  += P + Y;   // (2) Principal + Yield vers transparent
+state.C  += Y;       // (3) Yield ajoute au collateral (inflation)
+state.Cr -= Y;       // (4) Yield consommé du pool
+state.Ur -= Y;       // (5) Yield consommé des droits
+// Ces 5 lignes doivent être adjacentes, AUCUN code entre elles
 ```
 
 ---
@@ -70,7 +76,7 @@ PIV → MINT → KHU_T → [trade] → REDEEM → PIV
 - **MINT**: Lock PIV, créer KHU_T (1:1) — instantané
 - **REDEEM**: Burn KHU_T, unlock PIV (1:1) — instantané
 - **STAKE**: KHU_T → ZKHU (note Sapling) — optionnel, pour yield R%
-- **UNSTAKE**: ZKHU → KHU_T + bonus — après 4320 blocs maturity
+- **UNSTAKE**: ZKHU → KHU_T + yield (Y) — après 4320 blocs maturity
 
 > ⚠️ STAKE/UNSTAKE sont OPTIONNELS. On peut MINT/REDEEM en boucle sans jamais staker.
 
@@ -212,7 +218,8 @@ uint16_t R_MAX = std::max(400, 3700 - year * 100);  // Décroît 37%→4% sur 33
 struct KhuGlobalState {
     // Collateral and supply
     int64_t C;                      // PIV collateral (satoshis)
-    int64_t U;                      // KHU_T supply (satoshis)
+    int64_t U;                      // KHU_T supply transparent (satoshis)
+    int64_t Z;                      // ZKHU supply shielded (satoshis) — mis à jour par STAKE/UNSTAKE
 
     // Reward pool
     int64_t Cr;                     // Reward pool (satoshis)
@@ -240,9 +247,8 @@ struct KhuGlobalState {
     uint256 hashBlock;
     uint256 hashPrevState;
 
-    // NOTE: Z (total ZKHU) est calculé via GetTotalStakedZKHU()
-    bool CheckInvariants(int64_t Z) const {
-        if (C < 0 || U < 0 || Cr < 0 || Ur < 0 || T < 0 || Z < 0)
+    bool CheckInvariants() const {
+        if (C < 0 || U < 0 || Z < 0 || Cr < 0 || Ur < 0 || T < 0)
             return false;
         bool cd_ok = (C == U + Z);           // INVARIANT_1
         bool cdr_ok = (Ur == 0 || Cr == Ur); // INVARIANT_2
@@ -348,6 +354,44 @@ daily = (principal * R_annual) / 10000 / 365;
 ❌ Pas de DOMC sur émission PIVX (DOMC gouverne R% uniquement)
 ❌ Pas de reorg > 12 blocs (finality LLMQ)
 ```
+
+---
+
+## 12.0 MATURITY PERIOD — RÈGLE CRITIQUE
+
+> ⚠️ **AUCUN yield avant 4320 blocs (3 jours) de maturity.**
+
+### Règle Canonique
+```
+STAKE à bloc N:
+  - Blocs N à N+4319: MATURITY PERIOD (aucun yield)
+  - À partir de bloc N+4320: Yield actif
+```
+
+### Timeline Exemple (12,000 PIV stakés à V6)
+```
+Jour 0 (bloc 0):      STAKE 12,000 → Maturity commence
+Jour 1 (bloc 1440):   Maturity (pas de yield)
+Jour 2 (bloc 2880):   Maturity (pas de yield)
+Jour 3 (bloc 4320):   ✅ Note mature - Yield commence
+Jour 4 (bloc 5760):   +12.16 PIV yield (R=37%, 12000×3700/10000/365)
+Jour 5 (bloc 7200):   +12.16 PIV yield
+...
+```
+
+### Calcul Yield (Post-Maturity uniquement)
+```cpp
+// Yield quotidien = (principal × R_annual) / 10000 / 365
+CAmount dailyYield = (note.amount * R_annual) / 10000 / 365;
+
+// Exemple: 12,000 PIV @ 37%
+// dailyYield = (12000 × 3700) / 10000 / 365 = 12.16 PIV/jour
+```
+
+### Pourquoi 3 Jours?
+- **Anti-arbitrage**: Empêche le flash-stake (stake→yield→unstake immédiat)
+- **Engagement minimum**: Force un commitment temporel
+- **Sécurité réseau**: Aligne incentives avec stabilité long-terme
 
 ---
 
@@ -518,9 +562,10 @@ test/functional/test_runner.py khu*
 L'ordre de sérialisation de `GetHash()` est **IMMUABLE**:
 
 ```cpp
-// Ces 16 champs dans CET ORDRE EXACT (Updated 2025-11-25)
+// Ces 17 champs dans CET ORDRE EXACT (Updated 2025-11-26)
 ss << C;
 ss << U;
+ss << Z;                           // ZKHU supply shielded (stocké, pas calculé)
 ss << Cr;
 ss << Ur;
 ss << T;                           // DAO Treasury (Phase 6.3)
@@ -541,26 +586,37 @@ Changer l'ordre = **HARD FORK IMMÉDIAT**
 
 ---
 
-## 17. DOCUMENTS CANONIQUES (IMMUABLES)
+## 17. DOCUMENTATION (Structure Simplifiée)
 
-Ces documents définissent le système et **NE DOIVENT JAMAIS ÊTRE MODIFIÉS**:
+### Structure
+```
+docs/
+├── README.md           ← Index
+├── SPEC.md             ← Spécification canonique (IMMUABLE)
+├── ARCHITECTURE.md     ← Architecture technique (IMMUABLE)
+├── ROADMAP.md          ← Phases et statut
+├── IMPLEMENTATION.md   ← Guide implémentation
+│
+├── comprendre/         ← Pour les normies
+├── blueprints/         ← Détails par feature
+└── archive/            ← Documents historiques
+```
 
-- `docs/02-canonical-specification.md` — Spécification mathématique
-- `docs/03-architecture-overview.md` — Architecture technique
-- `docs/04-economics.md` — Propriétés économiques
-- `docs/blueprints/01-PIVX-INFLATION-DIMINUTION.md` — Émission canonique
+### Documents Canoniques (IMMUABLES)
 
+| Document | Rôle UNIQUE |
+|----------|-------------|
+| `docs/SPEC.md` | Règles MATHÉMATIQUES (formules, invariants, constantes) |
+| `docs/ARCHITECTURE.md` | Structure CODE (fichiers, patterns, LevelDB) |
+| `docs/blueprints/01-*.md` | Détails techniques par feature |
+
+**Pas de redondance:** SPEC.md = QUOI (règles), ARCHITECTURE.md = OÙ (code).
 **Modification interdite sans validation architecte + review complète.**
 
----
-
-## 18. DOCUMENTS MODIFIABLES
-
-Ces documents évoluent au fur et à mesure:
-
-- `docs/05-roadmap.md` — Statut phases et progression
-- `docs/06-protocol-reference.md` — Référence implémentation
-- `docs/reports/*.md` — Rapports de phase
+### Documents Évolutifs
+- `docs/ROADMAP.md` — Statut phases
+- `docs/IMPLEMENTATION.md` — Guide développeurs
+- `docs/archive/` — Rapports historiques
 
 ---
 
@@ -568,7 +624,7 @@ Ces documents évoluent au fur et à mesure:
 
 Avant chaque commit, vérifier:
 
-- [ ] `C == U + Z` préservé après toutes mutations (où Z = Σ ZKHU notes)
+- [ ] `C == U + Z` préservé après toutes mutations (Z = state.Z)
 - [ ] `Cr == Ur` préservé après toutes mutations
 - [ ] `AssertLockHeld(cs_khu)` dans fonctions mutation
 - [ ] `CheckInvariants()` appelé après mutations
@@ -586,15 +642,18 @@ Avant chaque commit, vérifier:
 
 En cas d'incertitude sur une implémentation:
 1. Consulter les blueprints dans `/docs/blueprints/`
-2. Consulter la spécification dans `/docs/02-canonical-specification.md`
+2. Consulter la spécification dans `/docs/SPEC.md`
 3. Demander clarification à l'architecte avant d'implémenter
 
 ---
 
-**Version:** 1.3
+**Version:** 1.6
 **Date:** 2025-11-26
 **Status:** ACTIF
 **Changelog:**
+- v1.6: Simplification structure docs (SPEC, ARCHITECTURE, ROADMAP, IMPLEMENTATION), dossier comprendre/ pour normies, archive/
+- v1.5: Ajout section 12.0 MATURITY explicite (3 jours, aucun yield avant), Y (Yield) au lieu de B (Bonus), calcul yield détaillé
+- v1.4: Z stocké dans KhuGlobalState (pas calculé dynamiquement), CheckInvariants() sans paramètre
 - v1.3: Double-entry accounting clarification (a/y notation), UNSTAKE formula corrected, R% = 37% everywhere
 - v1.2: T (DAO Treasury) daily accumulation 2%/year, DAO transition Year 1+, unified ApplyDailyUpdatesIfNeeded()
 - v1.1: R% = 37% initial at V6 activation, DOMC cycle 172800 blocks (4 months)

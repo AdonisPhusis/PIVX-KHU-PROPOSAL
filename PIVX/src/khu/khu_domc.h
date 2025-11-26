@@ -43,10 +43,20 @@ static const uint32_t DOMC_REVEAL_OFFSET = 152640;     // Start reveal phase at 
 static const uint32_t DOMC_COMMIT_DURATION = 20160;    // Commit window: 20160 blocks (~2 weeks)
 static const uint32_t DOMC_REVEAL_DURATION = 20160;    // Reveal window: 20160 blocks (~2 weeks)
 
-// R% limits (basis points: 1500 = 15.00%)
+// R% limits (basis points: 3700 = 37.00%)
 static const uint16_t R_MIN = 0;       // Minimum R%: 0.00%
 static const uint16_t R_MAX = 5000;    // Absolute maximum R%: 50.00%
-static const uint16_t R_DEFAULT = 1500; // Default R% at genesis: 15.00%
+static const uint16_t R_DEFAULT = 3700; // Default R% at V6 activation: 37.00%
+
+// R_MAX_dynamic formula: max(400, 3700 - year × 100)
+// Year 0:  3700 bp (37%)
+// Year 33: 400 bp (4%) - minimum guaranteed
+
+// DAO Treasury (T) - Phase 6.3
+// T accumulates 2% annual, daily (same trigger as yield)
+// T_daily = (U + Ur) / 182500
+static const int64_t T_ANNUAL_RATE = 200;     // 2% annual (basis points)
+static const int64_t T_DAILY_DIVISOR = 182500; // (U+Ur) / 182500 = daily T
 
 /**
  * DomcCommit - Masternode commit for R% vote

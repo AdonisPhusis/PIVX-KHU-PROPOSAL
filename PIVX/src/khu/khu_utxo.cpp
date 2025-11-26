@@ -85,3 +85,20 @@ bool HaveKHUCoin(const CCoinsViewCache& view, const COutPoint& outpoint)
 
     return !it->second.IsSpent();
 }
+
+bool GetKHUCoinFromTracking(const COutPoint& outpoint, CKHUUTXO& coin)
+{
+    LOCK(cs_khu_utxos);
+
+    auto it = mapKHUUTXOs.find(outpoint);
+    if (it == mapKHUUTXOs.end()) {
+        return false;
+    }
+
+    if (it->second.IsSpent()) {
+        return false;
+    }
+
+    coin = it->second;
+    return true;
+}

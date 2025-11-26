@@ -215,6 +215,11 @@ void TransactionBuilder::SetFee(CAmount _fee)
     this->fee = _fee;
 }
 
+void TransactionBuilder::SetType(CTransaction::TxType _type)
+{
+    mtx.nType = _type;
+}
+
 void TransactionBuilder::SendChangeTo(const libzcash::SaplingPaymentAddress& changeAddr, const uint256& ovk)
 {
     saplingChangeAddr = std::make_pair(ovk, changeAddr);

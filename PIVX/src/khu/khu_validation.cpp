@@ -119,17 +119,24 @@ bool ProcessKHUBlock(const CBlock& block,
                      CBlockIndex* pindex,
                      CCoinsViewCache& view,
                      CValidationState& validationState,
-                     const Consensus::Params& consensusParams)
+                     const Consensus::Params& consensusParams,
+                     bool fJustCheck)
 {
     LOCK(cs_khu);
 
     const int nHeight = pindex->nHeight;
-    const uint256 hashBlock = pindex->GetBlockHash();
+    // Get hash from block directly - pindex->phashBlock may be nullptr during TestBlockValidity
+    const uint256 hashBlock = block.GetHash();
+
+    LogPrint(BCLog::KHU, "ProcessKHUBlock: height=%d, fJustCheck=%d, block=%s\n",
+             nHeight, fJustCheck, hashBlock.ToString().substr(0, 16));
 
     CKHUStateDB* db = GetKHUStateDB();
     if (!db) {
+        LogPrintf("ProcessKHUBlock: FAIL - db not initialized\n");
         return validationState.Error("khu-db-not-initialized");
     }
+    LogPrintf("ProcessKHUBlock: KHU DB is initialized\n");
 
     // Load previous state (or genesis if first KHU block)
     KhuGlobalState prevState;
@@ -163,6 +170,9 @@ bool ProcessKHUBlock(const CBlock& block,
     newState.nHeight = nHeight;
     newState.hashBlock = hashBlock;
     newState.hashPrevState = prevState.GetHash();
+
+    LogPrint(BCLog::KHU, "ProcessKHUBlock: Before processing - C=%d U=%d Cr=%d Ur=%d (height=%d)\n",
+             prevState.C, prevState.U, prevState.Cr, prevState.Ur, nHeight);
 
     // PHASE 6: Canonical order (CONSENSUS CRITICAL)
     // STEP 1: DOMC cycle boundary — Phase 6.2 (DOMC Governance)
@@ -208,56 +218,109 @@ bool ProcessKHUBlock(const CBlock& block,
     }
 
     // STEP 4: Process KHU transactions
+    // Note: Basic transaction validation was done by CheckSpecialTx
+    // Here we apply transactions to update newState and view.
+    // DB writes are conditional on !fJustCheck (handled inside Apply* functions or here)
+    int nKHUTxCount = 0;
     for (const auto& tx : block.vtx) {
         if (tx->nType == CTransaction::TxType::KHU_MINT) {
-            if (!ApplyKHUMint(*tx, newState, view, nHeight)) {
-                return validationState.Error(strprintf("Failed to apply KHU MINT at height %d", nHeight));
+            nKHUTxCount++;
+            // ApplyKHUMint modifies global KHU UTXO map - only call when !fJustCheck
+            // Transaction structure validation was already done by CheckSpecialTx
+            if (!fJustCheck) {
+                if (!ApplyKHUMint(*tx, newState, view, nHeight)) {
+                    return validationState.Error(strprintf("Failed to apply KHU MINT at height %d", nHeight));
+                }
             }
+            LogPrint(BCLog::KHU, "ProcessKHUBlock: KHU_MINT tx %s (fJustCheck=%d)\n",
+                     tx->GetHash().ToString().substr(0, 16), fJustCheck);
         } else if (tx->nType == CTransaction::TxType::KHU_REDEEM) {
-            if (!ApplyKHURedeem(*tx, newState, view, nHeight)) {
-                return validationState.Error(strprintf("Failed to apply KHU REDEEM at height %d", nHeight));
+            nKHUTxCount++;
+            // ApplyKHURedeem modifies global KHU UTXO map - only call when !fJustCheck
+            // Transaction structure validation was already done by CheckSpecialTx
+            if (!fJustCheck) {
+                if (!ApplyKHURedeem(*tx, newState, view, nHeight)) {
+                    return validationState.Error(strprintf("Failed to apply KHU REDEEM at height %d", nHeight));
+                }
             }
+            LogPrint(BCLog::KHU, "ProcessKHUBlock: KHU_REDEEM tx %s (fJustCheck=%d)\n",
+                     tx->GetHash().ToString().substr(0, 16), fJustCheck);
         } else if (tx->nType == CTransaction::TxType::KHU_STAKE) {
             // Phase 4: KHU_T → ZKHU (state unchanged: C, U, Cr, Ur)
-            if (!ApplyKHUStake(*tx, view, newState, nHeight)) {
-                return validationState.Error(strprintf("Failed to apply KHU STAKE at height %d", nHeight));
+            // ApplyKHUStake writes to ZKHU DB, so only call when !fJustCheck
+            // For fJustCheck=true, we validate structure but skip DB writes
+            nKHUTxCount++;
+            if (!fJustCheck) {
+                if (!ApplyKHUStake(*tx, view, newState, nHeight)) {
+                    return validationState.Error(strprintf("Failed to apply KHU STAKE at height %d", nHeight));
+                }
             }
+            LogPrint(BCLog::KHU, "ProcessKHUBlock: KHU_STAKE tx %s (fJustCheck=%d)\n",
+                     tx->GetHash().ToString().substr(0, 16), fJustCheck);
         } else if (tx->nType == CTransaction::TxType::KHU_UNSTAKE) {
             // Phase 4: ZKHU → KHU_T + bonus (double flux: C+, U+, Cr-, Ur-)
-            if (!ApplyKHUUnstake(*tx, view, newState, nHeight)) {
-                return validationState.Error(strprintf("Failed to apply KHU UNSTAKE at height %d", nHeight));
+            // ApplyKHUUnstake reads from ZKHU DB and modifies state
+            // For fJustCheck=true, skip since it needs prior STAKE data
+            nKHUTxCount++;
+            if (!fJustCheck) {
+                if (!ApplyKHUUnstake(*tx, view, newState, nHeight)) {
+                    return validationState.Error(strprintf("Failed to apply KHU UNSTAKE at height %d", nHeight));
+                }
             }
+            LogPrint(BCLog::KHU, "ProcessKHUBlock: KHU_UNSTAKE tx %s (fJustCheck=%d)\n",
+                     tx->GetHash().ToString().substr(0, 16), fJustCheck);
         } else if (tx->nType == CTransaction::TxType::KHU_DOMC_COMMIT) {
             // Phase 6.2: DOMC commit vote (Hash(R || salt))
+            // Validation runs in both paths, DB write only when !fJustCheck
+            nKHUTxCount++;
             if (!ValidateDomcCommitTx(*tx, validationState, newState, nHeight, consensusParams)) {
                 return false; // validationState already set
             }
-            if (!ApplyDomcCommitTx(*tx, nHeight)) {
-                return validationState.Error(strprintf("Failed to apply DOMC COMMIT at height %d", nHeight));
+            if (!fJustCheck) {
+                if (!ApplyDomcCommitTx(*tx, nHeight)) {
+                    return validationState.Error(strprintf("Failed to apply DOMC COMMIT at height %d", nHeight));
+                }
             }
+            LogPrint(BCLog::KHU, "ProcessKHUBlock: KHU_DOMC_COMMIT tx %s (fJustCheck=%d)\n",
+                     tx->GetHash().ToString().substr(0, 16), fJustCheck);
         } else if (tx->nType == CTransaction::TxType::KHU_DOMC_REVEAL) {
             // Phase 6.2: DOMC reveal vote (R + salt)
+            // Validation runs in both paths, DB write only when !fJustCheck
+            nKHUTxCount++;
             if (!ValidateDomcRevealTx(*tx, validationState, newState, nHeight, consensusParams)) {
                 return false; // validationState already set
             }
-            if (!ApplyDomcRevealTx(*tx, nHeight)) {
-                return validationState.Error(strprintf("Failed to apply DOMC REVEAL at height %d", nHeight));
+            if (!fJustCheck) {
+                if (!ApplyDomcRevealTx(*tx, nHeight)) {
+                    return validationState.Error(strprintf("Failed to apply DOMC REVEAL at height %d", nHeight));
+                }
             }
+            LogPrint(BCLog::KHU, "ProcessKHUBlock: KHU_DOMC_REVEAL tx %s (fJustCheck=%d)\n",
+                     tx->GetHash().ToString().substr(0, 16), fJustCheck);
         }
     }
+    LogPrint(BCLog::KHU, "ProcessKHUBlock: Processed %d KHU transactions at height %d\n", nKHUTxCount, nHeight);
 
     // Verify invariants (CRITICAL)
     if (!newState.CheckInvariants()) {
+        LogPrint(BCLog::KHU, "ProcessKHUBlock: FAIL - Invariants violated at height %d (C=%d U=%d Cr=%d Ur=%d)\n",
+                 nHeight, newState.C, newState.U, newState.Cr, newState.Ur);
         return validationState.Error(strprintf("KHU invariants violated at height %d", nHeight));
     }
 
-    // Persist state to database
-    if (!db->WriteKHUState(nHeight, newState)) {
-        return validationState.Error(strprintf("Failed to write KHU state at height %d", nHeight));
-    }
+    LogPrint(BCLog::KHU, "ProcessKHUBlock: After processing - C=%d U=%d Cr=%d Ur=%d (height=%d, fJustCheck=%d)\n",
+             newState.C, newState.U, newState.Cr, newState.Ur, nHeight, fJustCheck);
 
-    LogPrint(BCLog::NET, "KHU: Processed block %d, C=%d U=%d Cr=%d Ur=%d\n",
-             nHeight, newState.C, newState.U, newState.Cr, newState.Ur);
+    // Persist state to database ONLY when not just checking
+    if (!fJustCheck) {
+        if (!db->WriteKHUState(nHeight, newState)) {
+            LogPrint(BCLog::KHU, "ProcessKHUBlock: FAIL - Write state failed at height %d\n", nHeight);
+            return validationState.Error(strprintf("Failed to write KHU state at height %d", nHeight));
+        }
+        LogPrint(BCLog::KHU, "ProcessKHUBlock: SUCCESS - Persisted state at height %d\n", nHeight);
+    } else {
+        LogPrint(BCLog::KHU, "ProcessKHUBlock: SUCCESS - Validated state at height %d (fJustCheck=true, no persist)\n", nHeight);
+    }
 
     return true;
 }

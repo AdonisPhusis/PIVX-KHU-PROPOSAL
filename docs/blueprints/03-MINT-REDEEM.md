@@ -27,25 +27,25 @@ PIV → MINT → KHU_T → STAKE → ZKHU → UNSTAKE → KHU_T → REDEEM → P
 
 **MINT et REDEEM sont les portes d'entrée/sortie du système KHU.**
 
-### 1.2 Invariant Sacré : C == U
+### 1.2 Invariant Sacré : C == U + Z
 
 ```cpp
 // AVANT toute opération :
-assert(state.C == state.U);
+assert(state.C == state.U + state.Z);
 
 // MINT : C+, U+ (atomique)
 state.C += amount;
 state.U += amount;
 
 // APRÈS MINT :
-assert(state.C == state.U);
+assert(state.C == state.U + state.Z);
 
 // REDEEM : C-, U- (atomique)
 state.C -= amount;
 state.U -= amount;
 
 // APRÈS REDEEM :
-assert(state.C == state.U);
+assert(state.C == state.U + state.Z);
 ```
 
 **INTERDICTION ABSOLUE : C et U ne peuvent JAMAIS être modifiés séparément.**
@@ -208,7 +208,7 @@ ApplyKHUMint(100 * COIN)
 C = 100, U = 100, Cr = 0, Ur = 0
 
 // Invariants:
-assert(C == U);  // ✅ 100 == 100
+assert(C == U + Z);  // ✅ 100 == 100 + 0
 assert(Cr == Ur); // ✅ 0 == 0
 ```
 
@@ -362,7 +362,7 @@ ApplyKHURedeem(50 * COIN)
 C = 50, U = 50, Cr = 0, Ur = 0
 
 // Invariants:
-assert(C == U);  // ✅ 50 == 50
+assert(C == U + Z);  // ✅ 50 == 50 + 0
 assert(Cr == Ur); // ✅ 0 == 0
 ```
 
@@ -717,8 +717,8 @@ grep "CheckInvariants()" src/khu/khu_redeem.cpp
 
 **Documents liés :**
 - `01-blueprint-master-flow.md` — Section 3.2 (Phase 2 MINT/REDEEM)
-- `02-canonical-specification.md` — Sections 3.1, 3.2 (MINT/REDEEM spec)
-- `03-architecture-overview.md` — Section 4 (KHU operations)
+- `SPEC.md` — Sections 3.1, 3.2 (MINT/REDEEM spec)
+- `ARCHITECTURE.md` — Section 4 (KHU operations)
 - `06-protocol-reference.md` — Section 14 (code C++ MINT/REDEEM)
 
 ---
