@@ -522,6 +522,16 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
             // quorum commitment
             return CheckLLMQCommitmentTx(tx, pindexPrev, state);
         }
+        // KHU transaction types - validated in ConnectBlock via khu_validation
+        // Here we only need basic validation which was already done in CheckSpecialTxBasic
+        case CTransaction::TxType::KHU_MINT:
+        case CTransaction::TxType::KHU_REDEEM:
+        case CTransaction::TxType::KHU_STAKE:
+        case CTransaction::TxType::KHU_UNSTAKE: {
+            // KHU transactions pass basic validation here
+            // Full validation happens in ProcessKHUTransaction during ConnectBlock
+            return true;
+        }
     }
 
     return state.DoS(10, error("%s: special tx %s with invalid type %d", __func__, tx.GetHash().ToString(), tx.nType),

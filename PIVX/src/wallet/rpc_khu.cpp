@@ -15,9 +15,12 @@
 #include "chain.h"
 #include "chainparams.h"
 #include "key_io.h"
+#include "khu/khu_mint.h"
+#include "khu/khu_redeem.h"
 #include "khu/khu_state.h"
 #include "khu/khu_validation.h"
 #include "khu/zkhu_memo.h"
+#include "streams.h"
 #include "primitives/transaction.h"
 #include "rpc/server.h"
 #include "sapling/key_io_sapling.h"
@@ -237,8 +240,17 @@ static UniValue khumint(const JSONRPCRequest& request)
     CTxDestination dest = newKey.GetID();
 
     CMutableTransaction mtx;
-    mtx.nVersion = CTransaction::TxVersion::LEGACY;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;  // KHU txs require Sapling version
     mtx.nType = CTransaction::TxType::KHU_MINT;
+
+    // Output 1: KHU_T output (prepare script first for payload)
+    CScript khuScript = GetScriptForDestination(dest);
+
+    // Create and serialize payload (required for special txs)
+    CMintKHUPayload payload(nAmount, khuScript);
+    CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
+    ds << payload;
+    mtx.extraPayload = std::vector<uint8_t>(ds.begin(), ds.end());
 
     // Output 0: OP_RETURN burn marker
     CScript burnScript;
@@ -246,7 +258,6 @@ static UniValue khumint(const JSONRPCRequest& request)
     mtx.vout.push_back(CTxOut(0, burnScript));
 
     // Output 1: KHU_T output
-    CScript khuScript = GetScriptForDestination(dest);
     mtx.vout.push_back(CTxOut(nAmount, khuScript));
 
     // Select coins for input
@@ -288,8 +299,10 @@ static UniValue khumint(const JSONRPCRequest& request)
         CAmount amount = wtx->tx->vout[outpoint.n].nValue;
 
         SignatureData sigdata;
+        // Use SIGVERSION_SAPLING for Sapling version transactions
+        SigVersion sigversion = mtx.isSaplingVersion() ? SIGVERSION_SAPLING : SIGVERSION_BASE;
         if (!ProduceSignature(MutableTransactionSignatureCreator(pwallet, &mtx, i, amount, SIGHASH_ALL),
-                             scriptPubKey, sigdata, SIGVERSION_BASE, false)) {
+                             scriptPubKey, sigdata, sigversion, false)) {
             throw JSONRPCError(RPC_WALLET_ERROR, "Signing transaction failed");
         }
         UpdateTransaction(mtx, i, sigdata);
@@ -395,8 +408,17 @@ static UniValue khuredeem(const JSONRPCRequest& request)
     CTxDestination dest = newKey.GetID();
 
     CMutableTransaction mtx;
-    mtx.nVersion = CTransaction::TxVersion::LEGACY;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;  // KHU txs require Sapling version
     mtx.nType = CTransaction::TxType::KHU_REDEEM;
+
+    // Output 0: PIV output
+    CScript pivScript = GetScriptForDestination(dest);
+
+    // Create and serialize payload (required for special txs)
+    CRedeemKHUPayload payload(nAmount, pivScript);
+    CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
+    ds << payload;
+    mtx.extraPayload = std::vector<uint8_t>(ds.begin(), ds.end());
 
     // Add inputs
     for (const COutPoint& outpoint : vInputs) {
@@ -404,7 +426,6 @@ static UniValue khuredeem(const JSONRPCRequest& request)
     }
 
     // Output 0: PIV output
-    CScript pivScript = GetScriptForDestination(dest);
     mtx.vout.push_back(CTxOut(nAmount - nFee, pivScript));
 
     // Output 1: KHU_T change (if any)
@@ -430,8 +451,10 @@ static UniValue khuredeem(const JSONRPCRequest& request)
         CAmount amount = it->second.coin.amount;
 
         SignatureData sigdata;
+        // Use SIGVERSION_SAPLING for Sapling version transactions
+        SigVersion sigversion = mtx.isSaplingVersion() ? SIGVERSION_SAPLING : SIGVERSION_BASE;
         if (!ProduceSignature(MutableTransactionSignatureCreator(pwallet, &mtx, i, amount, SIGHASH_ALL),
-                             scriptPubKey, sigdata, SIGVERSION_BASE, false)) {
+                             scriptPubKey, sigdata, sigversion, false)) {
             throw JSONRPCError(RPC_WALLET_ERROR, "Signing transaction failed");
         }
         UpdateTransaction(mtx, i, sigdata);
@@ -681,8 +704,10 @@ static UniValue khusend(const JSONRPCRequest& request)
         CAmount amount = it->second.coin.amount;
 
         SignatureData sigdata;
+        // Use SIGVERSION_SAPLING for Sapling version transactions
+        SigVersion sigversion = mtx.isSaplingVersion() ? SIGVERSION_SAPLING : SIGVERSION_BASE;
         if (!ProduceSignature(MutableTransactionSignatureCreator(pwallet, &mtx, i, amount, SIGHASH_ALL),
-                             scriptPubKey, sigdata, SIGVERSION_BASE, false)) {
+                             scriptPubKey, sigdata, sigversion, false)) {
             throw JSONRPCError(RPC_WALLET_ERROR, "Signing transaction failed");
         }
         UpdateTransaction(mtx, i, sigdata);
