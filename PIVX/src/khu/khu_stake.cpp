@@ -193,16 +193,30 @@ bool ApplyKHUStake(
     //     return error("%s: failed to write anchor", __func__);
     // }
 
-    // 8. ✅ CRITICAL: Ne pas toucher à state.C/U/Cr/Ur
-    // Phase 4/5: STAKE is pure form conversion (T→Z), no economic effect
+    // 8. ✅ CRITICAL: STAKE = form conversion (KHU_T → ZKHU)
+    // Mutations atomiques: U -= amount, Z += amount
+    // C reste inchangé (collateral total identique)
+    // Invariant C == U + Z préservé car: C = (U - amount) + (Z + amount)
 
-    // Verify invariants (should still hold since state unchanged)
-    if (!state.CheckInvariants()) {
-        return error("%s: invariant violation after STAKE", __func__);
+    if (state.U < amount) {
+        return error("%s: insufficient U for STAKE (U=%d, amount=%d)", __func__, state.U, amount);
     }
 
-    LogPrint(BCLog::KHU, "%s: Applied STAKE at height %d (cm=%s, amount=%d)\n",
-             __func__, nHeight, cm.ToString(), amount);
+    // ═══════════════════════════════════════════════════════════
+    // DOUBLE MUTATION ATOMIQUE (U et Z ensemble)
+    // ⚠️ RÈGLE CRITIQUE: Ces deux lignes doivent être ADJACENTES
+    // ═══════════════════════════════════════════════════════════
+    state.U -= amount;  // Retirer du transparent
+    state.Z += amount;  // Ajouter au shielded
+
+    // Verify invariants
+    if (!state.CheckInvariants()) {
+        return error("%s: invariant violation after STAKE (C=%d U=%d Z=%d)",
+                    __func__, state.C, state.U, state.Z);
+    }
+
+    LogPrint(BCLog::KHU, "%s: Applied STAKE at height %d (cm=%s, amount=%d, U=%d, Z=%d)\n",
+             __func__, nHeight, cm.ToString(), amount, state.U, state.Z);
 
     return true;
 }
@@ -257,15 +271,27 @@ bool UndoKHUStake(
         return error("%s: failed to erase nullifier mapping", __func__);
     }
 
-    // 7. Ne pas toucher à C/U/Cr/Ur (no state mutations to undo)
+    // 7. ✅ CRITICAL: Reverse STAKE mutations (U += amount, Z -= amount)
+    CAmount amount = noteData.amount;
+
+    if (state.Z < amount) {
+        return error("%s: insufficient Z for undo STAKE (Z=%d, amount=%d)", __func__, state.Z, amount);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // DOUBLE MUTATION ATOMIQUE REVERSE (U et Z ensemble)
+    // ═══════════════════════════════════════════════════════════
+    state.U += amount;  // Restaurer au transparent
+    state.Z -= amount;  // Retirer du shielded
 
     // Verify invariants
     if (!state.CheckInvariants()) {
-        return error("%s: invariant violation after undo STAKE", __func__);
+        return error("%s: invariant violation after undo STAKE (C=%d U=%d Z=%d)",
+                    __func__, state.C, state.U, state.Z);
     }
 
-    LogPrint(BCLog::KHU, "%s: Undone STAKE at height %d (cm=%s)\n",
-             __func__, nHeight, cm.ToString());
+    LogPrint(BCLog::KHU, "%s: Undone STAKE at height %d (cm=%s, amount=%d, U=%d, Z=%d)\n",
+             __func__, nHeight, cm.ToString(), amount, state.U, state.Z);
 
     return true;
 }

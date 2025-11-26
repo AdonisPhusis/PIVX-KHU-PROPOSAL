@@ -179,8 +179,11 @@ bool ApplyDailyYield(KhuGlobalState& state, uint32_t nHeight, uint32_t nV6Activa
         return false;
     }
 
-    // Update global state: Ur += total_yield
-    // Note: Cr remains unchanged (Phase 6 doesn't affect Cr)
+    // ═══════════════════════════════════════════════════════════
+    // DOUBLE MUTATION ATOMIQUE — Cr ET Ur ensemble
+    // Invariant Cr == Ur doit être préservé
+    // ═══════════════════════════════════════════════════════════
+    state.Cr += totalYield;
     state.Ur += totalYield;
 
     // Store yield for exact undo (P1 fix: avoid recalculation on reorg)
@@ -189,8 +192,8 @@ bool ApplyDailyYield(KhuGlobalState& state, uint32_t nHeight, uint32_t nV6Activa
     // Update last yield height
     state.last_yield_update_height = nHeight;
 
-    LogPrint(BCLog::KHU, "ApplyDailyYield: height=%u R_annual=%u (%.2f%%) totalYield=%d Ur=%d\n",
-             nHeight, state.R_annual, state.R_annual / 100.0, totalYield, state.Ur);
+    LogPrint(BCLog::KHU, "ApplyDailyYield: height=%u R_annual=%u (%.2f%%) totalYield=%d Cr=%d Ur=%d\n",
+             nHeight, state.R_annual, state.R_annual / 100.0, totalYield, state.Cr, state.Ur);
 
     return true;
 }
@@ -207,12 +210,20 @@ bool UndoDailyYield(KhuGlobalState& state, uint32_t nHeight, uint32_t nV6Activat
         return false;
     }
 
-    // Undo: Ur -= total_yield (using stored value)
+    // ═══════════════════════════════════════════════════════════
+    // DOUBLE MUTATION ATOMIQUE REVERSE — Cr ET Ur ensemble
+    // ═══════════════════════════════════════════════════════════
+    if (state.Cr < totalYield) {
+        LogPrintf("ERROR: UndoDailyYield: Underflow Cr=%d < totalYield=%d at height %u\n",
+                  state.Cr, totalYield, nHeight);
+        return false;
+    }
     if (state.Ur < totalYield) {
         LogPrintf("ERROR: UndoDailyYield: Underflow Ur=%d < totalYield=%d at height %u\n",
                   state.Ur, totalYield, nHeight);
         return false;
     }
+    state.Cr -= totalYield;
     state.Ur -= totalYield;
 
     // Clear stored yield amount
@@ -227,8 +238,8 @@ bool UndoDailyYield(KhuGlobalState& state, uint32_t nHeight, uint32_t nV6Activat
         state.last_yield_update_height = nV6ActivationHeight;
     }
 
-    LogPrint(BCLog::KHU, "UndoDailyYield: height=%u totalYield=%d (stored) Ur=%d\n",
-             nHeight, totalYield, state.Ur);
+    LogPrint(BCLog::KHU, "UndoDailyYield: height=%u totalYield=%d (stored) Cr=%d Ur=%d\n",
+             nHeight, totalYield, state.Cr, state.Ur);
 
     return true;
 }

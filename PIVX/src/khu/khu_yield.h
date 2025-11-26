@@ -19,7 +19,7 @@
  * - Yield pour notes stakées + matures (≥ 4320 blocks)
  * - Intervalle 1440 blocks
  * - Formule: daily = (amount × R_annual / 10000) / 365
- * - Total yield → Ur += daily_total
+ * - Total yield → Cr += daily_total, Ur += daily_total (invariant Cr==Ur)
  * - Undo par recalcul et soustraction
  * - Protection overflow avec int128_t
  */
@@ -66,10 +66,10 @@ bool ShouldApplyDailyYield(uint32_t nHeight, uint32_t nV6ActivationHeight, uint3
  *    - Check maturity: height_current - note.nStakeStartHeight >= MATURITY_BLOCKS
  *    - Calculate daily yield: (amount × R_annual / 10000) / 365
  *    - Accumulate total_yield (with overflow protection)
- * 3. Update global state: Ur += total_yield
- * 4. Cr remains unchanged (Phase 6 doesn't affect Cr)
+ * 3. Update global state: Cr += total_yield, Ur += total_yield
+ *    (BOTH must be updated to maintain invariant Cr == Ur)
  *
- * @param state KHU global state (will be modified: Ur += total_yield)
+ * @param state KHU global state (will be modified: Cr += total_yield, Ur += total_yield)
  * @param nHeight Current block height
  * @param nV6ActivationHeight V6_0 activation height
  * @return true on success, false on error
@@ -80,11 +80,11 @@ bool ApplyDailyYield(KhuGlobalState& state, uint32_t nHeight, uint32_t nV6Activa
  * UndoDailyYield - Undo daily yield (for reorg support)
  *
  * ALGORITHME:
- * 1. Recalculate yield the same way as ApplyDailyYield
- * 2. Subtract from Ur: Ur -= total_yield
- * 3. This is deterministic because LevelDB cursor order is stable
+ * 1. Use stored yield amount from state.last_yield_amount
+ * 2. Subtract from BOTH: Cr -= total_yield, Ur -= total_yield
+ *    (BOTH must be updated to maintain invariant Cr == Ur)
  *
- * @param state KHU global state (will be modified: Ur -= total_yield)
+ * @param state KHU global state (will be modified: Cr -= total_yield, Ur -= total_yield)
  * @param nHeight Block height being disconnected
  * @param nV6ActivationHeight V6_0 activation height
  * @return true on success, false on error

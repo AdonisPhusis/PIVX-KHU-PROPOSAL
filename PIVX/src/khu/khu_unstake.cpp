@@ -161,46 +161,53 @@ bool ApplyKHUUnstake(
         return error("%s: note data not found for cm=%s", __func__, cm.ToString());
     }
 
-    // 7. ✅ CRITICAL: Extract bonus from note (per-note)
-    CAmount bonus = noteData.Ur_accumulated;  // Phase 5: =0, Phase 6+: >0
+    // 7. ✅ CRITICAL: Extract P (principal) and Y (yield) from note
+    CAmount P = noteData.amount;              // Principal staked
+    CAmount Y = noteData.Ur_accumulated;      // Yield accumulated
 
-    // ✅ DOUBLE FLUX — ORDRE CRITIQUE (préserve invariants C==U, Cr==Ur):
+    // ═══════════════════════════════════════════════════════════════════════
+    // 5 MUTATIONS ATOMIQUES — ORDRE CRITIQUE (préserve invariants C==U+Z, Cr==Ur)
     //
-    // Phase 4: bonus=0 → effet net zéro (C+=0, U+=0, Cr-=0, Ur-=0)
-    // Phase 5+: bonus>0 → transfert économique (reward pool → supply)
+    // Avant:  C = U + Z,  Cr = Ur
+    // Après:  C' = U' + Z',  Cr' = Ur'
     //
-    // RATIONALE: L'UNSTAKE retire un droit (Ur) et le matérialise en supply (U).
-    //            Le collateral doit suivre (C+ pour backing, Cr- pour release).
+    // Mutations:
+    //   Z  -= P        →  Z' = Z - P
+    //   U  += P + Y    →  U' = U + P + Y
+    //   C  += Y        →  C' = C + Y
+    //   Cr -= Y        →  Cr' = Cr - Y
+    //   Ur -= Y        →  Ur' = Ur - Y
+    //
+    // Vérification invariant C == U + Z:
+    //   C' = C + Y
+    //   U' + Z' = (U + P + Y) + (Z - P) = U + Z + Y = C + Y = C' ✓
+    // ═══════════════════════════════════════════════════════════════════════
 
-    // ✅ FIX CVE-KHU-2025-003: Verify overflow BEFORE mutation
-    // CRITICAL: Signed integer overflow in C++ is undefined behavior (UB).
-    // Without this check, overflow could break the C==U invariant.
-    if (state.U > (std::numeric_limits<CAmount>::max() - bonus)) {
-        return error("%s: overflow would occur on U (U=%d, bonus=%d)", __func__, state.U, bonus);
+    // Pre-checks: underflow/overflow protection
+    if (state.Z < P) {
+        return error("%s: insufficient Z (Z=%d, P=%d)", __func__, state.Z, P);
     }
-    if (state.C > (std::numeric_limits<CAmount>::max() - bonus)) {
-        return error("%s: overflow would occur on C (C=%d, bonus=%d)", __func__, state.C, bonus);
+    if (state.U > (std::numeric_limits<CAmount>::max() - P - Y)) {
+        return error("%s: overflow would occur on U (U=%d, P=%d, Y=%d)", __func__, state.U, P, Y);
+    }
+    if (state.C > (std::numeric_limits<CAmount>::max() - Y)) {
+        return error("%s: overflow would occur on C (C=%d, Y=%d)", __func__, state.C, Y);
+    }
+    if (state.Cr < Y) {
+        return error("%s: insufficient Cr (Cr=%d, Y=%d)", __func__, state.Cr, Y);
+    }
+    if (state.Ur < Y) {
+        return error("%s: insufficient Ur (Ur=%d, Y=%d)", __func__, state.Ur, Y);
     }
 
-    // 1. Supply increases (U+) - Safe: overflow checked above
-    state.U += bonus;
-
-    // 2. Collateral increases (C+) — ADJACENT à U+ - Safe: overflow checked above
-    state.C += bonus;
-
-    // 3. Reward pool decreases (Cr-)
-    if (state.Cr < bonus) {
-        return error("%s: insufficient Cr (Cr=%d, bonus=%d)", __func__, state.Cr, bonus);
-    }
-    state.Cr -= bonus;
-
-    // 4. Unstake rights decrease (Ur-)
-    if (state.Ur < bonus) {
-        return error("%s: insufficient Ur (Ur=%d, bonus=%d)", __func__, state.Ur, bonus);
-    }
-    state.Ur -= bonus;
-
-    // ✅ Phase 5: bonus=0, net effect zero, but structure ready for Phase 6+
+    // ═══════════════════════════════════════════════════════════
+    // 5 MUTATIONS ATOMIQUES — AUCUN CODE ENTRE CES LIGNES
+    // ═══════════════════════════════════════════════════════════
+    state.Z  -= P;          // (1) Principal retiré du shielded
+    state.U  += P + Y;      // (2) Principal + Yield vers transparent
+    state.C  += Y;          // (3) Yield ajoute au collateral (nouveau PIV)
+    state.Cr -= Y;          // (4) Yield consommé du pool
+    state.Ur -= Y;          // (5) Yield consommé des droits
 
     // 8. Mark nullifier as spent (prevent double-spend)
     if (!zkhuDB->WriteNullifier(nullifier)) {
@@ -220,13 +227,13 @@ bool ApplyKHUUnstake(
     //     return error("%s: failed to erase spent note", __func__);
     // }
 
-    // 11. Create output KHU_T UTXO (amount + bonus)
+    // 11. Create output KHU_T UTXO (P + Y)
     if (tx.vout.empty()) {
         return error("%s: UNSTAKE tx has no outputs", __func__);
     }
 
     // Verify the output amount matches expected value
-    CAmount expectedOutput = noteData.amount + bonus;
+    CAmount expectedOutput = P + Y;
     if (tx.vout[0].nValue != expectedOutput) {
         return error("%s: output amount mismatch (expected=%d, got=%d)",
                     __func__, expectedOutput, tx.vout[0].nValue);
@@ -239,12 +246,12 @@ bool ApplyKHUUnstake(
 
     // 12. ✅ CRITICAL: Verify invariants AFTER mutations
     if (!state.CheckInvariants()) {
-        return error("%s: invariant violation after UNSTAKE (C=%d, U=%d, Cr=%d, Ur=%d)",
-                    __func__, state.C, state.U, state.Cr, state.Ur);
+        return error("%s: invariant violation after UNSTAKE (C=%d, U=%d, Z=%d, Cr=%d, Ur=%d)",
+                    __func__, state.C, state.U, state.Z, state.Cr, state.Ur);
     }
 
-    LogPrint(BCLog::KHU, "%s: Applied UNSTAKE (bonus=%d, height=%d, C=%d, U=%d, Cr=%d, Ur=%d)\n",
-             __func__, bonus, nHeight, state.C, state.U, state.Cr, state.Ur);
+    LogPrint(BCLog::KHU, "%s: Applied UNSTAKE (P=%d, Y=%d, height=%d, C=%d, U=%d, Z=%d, Cr=%d, Ur=%d)\n",
+             __func__, P, Y, nHeight, state.C, state.U, state.Z, state.Cr, state.Ur);
 
     return true;
 }
@@ -279,45 +286,48 @@ bool UndoKHUUnstake(
         return error("%s: nullifier mapping not found for undo", __func__);
     }
 
-    // 5. Read note data to get the REAL bonus (CRITICAL for Phase 5)
+    // 5. Read note data to get P and Y (same values as ApplyKHUUnstake)
     ZKHUNoteData noteData;
     if (!zkhuDB->ReadNote(cm, noteData)) {
         return error("%s: note data not found for cm=%s", __func__, cm.ToString());
     }
 
-    // 6. Extract bonus from note (same as ApplyKHUUnstake)
-    CAmount bonus = noteData.Ur_accumulated;  // Phase 5: may be >0
-    // Note: noteData.amount is not used in undo, only bonus matters for state reversal
+    // 6. Extract P (principal) and Y (yield) from note
+    CAmount P = noteData.amount;
+    CAmount Y = noteData.Ur_accumulated;
 
-    // ✅ REVERSE DOUBLE FLUX — SYMÉTRIE CRITIQUE:
+    // ═══════════════════════════════════════════════════════════════════════
+    // REVERSE 5 MUTATIONS — SYMÉTRIE CRITIQUE
     //
-    // Undo operates in REVERSE order of Apply to restore exact state.
+    // Apply did:       Z -= P,  U += P+Y,  C += Y,  Cr -= Y,  Ur -= Y
+    // Undo must do:    Z += P,  U -= P+Y,  C -= Y,  Cr += Y,  Ur += Y
+    // ═══════════════════════════════════════════════════════════════════════
 
-    // 1. Supply decreases (U-) — reverse of U+
-    if (state.U < bonus) {
-        return error("%s: underflow U (U=%d, bonus=%d)", __func__, state.U, bonus);
+    // Pre-checks: underflow/overflow protection
+    if (state.U < P + Y) {
+        return error("%s: underflow U (U=%d, P=%d, Y=%d)", __func__, state.U, P, Y);
     }
-    state.U -= bonus;
-
-    // 2. Collateral decreases (C-) — reverse of C+
-    if (state.C < bonus) {
-        return error("%s: underflow C (C=%d, bonus=%d)", __func__, state.C, bonus);
+    if (state.C < Y) {
+        return error("%s: underflow C (C=%d, Y=%d)", __func__, state.C, Y);
     }
-    state.C -= bonus;
-
-    // ✅ FIX CVE-KHU-2025-003: Verify overflow BEFORE mutation
-    if (state.Cr > (std::numeric_limits<CAmount>::max() - bonus)) {
-        return error("%s: overflow would occur on Cr (Cr=%d, bonus=%d)", __func__, state.Cr, bonus);
+    if (state.Z > (std::numeric_limits<CAmount>::max() - P)) {
+        return error("%s: overflow would occur on Z (Z=%d, P=%d)", __func__, state.Z, P);
     }
-    if (state.Ur > (std::numeric_limits<CAmount>::max() - bonus)) {
-        return error("%s: overflow would occur on Ur (Ur=%d, bonus=%d)", __func__, state.Ur, bonus);
+    if (state.Cr > (std::numeric_limits<CAmount>::max() - Y)) {
+        return error("%s: overflow would occur on Cr (Cr=%d, Y=%d)", __func__, state.Cr, Y);
+    }
+    if (state.Ur > (std::numeric_limits<CAmount>::max() - Y)) {
+        return error("%s: overflow would occur on Ur (Ur=%d, Y=%d)", __func__, state.Ur, Y);
     }
 
-    // 3. Reward pool increases (Cr+) — reverse of Cr- - Safe: overflow checked above
-    state.Cr += bonus;
-
-    // 4. Unstake rights increase (Ur+) — reverse of Ur- - Safe: overflow checked above
-    state.Ur += bonus;
+    // ═══════════════════════════════════════════════════════════
+    // 5 MUTATIONS ATOMIQUES REVERSE — AUCUN CODE ENTRE CES LIGNES
+    // ═══════════════════════════════════════════════════════════
+    state.Z  += P;          // (1) Reverse: Principal restauré au shielded
+    state.U  -= P + Y;      // (2) Reverse: Principal + Yield retiré du transparent
+    state.C  -= Y;          // (3) Reverse: Yield retiré du collateral
+    state.Cr += Y;          // (4) Reverse: Yield restauré au pool
+    state.Ur += Y;          // (5) Reverse: Yield restauré aux droits
 
     // 7. Note is already in DB (we didn't erase it in Apply)
     // We just need to unmark the nullifier as spent
@@ -337,12 +347,12 @@ bool UndoKHUUnstake(
 
     // 10. ✅ CRITICAL: Verify invariants AFTER undo
     if (!state.CheckInvariants()) {
-        return error("%s: invariant violation after undo UNSTAKE (C=%d, U=%d, Cr=%d, Ur=%d)",
-                    __func__, state.C, state.U, state.Cr, state.Ur);
+        return error("%s: invariant violation after undo UNSTAKE (C=%d, U=%d, Z=%d, Cr=%d, Ur=%d)",
+                    __func__, state.C, state.U, state.Z, state.Cr, state.Ur);
     }
 
-    LogPrint(BCLog::KHU, "%s: Undone UNSTAKE (bonus=%d, C=%d, U=%d, Cr=%d, Ur=%d)\n",
-             __func__, bonus, state.C, state.U, state.Cr, state.Ur);
+    LogPrint(BCLog::KHU, "%s: Undone UNSTAKE (P=%d, Y=%d, C=%d, U=%d, Z=%d, Cr=%d, Ur=%d)\n",
+             __func__, P, Y, state.C, state.U, state.Z, state.Cr, state.Ur);
 
     return true;
 }

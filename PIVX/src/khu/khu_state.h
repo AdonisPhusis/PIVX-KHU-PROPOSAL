@@ -16,20 +16,21 @@
  * KhuGlobalState - Global state for KHU colored coin system
  *
  * This struct represents the canonical state of the KHU system at a given block height.
- * It tracks the two dual systems: C/U (collateral/supply) and Cr/Ur (reward pool).
+ * It tracks the two dual systems: C/U/Z (collateral/supply) and Cr/Ur (reward pool).
  *
  * INVARIANTS (SACRED):
- * - C == U (collateral equals supply, except genesis where both are 0)
- * - Cr == Ur (reward collateral equals unstake rights, except genesis where both are 0)
+ * - C == U + Z (collateral equals transparent + shielded supply)
+ * - Cr == Ur (reward collateral equals unstake rights)
  * - T >= 0 (DAO Treasury must be non-negative)
  *
  * These invariants MUST be preserved after every block operation.
  */
 struct KhuGlobalState
 {
-    // Main circulation (C/U system)
-    CAmount C;   // Collateral (PIV burned backing KHU_T)
-    CAmount U;   // Supply (KHU_T in circulation)
+    // Main circulation (C/U/Z system)
+    CAmount C;   // Collateral (PIV locked backing total KHU)
+    CAmount U;   // KHU_T supply (transparent, in circulation)
+    CAmount Z;   // ZKHU supply (shielded, staked)
 
     // Reward circulation (Cr/Ur system)
     CAmount Cr;  // Reward collateral (pool for staking rewards)
@@ -70,6 +71,7 @@ struct KhuGlobalState
     {
         C = 0;
         U = 0;
+        Z = 0;
         Cr = 0;
         Ur = 0;
         T = 0;
@@ -95,8 +97,8 @@ struct KhuGlobalState
      * CheckInvariants - Verify the sacred KHU invariants
      *
      * RULES:
-     * 1. C == U (except genesis where both are 0)
-     * 2. Cr == Ur (except genesis where both are 0)
+     * 1. C == U + Z (collateral = transparent + shielded supply)
+     * 2. Cr == Ur (reward pool = unstake rights)
      * 3. T >= 0 (DAO Treasury must be non-negative)
      * 4. All amounts must be non-negative
      *
@@ -104,24 +106,24 @@ struct KhuGlobalState
      */
     bool CheckInvariants() const
     {
-        // All amounts must be non-negative (including T)
-        if (C < 0 || U < 0 || Cr < 0 || Ur < 0 || T < 0) {
+        // All amounts must be non-negative (including Z and T)
+        if (C < 0 || U < 0 || Z < 0 || Cr < 0 || Ur < 0 || T < 0) {
             return false;
         }
 
-        // C/U invariant: either both 0 (genesis) or C == U
-        bool cu_ok = (U == 0 && C == 0) || (C == U);
+        // C/U/Z invariant: C == U + Z (genesis: all zero)
+        bool cuz_ok = (C == U + Z);
 
         // Cr/Ur invariant: either both 0 (genesis) or Cr == Ur
         bool crur_ok = (Ur == 0 && Cr == 0) || (Cr == Ur);
 
         // ALARM: Log invariant violations for debugging
-        if (!cu_ok || !crur_ok) {
-            LogPrintf("KHU INVARIANT VIOLATION: C=%lld U=%lld Cr=%lld Ur=%lld T=%lld\n",
-                      (long long)C, (long long)U, (long long)Cr, (long long)Ur, (long long)T);
+        if (!cuz_ok || !crur_ok) {
+            LogPrintf("KHU INVARIANT VIOLATION: C=%lld U=%lld Z=%lld Cr=%lld Ur=%lld T=%lld\n",
+                      (long long)C, (long long)U, (long long)Z, (long long)Cr, (long long)Ur, (long long)T);
         }
 
-        return cu_ok && crur_ok;
+        return cuz_ok && crur_ok;
     }
 
     /**
@@ -136,6 +138,7 @@ struct KhuGlobalState
     {
         READWRITE(obj.C);
         READWRITE(obj.U);
+        READWRITE(obj.Z);
         READWRITE(obj.Cr);
         READWRITE(obj.Ur);
         READWRITE(obj.T);
