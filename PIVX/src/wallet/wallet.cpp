@@ -2615,6 +2615,10 @@ bool CWallet::AvailableCoins(std::vector<COutput>* pCoins,      // --> populates
                 if (!res.available) continue;
                 if (coinsFilter.fOnlySpendable && !res.spendable) continue;
 
+                // Skip KHU coins - they should not be spent as regular UTXOs
+                COutPoint outpoint(wtxid, i);
+                if (khuData.mapKHUCoins.count(outpoint)) continue;
+
                 // found valid coin
                 if (!pCoins) return true;
                 pCoins->emplace_back(pcoin, (int) i, nDepth, res.spendable, res.solvable, safeTx);
@@ -2745,6 +2749,10 @@ bool CWallet::StakeableCoins(std::vector<CStakeableOutput>* pCoins)
                     false);   // fIncludeLocked
 
             if (!res.available || !res.spendable) continue;
+
+            // Skip KHU coins - they should not be used for staking
+            COutPoint outpoint(wtxid, index);
+            if (khuData.mapKHUCoins.count(outpoint)) continue;
 
             // found valid coin
             if (!pCoins) return true;

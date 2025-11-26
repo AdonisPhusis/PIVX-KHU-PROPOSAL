@@ -105,8 +105,8 @@ bool AddKHUCoinToWallet(CWallet* pwallet, const COutPoint& outpoint,
         return false;
     }
 
-    LogPrint(BCLog::KHU, "AddKHUCoinToWallet: Added %s:%d amount=%d\n",
-             outpoint.hash.GetHex().substr(0, 16), outpoint.n, coin.amount);
+    LogPrint(BCLog::KHU, "AddKHUCoinToWallet: Added %s:%d amount=%lld\n",
+             outpoint.hash.GetHex().substr(0, 16).c_str(), outpoint.n, coin.amount);
 
     return true;
 }
@@ -182,11 +182,16 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
 
     const uint256& txhash = tx->GetHash();
 
-    // STEP 1: Always check if any input spends our tracked KHU UTXOs
+    // STEP 1: Check if any input spends our tracked KHU UTXOs
     // This handles ALL transaction types including regular transfers via khusend
-    for (const auto& vin : tx->vin) {
-        if (pwallet->khuData.mapKHUCoins.count(vin.prevout)) {
-            RemoveKHUCoinFromWallet(pwallet, vin.prevout);
+    // NOTE: Skip coinbase transactions (they don't spend any UTXOs)
+    if (!tx->IsCoinBase()) {
+        for (const auto& vin : tx->vin) {
+            if (pwallet->khuData.mapKHUCoins.count(vin.prevout)) {
+                LogPrint(BCLog::KHU, "ProcessKHUTransactionForWallet: Removing spent KHU coin %s:%d at height %d\n",
+                         vin.prevout.hash.GetHex().substr(0, 16).c_str(), vin.prevout.n, nHeight);
+                RemoveKHUCoinFromWallet(pwallet, vin.prevout);
+            }
         }
     }
 
