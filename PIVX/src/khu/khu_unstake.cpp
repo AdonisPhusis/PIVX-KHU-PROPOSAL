@@ -15,12 +15,40 @@
 #include "logging.h"
 #include "primitives/transaction.h"
 #include "sapling/incrementalmerkletree.h"
+#include "streams.h"
 #include "sync.h"
+#include "utilmoneystr.h"
 
 #include <limits>
 
 // External lock (defined in khu_validation.cpp)
 extern RecursiveMutex cs_khu;
+
+std::string CUnstakeKHUPayload::ToString() const
+{
+    return strprintf("CUnstakeKHUPayload(cm=%s)", cm.GetHex().substr(0, 16));
+}
+
+bool GetUnstakeKHUPayload(const CTransaction& tx, CUnstakeKHUPayload& payload)
+{
+    if (tx.nType != CTransaction::TxType::KHU_UNSTAKE) {
+        return false;
+    }
+
+    // Payload in extraPayload
+    if (!tx.extraPayload || tx.extraPayload->empty()) {
+        return false;
+    }
+
+    try {
+        CDataStream ds(*tx.extraPayload, SER_NETWORK, PROTOCOL_VERSION);
+        ds >> payload;
+        return true;
+    } catch (const std::exception& e) {
+        LogPrint(BCLog::KHU, "ERROR: GetUnstakeKHUPayload: %s\n", e.what());
+        return false;
+    }
+}
 
 bool CheckKHUUnstake(
     const CTransaction& tx,
@@ -31,11 +59,10 @@ bool CheckKHUUnstake(
     int nHeight)
 {
     // 1. TxType check
-    // TODO: Uncomment when TxType::KHU_UNSTAKE is defined
-    // if (tx.nType != TxType::KHU_UNSTAKE) {
-    //     return state.DoS(100, error("%s: wrong tx type", __func__),
-    //                     REJECT_INVALID, "bad-unstake-type");
-    // }
+    if (tx.nType != CTransaction::TxType::KHU_UNSTAKE) {
+        return state.DoS(100, error("%s: wrong tx type (got %d)", __func__, (int)tx.nType),
+                        REJECT_INVALID, "bad-unstake-type");
+    }
 
     // 2. Validate transaction has Sapling spend data
     if (!tx.sapData) {
@@ -48,34 +75,35 @@ bool CheckKHUUnstake(
                         REJECT_INVALID, "bad-unstake-no-spend");
     }
 
-    // 3. Extract nullifier from Sapling spend
+    // 3. Extract nullifier from Sapling spend (for double-spend check only)
     const SpendDescription& saplingSpend = tx.sapData->vShieldedSpend[0];
-    uint256 nullifier = saplingSpend.nullifier;
+    uint256 saplingNullifier = saplingSpend.nullifier;
 
-    // 4. Access ZKHU database
+    // 4. Extract cm from payload (Phase 5/8 fix: avoid nullifier mapping mismatch)
+    CUnstakeKHUPayload payload;
+    if (!GetUnstakeKHUPayload(tx, payload)) {
+        return state.DoS(100, error("%s: failed to extract UNSTAKE payload", __func__),
+                        REJECT_INVALID, "bad-unstake-no-payload");
+    }
+    uint256 cm = payload.cm;
+
+    // 5. Access ZKHU database
     CZKHUTreeDB* zkhuDB = GetZKHUDB();
     if (!zkhuDB) {
         return state.DoS(100, error("%s: ZKHU database not initialized", __func__),
                         REJECT_INVALID, "bad-unstake-no-db");
     }
 
-    // 5. Check nullifier not already spent (double-spend prevention)
-    if (zkhuDB->IsNullifierSpent(nullifier)) {
-        return state.DoS(100, error("%s: nullifier already spent", __func__),
+    // 6. Check Sapling nullifier not already spent (double-spend prevention)
+    if (zkhuDB->IsNullifierSpent(saplingNullifier)) {
+        return state.DoS(100, error("%s: Sapling nullifier already spent", __func__),
                         REJECT_INVALID, "bad-unstake-nullifier-spent");
     }
 
-    // 6. Lookup nullifier → cm mapping
-    uint256 cm;
-    if (!zkhuDB->ReadNullifierMapping(nullifier, cm)) {
-        return state.DoS(100, error("%s: nullifier mapping not found", __func__),
-                        REJECT_INVALID, "bad-unstake-no-mapping");
-    }
-
-    // 7. Read note data
+    // 7. Read note data directly by cm (from payload)
     ZKHUNoteData noteData;
     if (!zkhuDB->ReadNote(cm, noteData)) {
-        return state.DoS(100, error("%s: note data not found for cm=%s", __func__, cm.ToString()),
+        return state.DoS(100, error("%s: note data not found for cm=%s", __func__, cm.GetHex().substr(0, 16)),
                         REJECT_INVALID, "bad-unstake-note-missing");
     }
 
@@ -111,8 +139,8 @@ bool CheckKHUUnstake(
     // TODO Phase 6: Anchor validation
     // TODO Phase 6: zk-proof Sapling verification
 
-    LogPrint(BCLog::KHU, "%s: UNSTAKE validation passed (height=%d, maturity=%d, bonus=%d)\n",
-             __func__, nHeight, nHeight - noteData.nStakeStartHeight, bonus);
+    LogPrint(BCLog::KHU, "%s: UNSTAKE validation passed (cm=%s, height=%d, maturity=%d, bonus=%d)\n",
+             __func__, cm.GetHex().substr(0, 16), nHeight, nHeight - noteData.nStakeStartHeight, bonus);
     return true;
 }
 
@@ -134,28 +162,29 @@ bool ApplyKHUUnstake(
         return error("%s: UNSTAKE tx has no shielded spends", __func__);
     }
 
-    // 2. Extract nullifier from Sapling spend
+    // 2. Extract nullifier from Sapling spend (for double-spend check)
     const SpendDescription& saplingSpend = tx.sapData->vShieldedSpend[0];
-    uint256 nullifier = saplingSpend.nullifier;
+    uint256 saplingNullifier = saplingSpend.nullifier;
 
-    // 3. Access ZKHU database
+    // 3. Extract cm from payload (Phase 5/8 fix: avoid nullifier mapping mismatch)
+    CUnstakeKHUPayload payload;
+    if (!GetUnstakeKHUPayload(tx, payload)) {
+        return error("%s: failed to extract UNSTAKE payload", __func__);
+    }
+    uint256 cm = payload.cm;
+
+    // 4. Access ZKHU database
     CZKHUTreeDB* zkhuDB = GetZKHUDB();
     if (!zkhuDB) {
         return error("%s: ZKHU database not initialized", __func__);
     }
 
-    // 4. Check nullifier not already spent (double-spend prevention)
-    if (zkhuDB->IsNullifierSpent(nullifier)) {
-        return error("%s: nullifier already spent", __func__);
+    // 5. Check Sapling nullifier not already spent (double-spend prevention)
+    if (zkhuDB->IsNullifierSpent(saplingNullifier)) {
+        return error("%s: Sapling nullifier already spent", __func__);
     }
 
-    // 5. Lookup nullifier → cm mapping
-    uint256 cm;
-    if (!zkhuDB->ReadNullifierMapping(nullifier, cm)) {
-        return error("%s: nullifier mapping not found", __func__);
-    }
-
-    // 6. Read note data
+    // 6. Read note data directly by cm (from payload)
     ZKHUNoteData noteData;
     if (!zkhuDB->ReadNote(cm, noteData)) {
         return error("%s: note data not found for cm=%s", __func__, cm.ToString());
@@ -209,9 +238,9 @@ bool ApplyKHUUnstake(
     state.Cr -= Y;          // (4) Yield consommé du pool
     state.Ur -= Y;          // (5) Yield consommé des droits
 
-    // 8. Mark nullifier as spent (prevent double-spend)
-    if (!zkhuDB->WriteNullifier(nullifier)) {
-        return error("%s: failed to mark nullifier spent", __func__);
+    // 8. Mark Sapling nullifier as spent (prevent double-spend)
+    if (!zkhuDB->WriteNullifier(saplingNullifier)) {
+        return error("%s: failed to mark Sapling nullifier spent", __func__);
     }
 
     // 9. Keep nullifier mapping (needed for undo)
@@ -239,10 +268,23 @@ bool ApplyKHUUnstake(
                     __func__, expectedOutput, tx.vout[0].nValue);
     }
 
-    // Add the output UTXO to the coins view
-    // In ConnectBlock this happens automatically, but in Apply we must do it explicitly
-    Coin newcoin(tx.vout[0], nHeight, false, false);  // not coinbase, not coinstake
-    view.AddCoin(COutPoint(tx.GetHash(), 0), std::move(newcoin), false);
+    // 11b. ✅ CRITICAL: Add output KHU_T to mapKHUUTXOs for consensus tracking
+    // NOTE: Standard AddCoins() only adds to CCoinsViewCache (PIV view).
+    // For KHU_T coins, we MUST also add to mapKHUUTXOs so that REDEEM can find them.
+    // This is symmetric with ApplyKHUMint which also calls AddKHUCoin().
+    CKHUUTXO newCoin(expectedOutput, tx.vout[0].scriptPubKey, nHeight);
+    newCoin.fIsKHU = true;
+    newCoin.fStaked = false;
+    newCoin.nStakeStartHeight = 0;
+
+    COutPoint khuOutpoint(tx.GetHash(), 0);  // Output index 0 = KHU_T from UNSTAKE
+    if (!AddKHUCoin(view, khuOutpoint, newCoin)) {
+        return error("%s: failed to add KHU_T coin to tracking", __func__);
+    }
+
+    LogPrintf("ApplyKHUUnstake: created KHU_T %s:%d value=%s\n",
+             khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n,
+             FormatMoney(expectedOutput));
 
     // 12. ✅ CRITICAL: Verify invariants AFTER mutations
     if (!state.CheckInvariants()) {
@@ -270,20 +312,21 @@ bool UndoKHUUnstake(
         return error("%s: invalid UNSTAKE tx in undo", __func__);
     }
 
-    // 2. Extract nullifier from Sapling spend
+    // 2. Extract nullifier from Sapling spend (for unspending)
     const SpendDescription& saplingSpend = tx.sapData->vShieldedSpend[0];
-    uint256 nullifier = saplingSpend.nullifier;
+    uint256 saplingNullifier = saplingSpend.nullifier;
 
-    // 3. Access ZKHU database
+    // 3. Extract cm from payload (Phase 5/8 fix: avoid nullifier mapping mismatch)
+    CUnstakeKHUPayload payload;
+    if (!GetUnstakeKHUPayload(tx, payload)) {
+        return error("%s: failed to extract UNSTAKE payload for undo", __func__);
+    }
+    uint256 cm = payload.cm;
+
+    // 4. Access ZKHU database
     CZKHUTreeDB* zkhuDB = GetZKHUDB();
     if (!zkhuDB) {
         return error("%s: ZKHU database not initialized", __func__);
-    }
-
-    // 4. Lookup nullifier → cm mapping
-    uint256 cm;
-    if (!zkhuDB->ReadNullifierMapping(nullifier, cm)) {
-        return error("%s: nullifier mapping not found for undo", __func__);
     }
 
     // 5. Read note data to get P and Y (same values as ApplyKHUUnstake)
@@ -336,14 +379,20 @@ bool UndoKHUUnstake(
     // 8. Nullifier mapping is already in DB (kept by Apply)
     // No need to restore it
 
-    // 9. Unspend nullifier (erase from spent set)
-    if (!zkhuDB->EraseNullifier(nullifier)) {
-        return error("%s: failed to unspend nullifier", __func__);
+    // 9. Unspend Sapling nullifier (erase from spent set)
+    if (!zkhuDB->EraseNullifier(saplingNullifier)) {
+        return error("%s: failed to unspend Sapling nullifier", __func__);
     }
 
-    // 10. Remove the output UTXO that was created in ApplyKHUUnstake
-    COutPoint unstakeOutput(tx.GetHash(), 0);
-    view.SpendCoin(unstakeOutput);
+    // 9b. ✅ CRITICAL: Remove the KHU_T coin from mapKHUUTXOs
+    // This is symmetric with the AddKHUCoin() in ApplyKHUUnstake.
+    COutPoint khuOutpoint(tx.GetHash(), 0);  // Output index 0 = KHU_T from UNSTAKE
+    if (!SpendKHUCoin(view, khuOutpoint)) {
+        return error("%s: failed to remove KHU_T coin from tracking", __func__);
+    }
+
+    LogPrintf("UndoKHUUnstake: removed KHU_T %s:%d\n",
+             khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n);
 
     // 10. ✅ CRITICAL: Verify invariants AFTER undo
     if (!state.CheckInvariants()) {

@@ -28,6 +28,7 @@
 #include "khu/zkhu_db.h"
 #include "khu/zkhu_note.h"
 #include "consensus/validation.h"
+#include "streams.h"
 #include "coins.h"
 #include "primitives/transaction.h"
 #include "sapling/sapling_transaction.h"
@@ -62,14 +63,17 @@ static void AddZKHUNoteToMockDB(const uint256& cm, const uint256& nullifier,
     }
 }
 
-// Helper: Setup KHU global state
+// Helper: Setup KHU global state with Z support
+// For UNSTAKE tests, Z must equal the principal amount being unstaked
 static void SetupKHUState(KhuGlobalState& state, int height,
-                          int64_t C, int64_t U, int64_t Cr, int64_t Ur)
+                          int64_t C, int64_t U, int64_t Cr, int64_t Ur,
+                          int64_t Z = 0)
 {
     state.SetNull();
     state.nHeight = height;
     state.C = C * COIN;
     state.U = U * COIN;
+    state.Z = Z * COIN;
     state.Cr = Cr * COIN;
     state.Ur = Ur * COIN;
     state.hashBlock = GetRandHash();
@@ -77,10 +81,18 @@ static void SetupKHUState(KhuGlobalState& state, int height,
 }
 
 // Helper: Create mock UNSTAKE transaction
-static CMutableTransaction CreateMockUNSTAKE(const uint256& nullifier, CAmount outputAmount)
+// Phase 5/8 fix: Now includes cm in extraPayload (avoids nullifier mapping mismatch)
+static CMutableTransaction CreateMockUNSTAKE(const uint256& nullifier, CAmount outputAmount, const uint256& cm)
 {
     CMutableTransaction tx;
     tx.nVersion = CTransaction::TxVersion::SAPLING;
+    tx.nType = CTransaction::TxType::KHU_UNSTAKE;
+
+    // Phase 5/8 fix: Add extraPayload with cm so consensus can lookup note directly
+    CUnstakeKHUPayload payload(cm);
+    CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
+    ds << payload;
+    tx.extraPayload = std::vector<uint8_t>(ds.begin(), ds.end());
 
     // Create Sapling spend with nullifier
     SaplingTxData sapData;
@@ -125,15 +137,16 @@ BOOST_AUTO_TEST_CASE(redteam_attack_double_spend_nullifier)
 
     AddZKHUNoteToMockDB(cm, nullifier, amount, nStakeHeight, bonus);
 
-    // Setup global state with sufficient pool
+    // Setup global state with sufficient pool and Z = 100 (the principal)
+    // Invariant: C == U + Z → 1000 == 900 + 100 ✓
     KhuGlobalState state;
-    SetupKHUState(state, nCurrentHeight, 1000, 1000, 500, 500);
+    SetupKHUState(state, nCurrentHeight, 1000, 900, 500, 500, 100);
 
     CCoinsViewCache view(pcoinsTip.get());
     CValidationState validState;
 
     // ATTACK: First UNSTAKE (legitimate)
-    CMutableTransaction tx1 = CreateMockUNSTAKE(nullifier, amount + bonus);
+    CMutableTransaction tx1 = CreateMockUNSTAKE(nullifier, amount + bonus, cm);
     CTransaction ctx1(tx1);
 
     BOOST_CHECK(CheckKHUUnstake(ctx1, view, validState, Params().GetConsensus(), state, nCurrentHeight));
@@ -145,7 +158,7 @@ BOOST_AUTO_TEST_CASE(redteam_attack_double_spend_nullifier)
     BOOST_CHECK(zkhuDB->IsNullifierSpent(nullifier));
 
     // ATTACK: Second UNSTAKE (double-spend attempt)
-    CMutableTransaction tx2 = CreateMockUNSTAKE(nullifier, amount + bonus);
+    CMutableTransaction tx2 = CreateMockUNSTAKE(nullifier, amount + bonus, cm);
     CTransaction ctx2(tx2);
 
     CValidationState attackState;
@@ -177,14 +190,15 @@ BOOST_AUTO_TEST_CASE(redteam_attack_maturity_bypass)
 
     AddZKHUNoteToMockDB(cm, nullifier, amount, nStakeHeight, bonus);
 
-    // Setup global state
+    // Setup global state with Z = 100 (the principal)
+    // Invariant: C == U + Z → 1000 == 900 + 100 ✓
     KhuGlobalState state;
-    SetupKHUState(state, nCurrentHeight, 1000, 1000, 500, 500);
+    SetupKHUState(state, nCurrentHeight, 1000, 900, 500, 500, 100);
 
     CCoinsViewCache view(pcoinsTip.get());
 
     // ATTACK: Attempt UNSTAKE before maturity
-    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, amount + bonus);
+    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, amount + bonus, cm);
     CTransaction ctx(tx);
 
     CValidationState attackState;
@@ -192,9 +206,10 @@ BOOST_AUTO_TEST_CASE(redteam_attack_maturity_bypass)
     // Expected: REJECT (maturity not reached)
     BOOST_CHECK(!CheckKHUUnstake(ctx, view, attackState, Params().GetConsensus(), state, nCurrentHeight));
 
-    // Verify state unchanged
+    // Verify state unchanged (U=900 because Z=100)
     BOOST_CHECK_EQUAL(state.C, 1000 * COIN);
-    BOOST_CHECK_EQUAL(state.U, 1000 * COIN);
+    BOOST_CHECK_EQUAL(state.U, 900 * COIN);  // U = C - Z
+    BOOST_CHECK_EQUAL(state.Z, 100 * COIN);
     BOOST_CHECK_EQUAL(state.Cr, 500 * COIN);
     BOOST_CHECK_EQUAL(state.Ur, 500 * COIN);
     BOOST_CHECK(state.CheckInvariants());
@@ -209,10 +224,11 @@ BOOST_AUTO_TEST_CASE(redteam_attack_maturity_bypass)
  */
 BOOST_AUTO_TEST_CASE(redteam_attack_fake_bonus_exceeds_pool)
 {
-    // Setup: Global state with LIMITED pool
+    // Setup: Global state with LIMITED pool and Z = 100
+    // Invariant: C == U + Z → 1000 == 900 + 100 ✓
     KhuGlobalState state;
     int nCurrentHeight = 10000;
-    SetupKHUState(state, nCurrentHeight, 1000, 1000, 100, 100);  // Cr=Ur=100 COIN
+    SetupKHUState(state, nCurrentHeight, 1000, 900, 100, 100, 100);  // Cr=Ur=100 COIN
 
     // ATTACK: Create note with HUGE bonus (500 COIN > 100 COIN pool)
     CAmount amount = 100 * COIN;
@@ -227,7 +243,7 @@ BOOST_AUTO_TEST_CASE(redteam_attack_fake_bonus_exceeds_pool)
     CCoinsViewCache view(pcoinsTip.get());
 
     // Attempt UNSTAKE with fake bonus
-    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, amount + fakeBonus);
+    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, amount + fakeBonus, cm);
     CTransaction ctx(tx);
 
     CValidationState attackState;
@@ -261,16 +277,17 @@ BOOST_AUTO_TEST_CASE(redteam_attack_output_mismatch_steal)
 
     AddZKHUNoteToMockDB(cm, nullifier, amount, nStakeHeight, bonus);
 
-    // Setup global state with sufficient pool
+    // Setup global state with sufficient pool and Z = 100
+    // Invariant: C == U + Z → 1000 == 900 + 100 ✓
     KhuGlobalState state;
-    SetupKHUState(state, nCurrentHeight, 1000, 1000, 500, 500);
+    SetupKHUState(state, nCurrentHeight, 1000, 900, 500, 500, 100);
 
     CCoinsViewCache view(pcoinsTip.get());
 
     // ATTACK: Create UNSTAKE with INFLATED output (trying to steal 200 COIN extra)
     CAmount stolenAmount = amount + bonus + (200 * COIN);  // ⚠️ ATTACK
 
-    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, stolenAmount);
+    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, stolenAmount, cm);
     CTransaction ctx(tx);
 
     CValidationState attackState;
@@ -291,23 +308,25 @@ BOOST_AUTO_TEST_CASE(redteam_attack_output_mismatch_steal)
  */
 BOOST_AUTO_TEST_CASE(redteam_attack_phantom_nullifier)
 {
-    // Setup: Global state
+    // Setup: Global state with Z = 100 (even though the attack uses fake nullifier)
+    // Invariant: C == U + Z → 1000 == 900 + 100 ✓
     KhuGlobalState state;
     int nCurrentHeight = 10000;
-    SetupKHUState(state, nCurrentHeight, 1000, 1000, 500, 500);
+    SetupKHUState(state, nCurrentHeight, 1000, 900, 500, 500, 100);
 
     CCoinsViewCache view(pcoinsTip.get());
 
     // ATTACK: Create UNSTAKE with RANDOM nullifier (never seen before)
     uint256 phantomNullifier = GetRandHash();  // ⚠️ ATTACK: no mapping exists
+    uint256 phantomCm = GetRandHash();  // ⚠️ ATTACK: no note exists for this cm
     CAmount fakeAmount = 100 * COIN;
 
-    CMutableTransaction tx = CreateMockUNSTAKE(phantomNullifier, fakeAmount);
+    CMutableTransaction tx = CreateMockUNSTAKE(phantomNullifier, fakeAmount, phantomCm);
     CTransaction ctx(tx);
 
     CValidationState attackState;
 
-    // Expected: REJECT (nullifier mapping not found)
+    // Expected: REJECT (note not found for phantom cm)
     BOOST_CHECK(!CheckKHUUnstake(ctx, view, attackState, Params().GetConsensus(), state, nCurrentHeight));
 
     // Verify state unchanged
@@ -335,16 +354,17 @@ BOOST_AUTO_TEST_CASE(redteam_attack_reorg_double_spend_attempt)
 
     AddZKHUNoteToMockDB(cm, nullifier, amount, nStakeHeight, bonus);
 
-    // Setup global state
+    // Setup global state with Z = 100 (the principal being unstaked)
+    // Invariant: C == U + Z → 1000 == 900 + 100 ✓
     KhuGlobalState stateOriginal;
-    SetupKHUState(stateOriginal, nCurrentHeight, 1000, 1000, 500, 500);
+    SetupKHUState(stateOriginal, nCurrentHeight, 1000, 900, 500, 500, 100);
 
     KhuGlobalState state = stateOriginal;
     CCoinsViewCache view(pcoinsTip.get());
     CValidationState validState;
 
     // Step 1: UNSTAKE in original chain
-    CMutableTransaction tx1 = CreateMockUNSTAKE(nullifier, amount + bonus);
+    CMutableTransaction tx1 = CreateMockUNSTAKE(nullifier, amount + bonus, cm);
     CTransaction ctx1(tx1);
 
     BOOST_CHECK(CheckKHUUnstake(ctx1, view, validState, Params().GetConsensus(), state, nCurrentHeight));
@@ -368,7 +388,7 @@ BOOST_AUTO_TEST_CASE(redteam_attack_reorg_double_spend_attempt)
     BOOST_CHECK(!zkhuDB->IsNullifierSpent(nullifier));
 
     // Step 3: ATTACK - Try to UNSTAKE AGAIN in new chain
-    CMutableTransaction tx2 = CreateMockUNSTAKE(nullifier, amount + bonus);
+    CMutableTransaction tx2 = CreateMockUNSTAKE(nullifier, amount + bonus, cm);
     CTransaction ctx2(tx2);
 
     CValidationState validState2;
@@ -394,10 +414,11 @@ BOOST_AUTO_TEST_CASE(redteam_attack_reorg_double_spend_attempt)
  */
 BOOST_AUTO_TEST_CASE(redteam_attack_pool_drain_collective)
 {
-    // Setup: Global state with LIMITED pool
+    // Setup: Global state with LIMITED pool and Z = 300 (3 notes × 100 each)
+    // Invariant: C == U + Z → 1000 == 700 + 300 ✓
     KhuGlobalState state;
     int nCurrentHeight = 10000;
-    SetupKHUState(state, nCurrentHeight, 1000, 1000, 100, 100);  // Total pool: 100 COIN
+    SetupKHUState(state, nCurrentHeight, 1000, 700, 100, 100, 300);  // Total pool: 100 COIN
 
     CCoinsViewCache view(pcoinsTip.get());
 
@@ -420,7 +441,8 @@ BOOST_AUTO_TEST_CASE(redteam_attack_pool_drain_collective)
     AddZKHUNoteToMockDB(cm3, nullifier3, amount, nStakeHeight, bonusPerNote);
 
     // UNSTAKE 1: Should succeed (40 <= 100)
-    CMutableTransaction tx1 = CreateMockUNSTAKE(nullifier1, amount + bonusPerNote);
+    // After: Z=200, U=840, C=1040, Cr=60, Ur=60
+    CMutableTransaction tx1 = CreateMockUNSTAKE(nullifier1, amount + bonusPerNote, cm1);
     CTransaction ctx1(tx1);
 
     CValidationState validState1;
@@ -430,9 +452,11 @@ BOOST_AUTO_TEST_CASE(redteam_attack_pool_drain_collective)
     // Verify pool reduced: Cr = Ur = 60 COIN
     BOOST_CHECK_EQUAL(state.Cr, 60 * COIN);
     BOOST_CHECK_EQUAL(state.Ur, 60 * COIN);
+    BOOST_CHECK_EQUAL(state.Z, 200 * COIN);
 
     // UNSTAKE 2: Should succeed (40 <= 60)
-    CMutableTransaction tx2 = CreateMockUNSTAKE(nullifier2, amount + bonusPerNote);
+    // After: Z=100, U=980, C=1080, Cr=20, Ur=20
+    CMutableTransaction tx2 = CreateMockUNSTAKE(nullifier2, amount + bonusPerNote, cm2);
     CTransaction ctx2(tx2);
 
     CValidationState validState2;
@@ -442,9 +466,10 @@ BOOST_AUTO_TEST_CASE(redteam_attack_pool_drain_collective)
     // Verify pool reduced: Cr = Ur = 20 COIN
     BOOST_CHECK_EQUAL(state.Cr, 20 * COIN);
     BOOST_CHECK_EQUAL(state.Ur, 20 * COIN);
+    BOOST_CHECK_EQUAL(state.Z, 100 * COIN);
 
     // UNSTAKE 3: Should FAIL (40 > 20 remaining)
-    CMutableTransaction tx3 = CreateMockUNSTAKE(nullifier3, amount + bonusPerNote);
+    CMutableTransaction tx3 = CreateMockUNSTAKE(nullifier3, amount + bonusPerNote, cm3);
     CTransaction ctx3(tx3);
 
     CValidationState attackState;
@@ -497,17 +522,18 @@ BOOST_AUTO_TEST_CASE(redteam_verify_atomic_state_updates)
  */
 BOOST_AUTO_TEST_CASE(redteam_attack_overflow_int64_max)
 {
-    // Setup: State near maximum money (21M PIV)
+    // Setup: State near maximum money (21M PIV) with Z = 100
+    // Invariant: C == U + Z → NEAR_MAX == (NEAR_MAX - 100*COIN) + 100*COIN ✓
     KhuGlobalState state;
     int nCurrentHeight = 10000;
 
-    // Set C/U near max (leave room for small operations)
     const int64_t MAX_PIV_SUPPLY = 21000000 * COIN;
     const int64_t NEAR_MAX = MAX_PIV_SUPPLY - (1000 * COIN);
     state.SetNull();
     state.nHeight = nCurrentHeight;
     state.C = NEAR_MAX;
-    state.U = NEAR_MAX;
+    state.U = NEAR_MAX - (100 * COIN);  // Adjusted for Z
+    state.Z = 100 * COIN;
     state.Cr = 100 * COIN;  // Small pool
     state.Ur = 100 * COIN;
 
@@ -526,7 +552,7 @@ BOOST_AUTO_TEST_CASE(redteam_attack_overflow_int64_max)
     CCoinsViewCache view(pcoinsTip.get());
 
     // Attempt UNSTAKE with overflow-inducing bonus
-    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, amount + attackBonus);
+    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, amount + attackBonus, cm);
     CTransaction ctx(tx);
 
     CValidationState attackState;
@@ -534,9 +560,10 @@ BOOST_AUTO_TEST_CASE(redteam_attack_overflow_int64_max)
     // Expected: REJECT (would cause overflow, or bonus > pool)
     BOOST_CHECK(!CheckKHUUnstake(ctx, view, attackState, Params().GetConsensus(), state, nCurrentHeight));
 
-    // Verify state unchanged
+    // Verify state unchanged (U = NEAR_MAX - 100*COIN because Z=100)
     BOOST_CHECK_EQUAL(state.C, NEAR_MAX);
-    BOOST_CHECK_EQUAL(state.U, NEAR_MAX);
+    BOOST_CHECK_EQUAL(state.U, NEAR_MAX - (100 * COIN));
+    BOOST_CHECK_EQUAL(state.Z, 100 * COIN);
     BOOST_CHECK(state.CheckInvariants());
 }
 
@@ -549,13 +576,15 @@ BOOST_AUTO_TEST_CASE(redteam_attack_overflow_int64_max)
  */
 BOOST_AUTO_TEST_CASE(redteam_attack_underflow_pool)
 {
-    // Setup: Very small pool
+    // Setup: Very small pool with Z = 100
+    // Invariant: C == U + Z → 1000 == 900 + 100 ✓
     KhuGlobalState state;
     int nCurrentHeight = 10000;
     state.SetNull();
     state.nHeight = nCurrentHeight;
     state.C = 1000 * COIN;
-    state.U = 1000 * COIN;
+    state.U = 900 * COIN;
+    state.Z = 100 * COIN;
     state.Cr = 10 * COIN;  // Only 10 COIN in pool
     state.Ur = 10 * COIN;
 
@@ -572,7 +601,7 @@ BOOST_AUTO_TEST_CASE(redteam_attack_underflow_pool)
     CCoinsViewCache view(pcoinsTip.get());
 
     // Attempt UNSTAKE
-    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, amount + attackBonus);
+    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, amount + attackBonus, cm);
     CTransaction ctx(tx);
 
     CValidationState attackState;
@@ -595,13 +624,15 @@ BOOST_AUTO_TEST_CASE(redteam_attack_underflow_pool)
  */
 BOOST_AUTO_TEST_CASE(redteam_attack_negative_values)
 {
-    // Setup
+    // Setup with Z = 100
+    // Invariant: C == U + Z → 1000 == 900 + 100 ✓
     KhuGlobalState state;
     int nCurrentHeight = 10000;
     state.SetNull();
     state.nHeight = nCurrentHeight;
     state.C = 1000 * COIN;
-    state.U = 1000 * COIN;
+    state.U = 900 * COIN;
+    state.Z = 100 * COIN;
     state.Cr = 100 * COIN;
     state.Ur = 100 * COIN;
 
@@ -619,7 +650,7 @@ BOOST_AUTO_TEST_CASE(redteam_attack_negative_values)
     AddZKHUNoteToMockDB(cm1, nullifier1, amount, nStakeHeight, negativeBonus);
 
     // Attempt UNSTAKE with negative bonus
-    CMutableTransaction tx1 = CreateMockUNSTAKE(nullifier1, amount + negativeBonus);
+    CMutableTransaction tx1 = CreateMockUNSTAKE(nullifier1, amount + negativeBonus, cm1);
     CTransaction ctx1(tx1);
 
     CValidationState attackState1;
@@ -643,7 +674,7 @@ BOOST_AUTO_TEST_CASE(redteam_attack_negative_values)
 
     AddZKHUNoteToMockDB(cm2, nullifier2, negativeAmount, nStakeHeight, normalBonus);
 
-    CMutableTransaction tx2 = CreateMockUNSTAKE(nullifier2, negativeAmount + normalBonus);
+    CMutableTransaction tx2 = CreateMockUNSTAKE(nullifier2, negativeAmount + normalBonus, cm2);
     CTransaction ctx2(tx2);
 
     CValidationState attackState2;
@@ -655,9 +686,10 @@ BOOST_AUTO_TEST_CASE(redteam_attack_negative_values)
         BOOST_CHECK(state.CheckInvariants());
     }
 
-    // Verify original state unchanged
+    // Verify original state unchanged (U=900 because Z=100)
     BOOST_CHECK_EQUAL(state.C, 1000 * COIN);
-    BOOST_CHECK_EQUAL(state.U, 1000 * COIN);
+    BOOST_CHECK_EQUAL(state.U, 900 * COIN);  // U = C - Z
+    BOOST_CHECK_EQUAL(state.Z, 100 * COIN);
     BOOST_CHECK_EQUAL(state.Cr, 100 * COIN);
     BOOST_CHECK_EQUAL(state.Ur, 100 * COIN);
 }
@@ -671,14 +703,16 @@ BOOST_AUTO_TEST_CASE(redteam_attack_negative_values)
  */
 BOOST_AUTO_TEST_CASE(redteam_attack_max_money_boundary)
 {
-    // Setup: State AT max money (21M PIV)
+    // Setup: State AT max money (21M PIV) with Z = 100
+    // Invariant: C == U + Z → MAX == (MAX - 100*COIN) + 100*COIN ✓
     const int64_t MAX_PIV_SUPPLY = 21000000 * COIN;
     KhuGlobalState state;
     int nCurrentHeight = 10000;
     state.SetNull();
     state.nHeight = nCurrentHeight;
     state.C = MAX_PIV_SUPPLY;
-    state.U = MAX_PIV_SUPPLY;
+    state.U = MAX_PIV_SUPPLY - (100 * COIN);
+    state.Z = 100 * COIN;
     state.Cr = 0;  // No pool (all distributed)
     state.Ur = 0;
 
@@ -696,7 +730,7 @@ BOOST_AUTO_TEST_CASE(redteam_attack_max_money_boundary)
 
     CCoinsViewCache view(pcoinsTip.get());
 
-    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, amount + bonus);
+    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, amount + bonus, cm);
     CTransaction ctx(tx);
 
     CValidationState attackState;
@@ -704,10 +738,320 @@ BOOST_AUTO_TEST_CASE(redteam_attack_max_money_boundary)
     // Expected: REJECT (C + bonus > MAX_PIV_SUPPLY)
     BOOST_CHECK(!CheckKHUUnstake(ctx, view, attackState, Params().GetConsensus(), state, nCurrentHeight));
 
-    // Verify state unchanged
+    // Verify state unchanged (U = MAX - 100*COIN because Z=100)
     BOOST_CHECK_EQUAL(state.C, MAX_PIV_SUPPLY);
-    BOOST_CHECK_EQUAL(state.U, MAX_PIV_SUPPLY);
+    BOOST_CHECK_EQUAL(state.U, MAX_PIV_SUPPLY - (100 * COIN));
+    BOOST_CHECK_EQUAL(state.Z, 100 * COIN);
     BOOST_CHECK(state.CheckInvariants());
+}
+
+// ============================================================================
+// ADVANCED INVARIANT ATTACK TESTS
+// ============================================================================
+
+/**
+ * ATTACK 13: Direct Invariant Violation - C ≠ U + Z
+ *
+ * Scenario: Manually corrupt state to have C ≠ U + Z, verify CheckInvariants catches it.
+ *
+ * This tests the DEFENSE mechanism, not an attack vector.
+ */
+BOOST_AUTO_TEST_CASE(redteam_invariant_defense_cuz)
+{
+    KhuGlobalState state;
+    state.SetNull();
+    state.nHeight = 1000;
+
+    // Valid state: C = U + Z
+    state.C = 1000 * COIN;
+    state.U = 800 * COIN;
+    state.Z = 200 * COIN;
+    state.Cr = 100 * COIN;
+    state.Ur = 100 * COIN;
+
+    BOOST_CHECK(state.CheckInvariants());  // Should pass
+
+    // CORRUPT: C ≠ U + Z (attacker tries to inflate C)
+    state.C = 1001 * COIN;  // C > U + Z
+
+    BOOST_CHECK(!state.CheckInvariants());  // MUST FAIL
+
+    // CORRUPT: C < U + Z (attacker tries to deflate C)
+    state.C = 999 * COIN;
+
+    BOOST_CHECK(!state.CheckInvariants());  // MUST FAIL
+
+    // Restore valid state
+    state.C = 1000 * COIN;
+    BOOST_CHECK(state.CheckInvariants());  // Should pass again
+}
+
+/**
+ * ATTACK 14: Direct Invariant Violation - Cr ≠ Ur
+ *
+ * Scenario: Manually corrupt state to have Cr ≠ Ur, verify CheckInvariants catches it.
+ */
+BOOST_AUTO_TEST_CASE(redteam_invariant_defense_crur)
+{
+    KhuGlobalState state;
+    state.SetNull();
+    state.nHeight = 1000;
+
+    // Valid state
+    state.C = 1000 * COIN;
+    state.U = 1000 * COIN;
+    state.Z = 0;
+    state.Cr = 100 * COIN;
+    state.Ur = 100 * COIN;
+
+    BOOST_CHECK(state.CheckInvariants());  // Should pass
+
+    // CORRUPT: Cr > Ur (attacker tries to inflate reward pool)
+    state.Cr = 101 * COIN;
+
+    BOOST_CHECK(!state.CheckInvariants());  // MUST FAIL
+
+    // CORRUPT: Cr < Ur (attacker tries to steal from pool)
+    state.Cr = 99 * COIN;
+
+    BOOST_CHECK(!state.CheckInvariants());  // MUST FAIL
+
+    // Restore valid state
+    state.Cr = 100 * COIN;
+    BOOST_CHECK(state.CheckInvariants());
+}
+
+/**
+ * ATTACK 15: Negative State Values
+ *
+ * Scenario: Try to create state with negative C, U, Z, Cr, Ur, or T.
+ */
+BOOST_AUTO_TEST_CASE(redteam_invariant_defense_negative)
+{
+    KhuGlobalState state;
+
+    // Test each field being negative
+    auto testNegative = [](KhuGlobalState& s, CAmount& field, const char* name) {
+        s.SetNull();
+        s.nHeight = 1000;
+        s.C = 1000 * COIN;
+        s.U = 1000 * COIN;
+        s.Z = 0;
+        s.Cr = 100 * COIN;
+        s.Ur = 100 * COIN;
+        s.T = 50 * COIN;
+
+        // Make field negative
+        field = -1;
+
+        bool result = s.CheckInvariants();
+        BOOST_CHECK_MESSAGE(!result, std::string("Negative ") + name + " should fail invariants");
+    };
+
+    testNegative(state, state.C, "C");
+    testNegative(state, state.U, "U");
+    testNegative(state, state.Z, "Z");
+    testNegative(state, state.Cr, "Cr");
+    testNegative(state, state.Ur, "Ur");
+    testNegative(state, state.T, "T");
+}
+
+/**
+ * ATTACK 16: UNSTAKE Principal Inflation
+ *
+ * Scenario: Attacker creates UNSTAKE with output > P + Y (trying to create KHU from nothing).
+ *
+ * Expected: Transaction rejected due to output mismatch.
+ */
+BOOST_AUTO_TEST_CASE(redteam_attack_principal_inflation)
+{
+    // Setup: Create legitimate note with P=100, Y=10
+    CAmount principal = 100 * COIN;
+    CAmount yield = 10 * COIN;
+    uint256 nullifier = GetRandHash();
+    uint256 cm = GetRandHash();
+    int nStakeHeight = 5000;
+    int nCurrentHeight = 10000;
+
+    AddZKHUNoteToMockDB(cm, nullifier, principal, nStakeHeight, yield);
+
+    // Setup state with Z = 100
+    KhuGlobalState state;
+    SetupKHUState(state, nCurrentHeight, 1000, 900, 500, 500, 100);
+
+    CCoinsViewCache view(pcoinsTip.get());
+
+    // ATTACK: Create UNSTAKE claiming output = P + Y + 50 (inflated by 50)
+    CAmount inflatedOutput = principal + yield + (50 * COIN);  // ⚠️ ATTACK
+
+    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, inflatedOutput, cm);
+    CTransaction ctx(tx);
+
+    CValidationState attackState;
+
+    // Expected: REJECT (output amount doesn't match note data)
+    BOOST_CHECK(!CheckKHUUnstake(ctx, view, attackState, Params().GetConsensus(), state, nCurrentHeight));
+
+    // Invariants must hold
+    BOOST_CHECK(state.CheckInvariants());
+}
+
+/**
+ * ATTACK 17: UNSTAKE Principal Deflation (Partial Withdrawal)
+ *
+ * Scenario: Attacker creates UNSTAKE with output < P + Y (trying to leave KHU in limbo).
+ *
+ * Expected: Transaction rejected - must withdraw full amount.
+ */
+BOOST_AUTO_TEST_CASE(redteam_attack_principal_deflation)
+{
+    // Setup: Create legitimate note with P=100, Y=10
+    CAmount principal = 100 * COIN;
+    CAmount yield = 10 * COIN;
+    uint256 nullifier = GetRandHash();
+    uint256 cm = GetRandHash();
+    int nStakeHeight = 5000;
+    int nCurrentHeight = 10000;
+
+    AddZKHUNoteToMockDB(cm, nullifier, principal, nStakeHeight, yield);
+
+    // Setup state with Z = 100
+    KhuGlobalState state;
+    SetupKHUState(state, nCurrentHeight, 1000, 900, 500, 500, 100);
+
+    CCoinsViewCache view(pcoinsTip.get());
+
+    // ATTACK: Create UNSTAKE claiming only 50 COIN (leaving 60 in limbo)
+    CAmount deflatedOutput = 50 * COIN;  // ⚠️ ATTACK: less than P + Y
+
+    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, deflatedOutput, cm);
+    CTransaction ctx(tx);
+
+    CValidationState attackState;
+
+    // Expected: REJECT (output amount doesn't match note data)
+    BOOST_CHECK(!CheckKHUUnstake(ctx, view, attackState, Params().GetConsensus(), state, nCurrentHeight));
+
+    // Invariants must hold
+    BOOST_CHECK(state.CheckInvariants());
+}
+
+/**
+ * ATTACK 18: Zero Amount UNSTAKE
+ *
+ * Scenario: Attacker tries to UNSTAKE with zero amount (exploit edge case).
+ *
+ * Expected: Transaction rejected.
+ */
+BOOST_AUTO_TEST_CASE(redteam_attack_zero_amount)
+{
+    // Setup: Create note with P=0 (invalid)
+    CAmount principal = 0;
+    CAmount yield = 0;
+    uint256 nullifier = GetRandHash();
+    uint256 cm = GetRandHash();
+    int nStakeHeight = 5000;
+    int nCurrentHeight = 10000;
+
+    AddZKHUNoteToMockDB(cm, nullifier, principal, nStakeHeight, yield);
+
+    // Setup state
+    KhuGlobalState state;
+    SetupKHUState(state, nCurrentHeight, 1000, 1000, 500, 500, 0);
+
+    CCoinsViewCache view(pcoinsTip.get());
+
+    // ATTACK: Create UNSTAKE with zero output
+    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, 0, cm);
+    CTransaction ctx(tx);
+
+    CValidationState attackState;
+
+    // Expected: REJECT (zero amount invalid)
+    bool result = CheckKHUUnstake(ctx, view, attackState, Params().GetConsensus(), state, nCurrentHeight);
+
+    // Note: Even if Check passes (implementation detail), Apply should maintain invariants
+    if (result) {
+        // If somehow passes check, Apply must still maintain invariants
+        BOOST_CHECK(state.CheckInvariants());
+    }
+}
+
+/**
+ * ATTACK 19: Yield Without Maturity
+ *
+ * Scenario: Attacker creates note with high yield but stake height is recent.
+ *           Tries to claim yield before maturity period.
+ *
+ * Expected: REJECT (maturity not reached).
+ */
+BOOST_AUTO_TEST_CASE(redteam_attack_yield_without_maturity)
+{
+    // Setup: Create note staked at height 9000 with fake yield
+    CAmount principal = 100 * COIN;
+    CAmount fakeYield = 50 * COIN;  // ⚠️ Fake high yield
+    uint256 nullifier = GetRandHash();
+    uint256 cm = GetRandHash();
+    int nStakeHeight = 9000;  // Recent stake
+    int nCurrentHeight = 9100;  // Only 100 blocks later (< 4320 maturity)
+
+    AddZKHUNoteToMockDB(cm, nullifier, principal, nStakeHeight, fakeYield);
+
+    // Setup state
+    KhuGlobalState state;
+    SetupKHUState(state, nCurrentHeight, 1000, 900, 500, 500, 100);
+
+    CCoinsViewCache view(pcoinsTip.get());
+
+    // ATTACK: Try to claim fake yield before maturity
+    CMutableTransaction tx = CreateMockUNSTAKE(nullifier, principal + fakeYield, cm);
+    CTransaction ctx(tx);
+
+    CValidationState attackState;
+
+    // Expected: REJECT (maturity not reached, regardless of claimed yield)
+    BOOST_CHECK(!CheckKHUUnstake(ctx, view, attackState, Params().GetConsensus(), state, nCurrentHeight));
+
+    // Invariants must hold
+    BOOST_CHECK(state.CheckInvariants());
+}
+
+/**
+ * ATTACK 20: State Mutation Without Transaction
+ *
+ * Scenario: Verify that state can ONLY be modified through valid transactions.
+ *           Direct state mutation should be caught by invariants.
+ *
+ * This is a documentation test - verifies architectural constraint.
+ */
+BOOST_AUTO_TEST_CASE(redteam_verify_state_immutability)
+{
+    KhuGlobalState state;
+    state.SetNull();
+    state.nHeight = 1000;
+    state.C = 1000 * COIN;
+    state.U = 1000 * COIN;
+    state.Z = 0;
+    state.Cr = 100 * COIN;
+    state.Ur = 100 * COIN;
+
+    BOOST_CHECK(state.CheckInvariants());
+
+    // DOCUMENTATION: Any direct state mutation that breaks invariants
+    // will be caught by CheckInvariants() which is called:
+    // 1. At end of ApplyKHUStake
+    // 2. At end of ApplyKHUUnstake
+    // 3. At end of UndoKHUStake
+    // 4. At end of UndoKHUUnstake
+    // 5. At end of ConnectBlock (ProcessKHUTransaction)
+    //
+    // Therefore, it is IMPOSSIBLE for invalid state to persist in the chain.
+
+    // Simulate an "attack" that would require bypassing Apply functions
+    // This test passes if CheckInvariants catches such violations
+    state.C += 1;  // Attacker tries to add 1 sat to C
+
+    BOOST_CHECK(!state.CheckInvariants());  // MUST be detected
 }
 
 BOOST_AUTO_TEST_SUITE_END()

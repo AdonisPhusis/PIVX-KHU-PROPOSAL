@@ -27,6 +27,7 @@
 #include "khu/khu_stake.h"
 #include "khu/khu_unstake.h"
 #include "khu/khu_state.h"
+#include "streams.h"
 #include "khu/khu_utxo.h"
 #include "khu/khu_validation.h"
 #include "khu/zkhu_db.h"
@@ -83,18 +84,31 @@ static CTransactionRef CreateStakeTx(CAmount amount, const COutPoint& khuInput)
     saplingOut.cmu = GetRandHash();  // Mock commitment (will be note ID)
     sapData.vShieldedOutput.push_back(saplingOut);
 
+    // CRITICAL: Set valueBalance correctly for STAKE
+    // For STAKE: transparent → shielded, so valueBalance = -amount
+    // ApplyKHUStake extracts: stakedAmount = -valueBalance
+    sapData.valueBalance = -amount;
+
     mtx.sapData = sapData;
 
     return MakeTransactionRef(mtx);
 }
 
 // Helper: Create a mock UNSTAKE transaction (ZKHU → KHU_T + bonus)
+// Phase 5/8 fix: Now includes cm in extraPayload (avoids nullifier mapping mismatch)
 static CTransactionRef CreateUnstakeTx(CAmount amount, const CScript& dest,
-                                       const uint256& nullifier, int nHeight)
+                                       const uint256& nullifier, int nHeight,
+                                       const uint256& cm)
 {
     CMutableTransaction mtx;
     mtx.nVersion = CTransaction::TxVersion::SAPLING;
     mtx.nType = CTransaction::TxType::KHU_UNSTAKE;
+
+    // Phase 5/8 fix: Add extraPayload with cm so consensus can lookup note directly
+    CUnstakeKHUPayload payload(cm);
+    CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
+    ds << payload;
+    mtx.extraPayload = std::vector<uint8_t>(ds.begin(), ds.end());
 
     // Phase 5: Add minimal Sapling spend for ApplyKHUUnstake to extract nullifier
     SaplingTxData sapData;
@@ -113,27 +127,32 @@ static CTransactionRef CreateUnstakeTx(CAmount amount, const CScript& dest,
 }
 
 // Helper: Setup initial KHU state with known values (in COIN units)
+// NOTE: Z is calculated automatically to satisfy invariant C == U + Z
 static void SetupKHUState(KhuGlobalState& state, int height,
-                          int64_t C, int64_t U, int64_t Cr, int64_t Ur)
+                          int64_t C, int64_t U, int64_t Cr, int64_t Ur,
+                          int64_t Z = 0)  // Z defaults to 0 for STAKE tests
 {
     state.SetNull();
     state.nHeight = height;
     state.C = C * COIN;   // Convert to satoshis
     state.U = U * COIN;   // Convert to satoshis
+    state.Z = Z * COIN;   // ZKHU staked (for UNSTAKE tests)
     state.Cr = Cr * COIN; // Convert to satoshis
     state.Ur = Ur * COIN; // Convert to satoshis
     state.hashBlock = GetRandHash();
     state.hashPrevState = GetRandHash();
+
+    // IMPORTANT: For invariant C == U + Z, adjust C if needed
+    // Default: caller sets C, U, Z explicitly and must ensure C == U + Z
 }
 
-// Helper: Add KHU_T UTXO to coins view
-static void AddKHUCoinToView(CCoinsViewCache& view, const COutPoint& outpoint, CAmount amount)
+// Helper: Add KHU_T UTXO to coins view AND KHU tracking system
+// NOTE: Must use AddKHUCoin() so GetKHUCoin() can find the coin in mapKHUUTXOs
+static void AddKHUCoinToView(CCoinsViewCache& view, const COutPoint& outpoint, CAmount amount, uint32_t nHeight = 1)
 {
     CScript scriptPubKey = GetScriptForDestination(CKeyID(uint160()));
-    Coin coin;
-    coin.out = CTxOut(amount, scriptPubKey);
-    coin.nHeight = 1;
-    view.AddCoin(outpoint, std::move(coin), false);
+    CKHUUTXO khuCoin(amount, scriptPubKey, nHeight);
+    AddKHUCoin(view, outpoint, khuCoin);
 }
 
 // Helper: Create mock ZKHU note in database (Phase 4: Ur_accumulated=0)
@@ -192,17 +211,29 @@ BOOST_AUTO_TEST_CASE(test_stake_basic)
     // 6. Assertions
     BOOST_CHECK(result);
 
-    // State MUST be unchanged (Phase 4 spec: STAKE is state-neutral)
+    // STAKE: C unchanged, U decreases (KHU_T consumed → ZKHU created)
+    // Invariant C == U + Z is maintained because Z increases by same amount
     BOOST_CHECK_EQUAL(state.C, stateBefore.C);
-    BOOST_CHECK_EQUAL(state.U, stateBefore.U);
-    BOOST_CHECK_EQUAL(state.Cr, stateBefore.Cr);
-    BOOST_CHECK_EQUAL(state.Ur, stateBefore.Ur);
+    BOOST_CHECK_EQUAL(state.U, stateBefore.U - amount);  // U decreases by staked amount
+    BOOST_CHECK_EQUAL(state.Cr, stateBefore.Cr);         // Cr unchanged
+    BOOST_CHECK_EQUAL(state.Ur, stateBefore.Ur);         // Ur unchanged
 
-    // Invariants must hold
+    // Invariants must hold (C == U + Z where Z = amount staked)
     BOOST_CHECK(state.CheckInvariants());
 
-    // KHU_T UTXO must be spent
-    BOOST_CHECK(!view.HaveCoin(khuInput));
+    // Note: In full blockchain processing, the UTXO would be spent by standard validation.
+    // ApplyKHUStake only updates KHU state (U, Z) - it doesn't duplicate UTXO spending.
+    // In tests calling Apply directly, the coin remains in the view.
+
+    // Verify ZKHU note was created in zkhuDB
+    CZKHUTreeDB* zkhuDB = GetZKHUDB();
+    BOOST_CHECK(zkhuDB != nullptr);
+
+    // Note ID is the commitment from the Sapling output
+    uint256 cm = stakeTx->sapData->vShieldedOutput[0].cmu;
+    ZKHUNoteData noteData;
+    BOOST_CHECK(zkhuDB->ReadNote(cm, noteData));
+    BOOST_CHECK_EQUAL(noteData.amount, amount);
 
     // TODO Phase 4: Verify ZKHU note exists in zkhuDB
     // CZKHUDatabase* zkhuDB = GetZKHUDatabase();
@@ -223,9 +254,10 @@ BOOST_AUTO_TEST_CASE(test_unstake_basic)
 {
     LOCK(cs_khu);
 
-    // 1. Setup initial state
+    // 1. Setup initial state with Z = 10 (the amount we'll unstake)
+    // Invariant: C == U + Z → 100 == 90 + 10 ✓
     KhuGlobalState state;
-    SetupKHUState(state, 5000, 100, 100, 50, 50);
+    SetupKHUState(state, 5000, 100, 90, 50, 50, 10);
 
     CCoinsViewCache view(pcoinsTip.get());
 
@@ -238,7 +270,7 @@ BOOST_AUTO_TEST_CASE(test_unstake_basic)
 
     // 3. Build UNSTAKE transaction
     CScript dest = GetScriptForDestination(CKeyID(uint160()));
-    CTransactionRef unstakeTx = CreateUnstakeTx(amount, dest, nullifier, 5000);
+    CTransactionRef unstakeTx = CreateUnstakeTx(amount, dest, nullifier, 5000, cm);
 
     // 4. Store state before Apply
     KhuGlobalState stateBefore = state;
@@ -249,24 +281,21 @@ BOOST_AUTO_TEST_CASE(test_unstake_basic)
     // 6. Assertions
     BOOST_CHECK(result);
 
-    // With B=0, double flux has zero net effect:
-    // C += 0, U += 0, Cr -= 0, Ur -= 0
-    BOOST_CHECK_EQUAL(state.C, stateBefore.C);
-    BOOST_CHECK_EQUAL(state.U, stateBefore.U);
-    BOOST_CHECK_EQUAL(state.Cr, stateBefore.Cr);
-    BOOST_CHECK_EQUAL(state.Ur, stateBefore.Ur);
+    // UNSTAKE with Y=0 (no bonus):
+    // Z -= P (10 → 0), U += P (90 → 100), C unchanged, Cr/Ur unchanged
+    BOOST_CHECK_EQUAL(state.Z, 0);                     // Z consumed
+    BOOST_CHECK_EQUAL(state.U, stateBefore.U + amount); // U increased by P
+    BOOST_CHECK_EQUAL(state.C, stateBefore.C);         // C unchanged (Y=0)
+    BOOST_CHECK_EQUAL(state.Cr, stateBefore.Cr);       // Cr unchanged (Y=0)
+    BOOST_CHECK_EQUAL(state.Ur, stateBefore.Ur);       // Ur unchanged (Y=0)
 
-    // Invariants must hold
+    // Invariants must hold (C == U + Z → 100 == 100 + 0)
     BOOST_CHECK(state.CheckInvariants());
 
-    // KHU_T UTXO must be created
-    COutPoint outpoint(unstakeTx->GetHash(), 0);
-    BOOST_CHECK(view.HaveCoin(outpoint));
-
-    // Output amount should equal original amount (no bonus)
-    Coin coin;
-    view.GetCoin(outpoint, coin);
-    BOOST_CHECK_EQUAL(coin.out.nValue, amount);
+    // NOTE: ApplyKHUUnstake does NOT add coins to the view.
+    // That's done by standard transaction processing in ConnectBlock via AddCoins().
+    // ApplyKHUUnstake only updates KHU state (C/U/Z/Cr/Ur) and ZKHU database.
+    // The output amount is verified by ApplyKHUUnstake against tx.vout[0].nValue.
 }
 
 // ============================================================================
@@ -282,9 +311,10 @@ BOOST_AUTO_TEST_CASE(test_unstake_with_bonus_phase5_ready)
 {
     LOCK(cs_khu);
 
-    // 1. Setup initial state with reserves
+    // 1. Setup initial state with Z = 100 (the amount we'll unstake)
+    // Invariant: C == U + Z → 1000 == 900 + 100 ✓
     KhuGlobalState state;
-    SetupKHUState(state, 10000, 1000, 1000, 500, 500);
+    SetupKHUState(state, 10000, 1000, 900, 500, 500, 100);
 
     CCoinsViewCache view(pcoinsTip.get());
 
@@ -309,42 +339,35 @@ BOOST_AUTO_TEST_CASE(test_unstake_with_bonus_phase5_ready)
 
     // 3. Build UNSTAKE transaction
     CScript dest = GetScriptForDestination(CKeyID(uint160()));
-    CTransactionRef unstakeTx = CreateUnstakeTx(amount + bonus, dest, nullifier, 10000);
+    CTransactionRef unstakeTx = CreateUnstakeTx(amount + bonus, dest, nullifier, 10000, cm);
 
     // 4. Store state before Apply
     KhuGlobalState stateBefore = state;
 
-    // 5. Manually simulate bonus retrieval (in real code, this comes from zkhuDB)
-    // For Phase 4 tests, we assume ApplyKHUUnstake extracts Ur_accumulated = bonus
-    // Here we verify the double flux logic would work correctly
-
-    // Expected mutations (assuming bonus extracted correctly):
-    int64_t expected_C = stateBefore.C + bonus;
-    int64_t expected_U = stateBefore.U + bonus;
-    int64_t expected_Cr = stateBefore.Cr - bonus;
-    int64_t expected_Ur = stateBefore.Ur - bonus;
-
-    // 6. Apply UNSTAKE (with mocked bonus)
-    // NOTE: Phase 4 implementation may not yet extract Ur_accumulated from DB
-    // This test validates the LOGIC is correct for Phase 5 readiness
+    // 5. Apply UNSTAKE (with bonus)
     bool result = ApplyKHUUnstake(*unstakeTx, view, state, 10000);
 
-    // 7. Assertions
+    // 6. Assertions
     BOOST_CHECK(result);
 
-    // Double flux should have been applied
-    // TODO Phase 4: This may fail if Ur_accumulated extraction not implemented yet
-    // In that case, test passes with B=0 behavior, and we document as Phase 5 TODO
+    // UNSTAKE with Y=50 (bonus):
+    // Z: 100 → 0 (P consumed)
+    // U: 900 → 1050 (P+Y = 100+50 added)
+    // C: 1000 → 1050 (Y=50 added)
+    // Cr: 500 → 450 (Y=50 consumed)
+    // Ur: 500 → 450 (Y=50 consumed)
+    BOOST_CHECK_EQUAL(state.Z, 0);                              // Z consumed
+    BOOST_CHECK_EQUAL(state.U, stateBefore.U + amount + bonus); // U increased by P+Y
+    BOOST_CHECK_EQUAL(state.C, stateBefore.C + bonus);          // C increased by Y
+    BOOST_CHECK_EQUAL(state.Cr, stateBefore.Cr - bonus);        // Cr decreased by Y
+    BOOST_CHECK_EQUAL(state.Ur, stateBefore.Ur - bonus);        // Ur decreased by Y
 
-    // Check output amount includes bonus
-    COutPoint outpoint(unstakeTx->GetHash(), 0);
-    Coin coin;
-    if (view.GetCoin(outpoint, coin)) {
-        // Output should be amount + bonus
-        BOOST_CHECK_EQUAL(coin.out.nValue, amount + bonus);
-    }
+    // NOTE: ApplyKHUUnstake does NOT add coins to the view.
+    // That's done by standard transaction processing in ConnectBlock via AddCoins().
+    // ApplyKHUUnstake only updates KHU state (C/U/Z/Cr/Ur) and ZKHU database.
+    // The output amount (P+Y) is verified by ApplyKHUUnstake against tx.vout[0].nValue.
 
-    // Invariants MUST hold regardless
+    // Invariants MUST hold (C == U + Z → 1050 == 1050 + 0)
     BOOST_CHECK(state.CheckInvariants());
 }
 
@@ -360,8 +383,10 @@ BOOST_AUTO_TEST_CASE(test_unstake_maturity)
 {
     LOCK(cs_khu);
 
+    // Setup with Z = 10 (the amount we'll try to unstake)
+    // Invariant: C == U + Z → 100 == 90 + 10 ✓
     KhuGlobalState state;
-    SetupKHUState(state, 5000, 100, 100, 50, 50);
+    SetupKHUState(state, 5000, 100, 90, 50, 50, 10);
 
     CCoinsViewCache view(pcoinsTip.get());
 
@@ -380,7 +405,7 @@ BOOST_AUTO_TEST_CASE(test_unstake_maturity)
 
     // Test 1: Attempt UNSTAKE at height 1000 + 4319 = 5319 (IMMATURE)
     {
-        CTransactionRef unstakeTx = CreateUnstakeTx(amount, dest, nullifier, 5319);
+        CTransactionRef unstakeTx = CreateUnstakeTx(amount, dest, nullifier, 5319, cm);
         CValidationState validationState;
 
         // Should fail maturity check
@@ -390,7 +415,7 @@ BOOST_AUTO_TEST_CASE(test_unstake_maturity)
 
     // Test 2: Attempt UNSTAKE at height 1000 + 4320 = 5320 (MATURE)
     {
-        CTransactionRef unstakeTx = CreateUnstakeTx(amount, dest, nullifier, 5320);
+        CTransactionRef unstakeTx = CreateUnstakeTx(amount, dest, nullifier, 5320, cm);
         CValidationState validationState;
 
         // Should pass maturity check
@@ -410,8 +435,10 @@ BOOST_AUTO_TEST_CASE(test_multiple_unstake_isolation)
 {
     LOCK(cs_khu);
 
+    // Setup with Z = 125 (50 + 75, the amounts we'll unstake)
+    // Invariant: C == U + Z → 1000 == 875 + 125 ✓
     KhuGlobalState state;
-    SetupKHUState(state, 10000, 1000, 1000, 500, 500);
+    SetupKHUState(state, 10000, 1000, 875, 500, 500, 125);
 
     CCoinsViewCache view(pcoinsTip.get());
 
@@ -444,7 +471,7 @@ BOOST_AUTO_TEST_CASE(test_multiple_unstake_isolation)
 
     // Unstake first note
     {
-        CTransactionRef unstakeTx1 = CreateUnstakeTx(amount1 + bonus1, dest, nullifier1, 10000);
+        CTransactionRef unstakeTx1 = CreateUnstakeTx(amount1 + bonus1, dest, nullifier1, 10000, cm1);
         bool result = ApplyKHUUnstake(*unstakeTx1, view, state, 10000);
         BOOST_CHECK(result);
         BOOST_CHECK(state.CheckInvariants());
@@ -454,7 +481,7 @@ BOOST_AUTO_TEST_CASE(test_multiple_unstake_isolation)
 
     // Unstake second note
     {
-        CTransactionRef unstakeTx2 = CreateUnstakeTx(amount2 + bonus2, dest, nullifier2, 10001);
+        CTransactionRef unstakeTx2 = CreateUnstakeTx(amount2 + bonus2, dest, nullifier2, 10001, cm2);
         bool result = ApplyKHUUnstake(*unstakeTx2, view, state, 10001);
         BOOST_CHECK(result);
         BOOST_CHECK(state.CheckInvariants());
@@ -478,9 +505,10 @@ BOOST_AUTO_TEST_CASE(test_reorg_unstake)
 {
     LOCK(cs_khu);
 
-    // 1. Setup initial state
+    // 1. Setup initial state with Z = 20 (the amount we'll unstake)
+    // Invariant: C == U + Z → 200 == 180 + 20 ✓
     KhuGlobalState state;
-    SetupKHUState(state, 5000, 200, 200, 100, 100);
+    SetupKHUState(state, 5000, 200, 180, 100, 100, 20);
 
     CCoinsViewCache view(pcoinsTip.get());
 
@@ -497,7 +525,7 @@ BOOST_AUTO_TEST_CASE(test_reorg_unstake)
     zkhuDB->WriteNullifierMapping(nullifier, cm);
 
     CScript dest = GetScriptForDestination(CKeyID(uint160()));
-    CTransactionRef unstakeTx = CreateUnstakeTx(amount + bonus, dest, nullifier, 5000);
+    CTransactionRef unstakeTx = CreateUnstakeTx(amount + bonus, dest, nullifier, 5000, cm);
 
     // 3. Store original state
     KhuGlobalState stateOriginal = state;
@@ -516,6 +544,7 @@ BOOST_AUTO_TEST_CASE(test_reorg_unstake)
     // 6. Assertions: State must be restored EXACTLY
     BOOST_CHECK_EQUAL(state.C, stateOriginal.C);
     BOOST_CHECK_EQUAL(state.U, stateOriginal.U);
+    BOOST_CHECK_EQUAL(state.Z, stateOriginal.Z);  // Z also restored
     BOOST_CHECK_EQUAL(state.Cr, stateOriginal.Cr);
     BOOST_CHECK_EQUAL(state.Ur, stateOriginal.Ur);
 
@@ -541,8 +570,12 @@ BOOST_AUTO_TEST_CASE(test_invariants_after_unstake)
 {
     LOCK(cs_khu);
 
+    // 5 notes with amounts: 10, 15, 20, 25, 30 COIN = 100 COIN total
+    // bonuses: 0, 1, 2, 3, 4 COIN = 10 COIN total
+    // Setup with Z = 100 COIN (total to unstake)
+    // Invariant: C == U + Z → 1000 == 900 + 100 ✓
     KhuGlobalState state;
-    SetupKHUState(state, 10000, 1000, 1000, 800, 800);
+    SetupKHUState(state, 10000, 1000, 900, 800, 800, 100);
 
     CCoinsViewCache view(pcoinsTip.get());
 
@@ -563,19 +596,21 @@ BOOST_AUTO_TEST_CASE(test_invariants_after_unstake)
         zkhuDB->WriteNote(cm, note);
         zkhuDB->WriteNullifierMapping(nullifier, cm);
 
-        CTransactionRef unstakeTx = CreateUnstakeTx(amount + bonus, dest, nullifier, 10000 + i);
+        CTransactionRef unstakeTx = CreateUnstakeTx(amount + bonus, dest, nullifier, 10000 + i, cm);
 
         bool result = ApplyKHUUnstake(*unstakeTx, view, state, 10000 + i);
         BOOST_CHECK(result);
 
         // CRITICAL: Invariants MUST hold after EVERY operation
+        // C == U + Z (not C == U!)
         BOOST_CHECK(state.CheckInvariants());
-        BOOST_CHECK_EQUAL(state.C, state.U);
-        BOOST_CHECK_EQUAL(state.Cr, state.Ur);
+        BOOST_CHECK_EQUAL(state.C, state.U + state.Z);  // C == U + Z
+        BOOST_CHECK_EQUAL(state.Cr, state.Ur);          // Cr == Ur
     }
 
-    // Final verification: state remains valid
+    // Final verification: state remains valid, Z should be 0 (all unstaked)
     BOOST_CHECK(state.CheckInvariants());
+    BOOST_CHECK_EQUAL(state.Z, 0);  // All ZKHU unstaked
 }
 
 BOOST_AUTO_TEST_SUITE_END()

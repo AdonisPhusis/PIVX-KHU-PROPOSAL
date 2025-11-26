@@ -108,6 +108,10 @@ public:
     // MUST be called before Build() for special transaction types
     void SetType(CTransaction::TxType _type);
 
+    // Set extra payload (for special transaction types like KHU_UNSTAKE)
+    // MUST be called before Build() if the tx type requires payload
+    void SetExtraPayload(const std::vector<uint8_t>& payload);
+
     // Throws if the anchor does not match the anchor used by
     // previously-added Sapling spends.
     void AddSaplingSpend(

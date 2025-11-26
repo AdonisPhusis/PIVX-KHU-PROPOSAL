@@ -13,6 +13,7 @@
 #include "primitives/transaction.h"
 #include "sapling/saplingscriptpubkeyman.h"
 #include "script/ismine.h"
+#include "utilmoneystr.h"
 #include "validation.h"
 #include "wallet/wallet.h"
 #include "wallet/walletdb.h"
@@ -35,38 +36,43 @@ CAmount GetKHUStakedBalance(const CWallet* pwallet)
 
 CAmount GetKHUPendingYieldEstimate(const CWallet* pwallet, uint16_t R_annual)
 {
-    // ⚠️ APPROXIMATION ONLY - For UI display, not consensus
-    // Actual yield is calculated by khu_yield.cpp using discrete daily application
+    // DÉTERMINISTE: R% est fixe, le yield est calculé avec la même formule que consensus
+    // Formule: (amount × R_annual / 10000) × daysStaked / 365
+    // Cette valeur est EXACTE (pas d'approximation) car R% est constant à un instant T
 
     LOCK(pwallet->cs_wallet);
 
     if (R_annual == 0) return 0;
 
-    CAmount totalEstimate = 0;
+    CAmount totalYield = 0;
     int currentHeight = chainActive.Height();
 
-    for (std::map<COutPoint, KHUCoinEntry>::const_iterator it = pwallet->khuData.mapKHUCoins.begin();
-         it != pwallet->khuData.mapKHUCoins.end(); ++it) {
-        const KHUCoinEntry& entry = it->second;
-        if (!entry.coin.fStaked) continue;
+    // Itérer sur mapZKHUNotes (notes stakées), PAS mapKHUCoins (coins transparents)
+    for (std::map<uint256, ZKHUNoteEntry>::const_iterator it = pwallet->khuData.mapZKHUNotes.begin();
+         it != pwallet->khuData.mapZKHUNotes.end(); ++it) {
+        const ZKHUNoteEntry& entry = it->second;
+
+        // Skip spent notes
+        if (entry.fSpent) continue;
 
         // Maturity check (4320 blocks = 3 days)
         const uint32_t MATURITY_BLOCKS = 4320;
-        if (entry.coin.nStakeStartHeight == 0) continue;
-        if ((uint32_t)currentHeight < entry.coin.nStakeStartHeight + MATURITY_BLOCKS) continue;
+        if (entry.nStakeStartHeight == 0) continue;
+        if ((uint32_t)currentHeight < entry.nStakeStartHeight + MATURITY_BLOCKS) continue;
 
-        // Approximate: days staked * daily rate
-        uint32_t blocksStaked = currentHeight - entry.coin.nStakeStartHeight;
+        // Calcul déterministe: days staked depuis maturity
+        uint32_t blocksStaked = currentHeight - entry.nStakeStartHeight;
         uint32_t daysStaked = blocksStaked / 1440; // BLOCKS_PER_DAY
 
-        // daily_yield ≈ (amount * R_annual / 10000) / 365
-        CAmount annualYield = (entry.coin.amount * R_annual) / 10000;
-        CAmount estimatedYield = (annualYield * daysStaked) / 365;
+        // Formule consensus: (amount × R_annual / 10000) / 365 × daysStaked
+        // Utilise int64_t pour éviter overflow (identique à khu_yield.cpp)
+        int64_t annualYield = (static_cast<int64_t>(entry.amount) * R_annual) / 10000;
+        int64_t yield = (annualYield * daysStaked) / 365;
 
-        totalEstimate += estimatedYield;
+        totalYield += yield;
     }
 
-    return totalEstimate;
+    return totalYield;
 }
 
 // ============================================================================
@@ -80,13 +86,17 @@ bool AddKHUCoinToWallet(CWallet* pwallet, const COutPoint& outpoint,
 
     // Check if this output belongs to us
     if (::IsMine(*pwallet, coin.scriptPubKey) == ISMINE_NO) {
+        LogPrint(BCLog::KHU, "AddKHUCoinToWallet: outpoint=%s:%d not mine, skipping\n",
+                 outpoint.hash.GetHex().substr(0, 16).c_str(), outpoint.n);
         return false;
     }
 
     // Check if already tracked
     if (pwallet->khuData.mapKHUCoins.count(outpoint)) {
-        LogPrint(BCLog::KHU, "AddKHUCoinToWallet: Already tracking %s:%d\n",
-                 outpoint.hash.GetHex().substr(0, 16), outpoint.n);
+        LogPrint(BCLog::KHU, "AddKHUCoinToWallet: outpoint=%s:%d already tracked (amount=%s, height=%d)\n",
+                 outpoint.hash.GetHex().substr(0, 16).c_str(), outpoint.n,
+                 FormatMoney(pwallet->khuData.mapKHUCoins[outpoint].coin.amount),
+                 pwallet->khuData.mapKHUCoins[outpoint].nConfirmedHeight);
         return true;
     }
 

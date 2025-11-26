@@ -18,6 +18,7 @@
 #include "primitives/transaction.h"
 #include "sapling/incrementalmerkletree.h"
 #include "sync.h"
+#include "utilmoneystr.h"
 
 // External lock (defined in khu_validation.cpp)
 extern RecursiveMutex cs_khu;
@@ -114,42 +115,16 @@ bool ApplyKHUStake(
         return error("%s: STAKE tx has no inputs", __func__);
     }
 
-    // The amount being staked is in the Sapling output
-    // (Input = Sapling output + transparent change + fees)
-    CAmount amount = 0;
-    for (const auto& od : tx.sapData->vShieldedOutput) {
-        // The STAKE should have exactly 1 Sapling output with the staked amount
-        // In Phase 5, we trust the transaction structure (already validated by CheckKHUStake)
-        // The amount will be retrieved from the memo in Phase 6
-        // For now, we need to get it from the transaction context
+    // 2. Get the staked amount from Sapling valueBalance
+    // valueBalance = sum(spends) - sum(outputs)
+    // For STAKE: no spends, one output → valueBalance = -stakedAmount
+    // So stakedAmount = -valueBalance
+    CAmount amount = -tx.sapData->valueBalance;
+    if (amount <= 0) {
+        return error("%s: invalid stake amount from valueBalance: %d", __func__, amount);
     }
 
-    // Actually, we need to parse the memo to get the amount
-    // Or we can sum the transparent outputs and infer:
-    // Total input = Sapling value + transparent change + fee
-    // But in Phase 5, we just use a placeholder - the memo contains the amount
-
-    // Phase 5 workaround: Get amount from transparent change calculation
-    // The Sapling output amount should match (input - change - fee)
-    CAmount totalOutput = 0;
-    for (const auto& out : tx.vout) {
-        totalOutput += out.nValue;
-    }
-    // For now, we'll read back from the note we're about to create
-    // This is a temporary workaround - Phase 6 will use memo properly
-
-    // Actually, let's get the amount from the KHU UTXO tracking
-    // The input was a KHU coin, we can look it up in the KHU UTXO map
-    const COutPoint& prevout = tx.vin[0].prevout;
-    CKHUUTXO khuCoin;
-    if (!GetKHUCoin(view, prevout, khuCoin)) {
-        // Fallback: try to get from global tracking if view doesn't have it
-        // (since standard validation already spent it)
-        if (!GetKHUCoinFromTracking(prevout, khuCoin)) {
-            return error("%s: cannot find KHU input at %s", __func__, prevout.ToString());
-        }
-    }
-    amount = khuCoin.amount;
+    LogPrint(BCLog::KHU, "%s: Stake amount from valueBalance: %d satoshis\n", __func__, amount);
 
     // 3. Extract Sapling output (commitment)
     const OutputDescription& saplingOut = tx.sapData->vShieldedOutput[0];
@@ -193,7 +168,46 @@ bool ApplyKHUStake(
     //     return error("%s: failed to write anchor", __func__);
     // }
 
-    // 8. ✅ CRITICAL: STAKE = form conversion (KHU_T → ZKHU)
+    // 8. ✅ CRITICAL: Spend KHU inputs from mapKHUUTXOs
+    // STAKE tx has KHU_T inputs that need to be spent in consensus tracking
+    for (const auto& in : tx.vin) {
+        CKHUUTXO khuCoin;
+        if (GetKHUCoin(view, in.prevout, khuCoin)) {
+            // This is a KHU input - spend it from tracking
+            if (!SpendKHUCoin(view, in.prevout)) {
+                return error("%s: failed to spend KHU coin at %s", __func__, in.prevout.ToString());
+            }
+            LogPrintf("ApplyKHUStake: spent KHU input %s:%d value=%s\n",
+                     in.prevout.hash.ToString().substr(0,16).c_str(), in.prevout.n,
+                     FormatMoney(khuCoin.amount));
+        }
+        // Non-KHU inputs (PIV fee) are skipped - they're not in mapKHUUTXOs
+    }
+
+    // 9. ✅ CRITICAL: Add KHU_T change output to mapKHUUTXOs (if any)
+    // STAKE tx may have a KHU change output at index 0 (before Sapling outputs)
+    // The wallet's khustake creates: output[0] = KHU change, then Sapling data
+    for (size_t i = 0; i < tx.vout.size(); ++i) {
+        const CTxOut& out = tx.vout[i];
+        // Skip dust outputs and OP_RETURN
+        if (out.nValue > 0 && !out.scriptPubKey.IsUnspendable()) {
+            // This could be KHU change - add it to tracking
+            CKHUUTXO newCoin(out.nValue, out.scriptPubKey, nHeight);
+            newCoin.fIsKHU = true;
+            newCoin.fStaked = false;
+            newCoin.nStakeStartHeight = 0;
+
+            COutPoint khuOutpoint(tx.GetHash(), i);
+            if (!AddKHUCoin(view, khuOutpoint, newCoin)) {
+                return error("%s: failed to add KHU change coin", __func__);
+            }
+            LogPrintf("ApplyKHUStake: created KHU change %s:%d value=%s\n",
+                     khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n,
+                     FormatMoney(out.nValue));
+        }
+    }
+
+    // 10. ✅ CRITICAL: STAKE = form conversion (KHU_T → ZKHU)
     // Mutations atomiques: U -= amount, Z += amount
     // C reste inchangé (collateral total identique)
     // Invariant C == U + Z préservé car: C = (U - amount) + (Z + amount)
@@ -253,13 +267,26 @@ bool UndoKHUStake(
         return error("%s: failed to read note for undo", __func__);
     }
 
-    // 4. Recreate the KHU_T UTXO (undo the spend)
-    const COutPoint& prevout = tx.vin[0].prevout;
-    CScript scriptPubKey;  // TODO Phase 6: Extract from original UTXO
-    Coin coin;
-    coin.out = CTxOut(noteData.amount, scriptPubKey);
-    coin.nHeight = nHeight - 1;
-    view.AddCoin(prevout, std::move(coin), false);
+    // 4. ✅ CRITICAL: Remove KHU change outputs that were added in ApplyKHUStake
+    // This reverses the AddKHUCoin() calls for change outputs
+    for (size_t i = 0; i < tx.vout.size(); ++i) {
+        const CTxOut& out = tx.vout[i];
+        if (out.nValue > 0 && !out.scriptPubKey.IsUnspendable()) {
+            COutPoint khuOutpoint(tx.GetHash(), i);
+            if (HaveKHUCoin(view, khuOutpoint)) {
+                if (!SpendKHUCoin(view, khuOutpoint)) {
+                    return error("%s: failed to remove KHU change coin at %s", __func__, khuOutpoint.ToString());
+                }
+                LogPrintf("UndoKHUStake: removed KHU change %s:%d\n",
+                         khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n);
+            }
+        }
+    }
+
+    // 4b. NOTE: KHU input restoration requires proper undo data storage (Phase 6+).
+    // For Phase 2, the KHU inputs were marked spent in ApplyKHUStake but cannot be
+    // fully restored here. The standard UTXO view restores them via ApplyTxInUndo(),
+    // and subsequent operations should use wallet data for KHU selection.
 
     // 5. Erase ZKHU note from database
     if (!zkhuDB->EraseNote(cm)) {

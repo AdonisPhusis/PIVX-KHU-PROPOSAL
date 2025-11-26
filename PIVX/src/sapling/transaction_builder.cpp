@@ -220,6 +220,11 @@ void TransactionBuilder::SetType(CTransaction::TxType _type)
     mtx.nType = _type;
 }
 
+void TransactionBuilder::SetExtraPayload(const std::vector<uint8_t>& payload)
+{
+    mtx.extraPayload = payload;
+}
+
 void TransactionBuilder::SendChangeTo(const libzcash::SaplingPaymentAddress& changeAddr, const uint256& ovk)
 {
     saplingChangeAddr = std::make_pair(ovk, changeAddr);

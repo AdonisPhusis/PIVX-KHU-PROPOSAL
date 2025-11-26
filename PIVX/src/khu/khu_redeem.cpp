@@ -70,21 +70,24 @@ bool CheckKHURedeem(const CTransaction& tx, CValidationState& state, const CCoin
     }
 
     // 4. Vérifier inputs KHU_T suffisants
+    // NOTE: Per CLAUDE.md §2.1, REDEEM tx has KHU inputs + optional PIV input for fee.
+    // Only count inputs that are actually KHU coins (exist in mapKHUUTXOs).
+    // PIV fee inputs are NOT in the KHU tracking and should be skipped.
     CAmount total_input = 0;
     for (const auto& in : tx.vin) {
         CKHUUTXO khuCoin;
-        if (!GetKHUCoin(view, in.prevout, khuCoin)) {
-            return state.Invalid(false, REJECT_INVALID, "khu-redeem-missing-input",
-                                 strprintf("KHU_T input not found: %s", in.prevout.ToString()));
-        }
+        if (GetKHUCoin(view, in.prevout, khuCoin)) {
+            // This is a KHU input - validate it
 
-        // Vérifier que le KHU n'est pas staké
-        if (khuCoin.fStaked) {
-            return state.Invalid(false, REJECT_INVALID, "khu-redeem-staked-khu",
-                                 strprintf("Cannot redeem staked KHU at %s", in.prevout.ToString()));
-        }
+            // Vérifier que le KHU n'est pas staké
+            if (khuCoin.fStaked) {
+                return state.Invalid(false, REJECT_INVALID, "khu-redeem-staked-khu",
+                                     strprintf("Cannot redeem staked KHU at %s", in.prevout.ToString()));
+            }
 
-        total_input += khuCoin.amount;
+            total_input += khuCoin.amount;
+        }
+        // Non-KHU inputs (PIV fee) are silently skipped
     }
 
     if (total_input < payload.amount) {
@@ -164,10 +167,47 @@ bool ApplyKHURedeem(const CTransaction& tx, KhuGlobalState& state, CCoinsViewCac
     }
 
     // 6. Dépenser UTXO KHU_T
-    for (const auto& in : tx.vin) {
-        if (!SpendKHUCoin(view, in.prevout)) {
-            return error("ApplyKHURedeem: Failed to spend KHU coin at %s", in.prevout.ToString());
+    // NOTE: Per CLAUDE.md §2.1, REDEEM tx has KHU inputs + 1 PIV input for fee.
+    // Only spend inputs that are actually KHU coins (exist in mapKHUUTXOs).
+    // PIV fee inputs are NOT in the KHU tracking and should be skipped.
+
+    // DEBUG: Log what we're processing
+    LogPrintf("ApplyKHURedeem: Processing tx %s with %zu inputs, redeem amount=%lld\n",
+              tx.GetHash().ToString().substr(0,16).c_str(), tx.vin.size(), amount);
+
+    CAmount totalKHUSpent = 0;
+    for (size_t i = 0; i < tx.vin.size(); i++) {
+        const auto& in = tx.vin[i];
+        // DEBUG: Log each input we're inspecting
+        LogPrintf("ApplyKHURedeem: inspecting vin[%zu] %s:%d\n",
+                  i, in.prevout.hash.ToString().substr(0,16).c_str(), in.prevout.n);
+
+        // Check if this input is a KHU coin (exists in tracking)
+        CKHUUTXO khuCoin;
+        if (GetKHUCoin(view, in.prevout, khuCoin)) {
+            // This is a KHU input - spend it
+            LogPrintf("ApplyKHURedeem: vin[%zu] IS a KHU coin, value=%s\n",
+                     i, FormatMoney(khuCoin.amount));
+            if (!SpendKHUCoin(view, in.prevout)) {
+                return error("ApplyKHURedeem: Failed to spend KHU coin at %s", in.prevout.ToString());
+            }
+            totalKHUSpent += khuCoin.amount;
+            LogPrintf("ApplyKHURedeem: Spent KHU input %s:%d value=%s (totalKHUSpent now=%s)\n",
+                     in.prevout.hash.ToString().substr(0,16).c_str(), in.prevout.n,
+                     FormatMoney(khuCoin.amount), FormatMoney(totalKHUSpent));
+        } else {
+            // This is NOT a KHU input (likely PIV fee input) - skip it
+            LogPrintf("ApplyKHURedeem: vin[%zu] NOT a KHU coin (PIV fee input) - skipping\n", i);
         }
+    }
+
+    LogPrintf("ApplyKHURedeem: totalKHUSpent=%s, required=%s\n",
+              FormatMoney(totalKHUSpent), FormatMoney(amount));
+
+    // Verify we spent at least the payload amount in KHU
+    if (totalKHUSpent < amount) {
+        return error("ApplyKHURedeem: Insufficient KHU spent (%s < %s)",
+                     FormatMoney(totalKHUSpent), FormatMoney(amount));
     }
 
     // 7. Log

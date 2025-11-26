@@ -30,6 +30,33 @@ namespace Consensus { struct Params; }
 static constexpr uint32_t ZKHU_MATURITY_BLOCKS = 4320;  // 3 days (90s per block)
 
 /**
+ * CUnstakeKHUPayload - Payload for KHU_UNSTAKE transactions
+ *
+ * Contains the note commitment (cm) so consensus can look up the note
+ * directly without relying on nullifier mapping.
+ *
+ * Phase 5/8 fix: The Sapling nullifier is derived differently than our
+ * deterministic nullifier, so we pass cm explicitly.
+ */
+struct CUnstakeKHUPayload {
+    uint256 cm;  // Note commitment to unstake
+
+    CUnstakeKHUPayload() : cm() {}
+    explicit CUnstakeKHUPayload(const uint256& cmIn) : cm(cmIn) {}
+
+    SERIALIZE_METHODS(CUnstakeKHUPayload, obj) {
+        READWRITE(obj.cm);
+    }
+
+    std::string ToString() const;
+};
+
+/**
+ * GetUnstakeKHUPayload - Extract payload from UNSTAKE transaction
+ */
+bool GetUnstakeKHUPayload(const CTransaction& tx, CUnstakeKHUPayload& payload);
+
+/**
  * CheckKHUUnstake - Validation UNSTAKE (Consensus Rules)
  *
  * Checks obligatoires :

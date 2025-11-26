@@ -179,12 +179,18 @@ bool ApplyKHUMint(const CTransaction& tx, KhuGlobalState& state, CCoinsViewCache
     newCoin.nStakeStartHeight = 0;
 
     COutPoint khuOutpoint(tx.GetHash(), 1);  // Output index 1 = KHU_T
+
+    // DEBUG: Always log what we're adding
+    LogPrintf("ApplyKHUMint: CREATING KHU coin %s:%d value=%lld at height=%d\n",
+              tx.GetHash().ToString().substr(0,16).c_str(), 1, amount, nHeight);
+
     if (!AddKHUCoin(view, khuOutpoint, newCoin)) {
         return error("ApplyKHUMint: Failed to add KHU coin");
     }
 
-    // 6. Log
-    LogPrint(BCLog::KHU, "ApplyKHUMint: amount=%s C=%s U=%s height=%d\n",
+    // 6. Log with outpoint for debugging
+    LogPrintf("ApplyKHUMint: SUCCESS added KHU coin %s:%d value=%s (C=%s U=%s height=%d)\n",
+             khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n,
              FormatMoney(amount),
              FormatMoney(state.C),
              FormatMoney(state.U),

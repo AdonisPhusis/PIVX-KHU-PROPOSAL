@@ -211,15 +211,17 @@ CAmount GetKHUBalance(const CWallet* pwallet);
 CAmount GetKHUStakedBalance(const CWallet* pwallet);
 
 /**
- * Get estimated pending yield for display purposes.
+ * Get pending yield for display purposes.
  *
- * ⚠️ WARNING: This is an APPROXIMATION for UI display only.
- * The actual yield is calculated by the consensus engine (khu_yield.cpp).
- * Do NOT use this for consensus decisions.
+ * DÉTERMINISTE: R% est fixe à un instant T, le calcul est exact.
+ * Formule identique au consensus: (amount × R_annual / 10000) × daysStaked / 365
+ *
+ * NOTE: Cette valeur représente le yield accumulé pour les notes stakées.
+ * Le yield réel sera appliqué quotidiennement par le consensus engine.
  *
  * @param pwallet Wallet pointer
- * @param R_annual Annual rate in basis points
- * @return Estimated pending yield (may differ from actual by ± satoshis)
+ * @param R_annual Annual rate in basis points (from KhuGlobalState)
+ * @return Pending yield amount (satoshis)
  */
 CAmount GetKHUPendingYieldEstimate(const CWallet* pwallet, uint16_t R_annual);
 

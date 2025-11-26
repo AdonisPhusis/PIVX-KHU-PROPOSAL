@@ -104,6 +104,10 @@ void CCoinsViewCache::AddCoin(const COutPoint& outpoint, Coin&& coin, bool possi
     }
     if (!possible_overwrite) {
         if (!it->second.coin.IsSpent()) {
+            // Debug logging for KHU double-add investigation
+            LogPrintf("ERROR AddCoin: Adding new coin that replaces non-pruned entry! outpoint=%s:%d, existing_value=%lld, new_value=%lld\n",
+                     outpoint.hash.GetHex().substr(0, 16).c_str(), outpoint.n,
+                     it->second.coin.out.nValue, coin.out.nValue);
             throw std::logic_error("Adding new coin that replaces non-pruned entry");
         }
         fresh = !(it->second.flags & CCoinsCacheEntry::DIRTY);

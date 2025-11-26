@@ -331,13 +331,15 @@ BOOST_AUTO_TEST_CASE(pipeline_demo_multi_blocks)
 
     state.nHeight = 173800;
 
-    // Delta = 0.5% × (U + Ur)
-    int64_t delta_T = ((state.U + state.Ur) * 5) / 1000;
+    // Delta = (U + Ur) / 182500 (2% annual = ~0.00548% daily)
+    // Per CLAUDE.md §12.3: T_daily = (U + Ur) / 182500
+    int64_t delta_T = (state.U + state.Ur) / 182500;
     state.T += delta_T;
 
     std::cout << "   🏦 DAO TREASURY: +" << (delta_T / COIN) << " KHU" << std::endl;
-    std::cout << "      Formula: 0.5% × (U + Ur) = 0.5% × (" << (state.U / COIN)
-              << " + " << (state.Ur / COIN) << ") = " << (delta_T / COIN) << std::endl;
+    std::cout << "      Formula: (U + Ur) / 182500 = (" << (state.U / COIN)
+              << " + " << (state.Ur / COIN) << ") / 182500 = " << (delta_T / COIN) << std::endl;
+    std::cout << "      (2% annual rate)" << std::endl;
     std::cout << "      T: " << ((state.T - delta_T) / COIN) << " → " << (state.T / COIN) << std::endl;
     BOOST_CHECK(state.CheckInvariants());
     PrintState("   📊 État après DAO TREASURY", state, 3);

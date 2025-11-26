@@ -304,8 +304,8 @@ BOOST_AUTO_TEST_CASE(global_test_r_evolution_multiple_cycles)
     BOOST_CHECK_EQUAL(state.Cr, yield1);
     BOOST_CHECK_EQUAL(state.Ur, yield1);
 
-    // Accumuler DAO Treasury (0.5% × (U+Ur))
-    int64_t delta_T_cycle1 = ((state.U + state.Ur) * 5) / 1000;
+    // Accumuler DAO Treasury (2% annual = (U+Ur) / 182500 daily)
+    int64_t delta_T_cycle1 = (state.U + state.Ur) / 182500;
     state.T += delta_T_cycle1;
     BOOST_CHECK_GT(state.T, 0);
 
@@ -328,7 +328,7 @@ BOOST_AUTO_TEST_CASE(global_test_r_evolution_multiple_cycles)
     BOOST_CHECK_EQUAL(state.Ur, yield1 + yield2);
 
     // Accumuler DAO Treasury
-    int64_t delta_T_cycle2 = ((state.U + state.Ur) * 5) / 1000;
+    int64_t delta_T_cycle2 = (state.U + state.Ur) / 182500;
     state.T += delta_T_cycle2;
     BOOST_CHECK_GT(state.T, delta_T_cycle1); // T augmente
 
@@ -351,7 +351,7 @@ BOOST_AUTO_TEST_CASE(global_test_r_evolution_multiple_cycles)
     BOOST_CHECK_EQUAL(state.Ur, yield1 + yield2 + yield3);
 
     // Accumuler DAO Treasury
-    int64_t delta_T_cycle3 = ((state.U + state.Ur) * 5) / 1000;
+    int64_t delta_T_cycle3 = (state.U + state.Ur) / 182500;
     state.T += delta_T_cycle3;
 
     // ========================================================================
@@ -370,7 +370,7 @@ BOOST_AUTO_TEST_CASE(global_test_r_evolution_multiple_cycles)
  *
  * Vérifie:
  * - T s'incrémente exactement tous les 172800 blocs
- * - Formula delta = 0.5% × (U + Ur) correcte
+ * - Formula delta = (U + Ur) / 182500 correcte (2% annual)
  * - T ne diminue jamais (Phase 6, pas encore de dépenses)
  * - Invariants C==U, Cr==Ur préservés pendant accumulation T
  */
@@ -402,8 +402,8 @@ BOOST_AUTO_TEST_CASE(global_test_dao_treasury_accumulation_1year)
     state.Cr += ur_after_cycle1;
     state.Ur += ur_after_cycle1;
 
-    // Calculer delta T = 0.5% × (U + Ur)
-    int64_t delta_T1 = ((state.U + state.Ur) * 5) / 1000;
+    // Calculer delta T = (U + Ur) / 182500 (2% annual)
+    int64_t delta_T1 = (state.U + state.Ur) / 182500;
     state.T += delta_T1;
 
     BOOST_CHECK(state.CheckInvariants());
@@ -423,7 +423,7 @@ BOOST_AUTO_TEST_CASE(global_test_dao_treasury_accumulation_1year)
     state.Ur += ur_increment_cycle2;
 
     // Calculer delta T
-    int64_t delta_T2 = ((state.U + state.Ur) * 5) / 1000;
+    int64_t delta_T2 = (state.U + state.Ur) / 182500;
     state.T += delta_T2;
 
     BOOST_CHECK(state.CheckInvariants());
@@ -443,7 +443,7 @@ BOOST_AUTO_TEST_CASE(global_test_dao_treasury_accumulation_1year)
     state.Ur += ur_increment_cycle3;
 
     // Calculer delta T
-    int64_t delta_T3 = ((state.U + state.Ur) * 5) / 1000;
+    int64_t delta_T3 = (state.U + state.Ur) / 182500;
     state.T += delta_T3;
 
     BOOST_CHECK(state.CheckInvariants());

@@ -18,6 +18,7 @@
 #include "khu/khu_mint.h"
 #include "khu/khu_redeem.h"
 #include "khu/khu_state.h"
+#include "khu/khu_unstake.h"
 #include "khu/khu_validation.h"
 #include "khu/zkhu_memo.h"
 #include "streams.h"
@@ -392,6 +393,11 @@ static UniValue khuredeem(const JSONRPCRequest& request)
             strprintf("KHU not active until block %u (current: %d)", V6_activation, chainActive.Height()));
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // CLAUDE.md §2.1: "Tous les frais KHU sont payés en PIV non-bloqué"
+    // Fee is paid from separate PIV input, NOT from KHU amount
+    // ═══════════════════════════════════════════════════════════════════════
+
     CAmount nKHUBalance = GetKHUBalance(pwallet);
     if (nAmount > nKHUBalance) {
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
@@ -399,15 +405,19 @@ static UniValue khuredeem(const JSONRPCRequest& request)
                      FormatMoney(nKHUBalance), FormatMoney(nAmount)));
     }
 
-    CAmount nFee = 10000; // 0.0001 PIV
-    if (nAmount <= nFee) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER,
-            strprintf("Amount must be greater than fee (%s)", FormatMoney(nFee)));
+    CAmount nFee = 10000; // 0.0001 PIV (paid from separate PIV input)
+
+    // Check PIV balance for fee (separate from KHU)
+    CAmount nPIVBalance = pwallet->GetAvailableBalance();
+    if (nFee > nPIVBalance) {
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+            strprintf("Insufficient PIV for fee: have %s, need %s",
+                     FormatMoney(nPIVBalance), FormatMoney(nFee)));
     }
 
-    // Select KHU UTXOs
-    CAmount nValueIn = 0;
-    std::vector<COutPoint> vInputs;
+    // Select KHU UTXOs (for redeem amount only)
+    CAmount nKHUValueIn = 0;
+    std::vector<COutPoint> vKHUInputs;
 
     for (std::map<COutPoint, KHUCoinEntry>::const_iterator it = pwallet->khuData.mapKHUCoins.begin();
          it != pwallet->khuData.mapKHUCoins.end(); ++it) {
@@ -415,15 +425,45 @@ static UniValue khuredeem(const JSONRPCRequest& request)
         const KHUCoinEntry& entry = it->second;
 
         if (entry.coin.fStaked) continue;
-        if (nValueIn >= nAmount) break;
+        if (nKHUValueIn >= nAmount) break;
 
-        vInputs.push_back(outpoint);
-        nValueIn += entry.coin.amount;
+        vKHUInputs.push_back(outpoint);
+        nKHUValueIn += entry.coin.amount;
     }
 
-    if (nValueIn < nAmount) {
+    if (nKHUValueIn < nAmount) {
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
             "Unable to select sufficient KHU UTXOs");
+    }
+
+    // Select PIV UTXO for fee (smallest one >= fee)
+    std::vector<COutput> vPIVCoins;
+    pwallet->AvailableCoins(&vPIVCoins);
+    COutPoint pivFeeInput;
+    CAmount nPIVInputValue = 0;
+    CScript pivFeeScript;
+    bool foundPIVInput = false;
+    CAmount bestExcess = std::numeric_limits<CAmount>::max();
+
+    for (const COutput& coin : vPIVCoins) {
+        if (coin.tx->tx->IsShieldedTx()) continue;
+        CAmount value = coin.Value();
+        if (value >= nFee) {
+            CAmount excess = value - nFee;
+            if (excess < bestExcess) {
+                pivFeeInput = COutPoint(coin.tx->GetHash(), coin.i);
+                nPIVInputValue = value;
+                pivFeeScript = coin.tx->tx->vout[coin.i].scriptPubKey;
+                foundPIVInput = true;
+                bestExcess = excess;
+                if (excess == 0) break;
+            }
+        }
+    }
+
+    if (!foundPIVInput) {
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+            "No suitable PIV UTXO found for fee payment");
     }
 
     CPubKey newKey;
@@ -433,39 +473,61 @@ static UniValue khuredeem(const JSONRPCRequest& request)
     CTxDestination dest = newKey.GetID();
 
     CMutableTransaction mtx;
-    mtx.nVersion = CTransaction::TxVersion::SAPLING;  // KHU txs require Sapling version
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;
     mtx.nType = CTransaction::TxType::KHU_REDEEM;
 
-    // Output 0: PIV output
     CScript pivScript = GetScriptForDestination(dest);
 
-    // Create and serialize payload (required for special txs)
+    // Create and serialize payload
     CRedeemKHUPayload payload(nAmount, pivScript);
     CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
     ds << payload;
     mtx.extraPayload = std::vector<uint8_t>(ds.begin(), ds.end());
 
-    // Add inputs
-    for (const COutPoint& outpoint : vInputs) {
+    // DEBUG: Log selected KHU inputs
+    LogPrintf("khuredeem: selecting %zu KHU inputs for redeem amount=%s\n",
+              vKHUInputs.size(), FormatMoney(nAmount));
+    for (const auto& op : vKHUInputs) {
+        LogPrintf("khuredeem: selected KHU input %s:%d\n",
+                  op.hash.ToString().substr(0,16).c_str(), op.n);
+    }
+
+    // Add KHU inputs first
+    for (const COutPoint& outpoint : vKHUInputs) {
         mtx.vin.push_back(CTxIn(outpoint));
     }
+    size_t nKHUInputCount = mtx.vin.size();
 
-    // Output 0: PIV output
-    mtx.vout.push_back(CTxOut(nAmount - nFee, pivScript));
+    // Add PIV input for fee
+    mtx.vin.push_back(CTxIn(pivFeeInput));
+
+    // Output 0: PIV output (full amount - fee comes from PIV input)
+    mtx.vout.push_back(CTxOut(nAmount, pivScript));
 
     // Output 1: KHU_T change (if any)
-    CAmount nChange = nValueIn - nAmount;
-    if (nChange > 0) {
-        CPubKey changeKey;
-        if (!pwallet->GetKeyFromPool(changeKey, true)) {
-            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for change");
+    CAmount nKHUChange = nKHUValueIn - nAmount;
+    if (nKHUChange > 0) {
+        CPubKey khuChangeKey;
+        if (!pwallet->GetKeyFromPool(khuChangeKey, true)) {
+            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for KHU change");
         }
-        CScript changeScript = GetScriptForDestination(changeKey.GetID());
-        mtx.vout.push_back(CTxOut(nChange, changeScript));
+        CScript khuChangeScript = GetScriptForDestination(khuChangeKey.GetID());
+        mtx.vout.push_back(CTxOut(nKHUChange, khuChangeScript));
     }
 
-    // Sign transaction (sign KHU inputs)
-    for (size_t i = 0; i < mtx.vin.size(); ++i) {
+    // Output 2: PIV change (if any)
+    CAmount nPIVChange = nPIVInputValue - nFee;
+    if (nPIVChange > 0) {
+        CPubKey pivChangeKey;
+        if (!pwallet->GetKeyFromPool(pivChangeKey, true)) {
+            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for PIV change");
+        }
+        CScript pivChangeScript = GetScriptForDestination(pivChangeKey.GetID());
+        mtx.vout.push_back(CTxOut(nPIVChange, pivChangeScript));
+    }
+
+    // Sign KHU inputs
+    for (size_t i = 0; i < nKHUInputCount; ++i) {
         const COutPoint& outpoint = mtx.vin[i].prevout;
         auto it = pwallet->khuData.mapKHUCoins.find(outpoint);
         if (it == pwallet->khuData.mapKHUCoins.end()) {
@@ -476,17 +538,37 @@ static UniValue khuredeem(const JSONRPCRequest& request)
         CAmount amount = it->second.coin.amount;
 
         SignatureData sigdata;
-        // Use SIGVERSION_SAPLING for Sapling version transactions
         SigVersion sigversion = mtx.isSaplingVersion() ? SIGVERSION_SAPLING : SIGVERSION_BASE;
         if (!ProduceSignature(MutableTransactionSignatureCreator(pwallet, &mtx, i, amount, SIGHASH_ALL),
                              scriptPubKey, sigdata, sigversion, false)) {
-            throw JSONRPCError(RPC_WALLET_ERROR, "Signing transaction failed");
+            throw JSONRPCError(RPC_WALLET_ERROR, "Signing KHU input failed");
         }
         UpdateTransaction(mtx, i, sigdata);
     }
 
+    // Sign PIV input (last input)
+    {
+        SignatureData sigdata;
+        SigVersion sigversion = mtx.isSaplingVersion() ? SIGVERSION_SAPLING : SIGVERSION_BASE;
+        if (!ProduceSignature(MutableTransactionSignatureCreator(pwallet, &mtx, nKHUInputCount, nPIVInputValue, SIGHASH_ALL),
+                             pivFeeScript, sigdata, sigversion, false)) {
+            throw JSONRPCError(RPC_WALLET_ERROR, "Signing PIV fee input failed");
+        }
+        UpdateTransaction(mtx, nKHUInputCount, sigdata);
+    }
+
     // Broadcast transaction
     CTransactionRef txRef = MakeTransactionRef(std::move(mtx));
+
+    // DEBUG: Log final tx details
+    LogPrintf("khuredeem: final REDEEM tx %s with %zu inputs\n",
+              txRef->GetHash().ToString().substr(0,16).c_str(), txRef->vin.size());
+    for (size_t i = 0; i < txRef->vin.size(); i++) {
+        LogPrintf("khuredeem: tx vin[%zu] = %s:%d\n",
+                  i, txRef->vin[i].prevout.hash.ToString().substr(0,16).c_str(),
+                  txRef->vin[i].prevout.n);
+    }
+
     CValidationState state;
 
     if (!AcceptToMemoryPool(mempool, state, txRef, false, nullptr)) {
@@ -496,8 +578,9 @@ static UniValue khuredeem(const JSONRPCRequest& request)
 
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", txRef->GetHash().GetHex());
-    result.pushKV("amount_piv", ValueFromAmount(nAmount - nFee));
+    result.pushKV("amount_piv", ValueFromAmount(nAmount));
     result.pushKV("fee", ValueFromAmount(nFee));
+    result.pushKV("fee_source", "separate_piv_input");
 
     return result;
 }
@@ -660,19 +743,61 @@ static UniValue khusend(const JSONRPCRequest& request)
             strprintf("KHU not active until block %u (current: %d)", V6_activation, chainActive.Height()));
     }
 
-    // Check KHU balance
+    // ═══════════════════════════════════════════════════════════════════════
+    // CLAUDE.md §2.1: "Tous les frais KHU sont payés en PIV non-bloqué"
+    // Fee is paid from separate PIV input, NOT from KHU amount
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // Check KHU balance (fee is separate in PIV)
     CAmount nKHUBalance = GetKHUBalance(pwallet);
     CAmount nFee = 10000; // 0.0001 PIV
 
-    if (nAmount + nFee > nKHUBalance) {
+    if (nAmount > nKHUBalance) {
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
-            strprintf("Insufficient KHU_T balance. Have: %s, Need: %s + fee",
+            strprintf("Insufficient KHU_T balance. Have: %s, Need: %s",
                      FormatMoney(nKHUBalance), FormatMoney(nAmount)));
     }
 
-    // Select KHU UTXOs
-    CAmount nValueIn = 0;
-    std::vector<COutPoint> vInputs;
+    // Check PIV balance for fee (separate from KHU)
+    CAmount nPIVBalance = pwallet->GetAvailableBalance();
+    if (nFee > nPIVBalance) {
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+            strprintf("Insufficient PIV for fee: have %s, need %s",
+                     FormatMoney(nPIVBalance), FormatMoney(nFee)));
+    }
+
+    // Select PIV UTXO for fee (smallest one >= fee)
+    std::vector<COutput> vPIVCoins;
+    pwallet->AvailableCoins(&vPIVCoins);
+
+    COutPoint pivFeeInput;
+    CAmount nPIVInputValue = 0;
+    bool foundPIVInput = false;
+
+    // Sort by value ascending to find smallest suitable UTXO
+    std::sort(vPIVCoins.begin(), vPIVCoins.end(),
+        [](const COutput& a, const COutput& b) {
+            return a.tx->tx->vout[a.i].nValue < b.tx->tx->vout[b.i].nValue;
+        });
+
+    for (const COutput& out : vPIVCoins) {
+        CAmount value = out.tx->tx->vout[out.i].nValue;
+        if (value >= nFee) {
+            pivFeeInput = COutPoint(out.tx->tx->GetHash(), out.i);
+            nPIVInputValue = value;
+            foundPIVInput = true;
+            break;
+        }
+    }
+
+    if (!foundPIVInput) {
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+            "No suitable PIV UTXO found for transaction fee");
+    }
+
+    // Select KHU UTXOs (for amount only, NOT fee)
+    CAmount nKHUValueIn = 0;
+    std::vector<COutPoint> vKHUInputs;
 
     for (std::map<COutPoint, KHUCoinEntry>::const_iterator it = pwallet->khuData.mapKHUCoins.begin();
          it != pwallet->khuData.mapKHUCoins.end(); ++it) {
@@ -680,13 +805,13 @@ static UniValue khusend(const JSONRPCRequest& request)
         const KHUCoinEntry& entry = it->second;
 
         if (entry.coin.fStaked) continue;
-        if (nValueIn >= nAmount + nFee) break;
+        if (nKHUValueIn >= nAmount) break;
 
-        vInputs.push_back(outpoint);
-        nValueIn += entry.coin.amount;
+        vKHUInputs.push_back(outpoint);
+        nKHUValueIn += entry.coin.amount;
     }
 
-    if (nValueIn < nAmount + nFee) {
+    if (nKHUValueIn < nAmount) {
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
             "Unable to select sufficient KHU UTXOs");
     }
@@ -697,28 +822,43 @@ static UniValue khusend(const JSONRPCRequest& request)
     mtx.nVersion = CTransaction::TxVersion::LEGACY;
     mtx.nType = CTransaction::TxType::NORMAL; // Regular transfer, not MINT/REDEEM
 
-    // Add inputs
-    for (const COutPoint& outpoint : vInputs) {
+    // Add KHU inputs
+    for (const COutPoint& outpoint : vKHUInputs) {
         mtx.vin.push_back(CTxIn(outpoint));
     }
+    size_t nKHUInputCount = mtx.vin.size();
 
-    // Output 0: KHU_T to recipient
+    // Add PIV input for fee
+    mtx.vin.push_back(CTxIn(pivFeeInput));
+
+    // Output 0: KHU_T to recipient (full amount - fee is separate)
     CScript recipientScript = GetScriptForDestination(dest);
     mtx.vout.push_back(CTxOut(nAmount, recipientScript));
 
     // Output 1: KHU_T change (if any)
-    CAmount nChange = nValueIn - nAmount - nFee;
-    if (nChange > 0) {
+    CAmount nKHUChange = nKHUValueIn - nAmount;
+    if (nKHUChange > 0) {
         CPubKey changeKey;
         if (!pwallet->GetKeyFromPool(changeKey, true)) {
-            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for change");
+            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for KHU change");
         }
         CScript changeScript = GetScriptForDestination(changeKey.GetID());
-        mtx.vout.push_back(CTxOut(nChange, changeScript));
+        mtx.vout.push_back(CTxOut(nKHUChange, changeScript));
     }
 
-    // Sign transaction
-    for (size_t i = 0; i < mtx.vin.size(); ++i) {
+    // Output 2: PIV change (if any)
+    CAmount nPIVChange = nPIVInputValue - nFee;
+    if (nPIVChange > 0) {
+        CPubKey pivChangeKey;
+        if (!pwallet->GetKeyFromPool(pivChangeKey, true)) {
+            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for PIV change");
+        }
+        CScript pivChangeScript = GetScriptForDestination(pivChangeKey.GetID());
+        mtx.vout.push_back(CTxOut(nPIVChange, pivChangeScript));
+    }
+
+    // Sign KHU inputs
+    for (size_t i = 0; i < nKHUInputCount; ++i) {
         const COutPoint& outpoint = mtx.vin[i].prevout;
         auto it = pwallet->khuData.mapKHUCoins.find(outpoint);
         if (it == pwallet->khuData.mapKHUCoins.end()) {
@@ -729,13 +869,30 @@ static UniValue khusend(const JSONRPCRequest& request)
         CAmount amount = it->second.coin.amount;
 
         SignatureData sigdata;
-        // Use SIGVERSION_SAPLING for Sapling version transactions
         SigVersion sigversion = mtx.isSaplingVersion() ? SIGVERSION_SAPLING : SIGVERSION_BASE;
         if (!ProduceSignature(MutableTransactionSignatureCreator(pwallet, &mtx, i, amount, SIGHASH_ALL),
                              scriptPubKey, sigdata, sigversion, false)) {
-            throw JSONRPCError(RPC_WALLET_ERROR, "Signing transaction failed");
+            throw JSONRPCError(RPC_WALLET_ERROR, "Signing KHU input failed");
         }
         UpdateTransaction(mtx, i, sigdata);
+    }
+
+    // Sign PIV input (last input)
+    {
+        size_t pivInputIdx = nKHUInputCount;
+        const CWalletTx* wtx = pwallet->GetWalletTx(pivFeeInput.hash);
+        if (!wtx) {
+            throw JSONRPCError(RPC_WALLET_ERROR, "PIV input transaction not found");
+        }
+        const CScript& pivScriptPubKey = wtx->tx->vout[pivFeeInput.n].scriptPubKey;
+
+        SignatureData sigdata;
+        SigVersion sigversion = mtx.isSaplingVersion() ? SIGVERSION_SAPLING : SIGVERSION_BASE;
+        if (!ProduceSignature(MutableTransactionSignatureCreator(pwallet, &mtx, pivInputIdx, nPIVInputValue, SIGHASH_ALL),
+                             pivScriptPubKey, sigdata, sigversion, false)) {
+            throw JSONRPCError(RPC_WALLET_ERROR, "Signing PIV fee input failed");
+        }
+        UpdateTransaction(mtx, pivInputIdx, sigdata);
     }
 
     // Broadcast
@@ -1138,6 +1295,50 @@ static UniValue khuunstake(const JSONRPCRequest& request)
     // Sapling UNSTAKE transactions are ~1200-1500 bytes, need ~15000 satoshis at 10 sat/byte
     CAmount nFee = 15000; // 0.00015 PIV for Sapling tx
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // CLAUDE.md §2.1: "Tous les frais KHU sont payés en PIV non-bloqué"
+    // Fee is paid from separate PIV input, NOT from yield/principal
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // Check PIV balance for fee (separate from KHU)
+    CAmount nPIVBalance = pwallet->GetAvailableBalance();
+    if (nFee > nPIVBalance) {
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+            strprintf("Insufficient PIV for fee: have %s, need %s",
+                     FormatMoney(nPIVBalance), FormatMoney(nFee)));
+    }
+
+    // Select PIV UTXO for fee (smallest one >= fee)
+    std::vector<COutput> vPIVCoins;
+    pwallet->AvailableCoins(&vPIVCoins);
+
+    COutPoint pivFeeInput;
+    CScript pivFeeScript;
+    CAmount nPIVInputValue = 0;
+    bool foundPIVInput = false;
+
+    // Sort by value ascending to find smallest suitable UTXO
+    std::sort(vPIVCoins.begin(), vPIVCoins.end(),
+        [](const COutput& a, const COutput& b) {
+            return a.tx->tx->vout[a.i].nValue < b.tx->tx->vout[b.i].nValue;
+        });
+
+    for (const COutput& out : vPIVCoins) {
+        CAmount value = out.tx->tx->vout[out.i].nValue;
+        if (value >= nFee) {
+            pivFeeInput = COutPoint(out.tx->tx->GetHash(), out.i);
+            pivFeeScript = out.tx->tx->vout[out.i].scriptPubKey;
+            nPIVInputValue = value;
+            foundPIVInput = true;
+            break;
+        }
+    }
+
+    if (!foundPIVInput) {
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+            "No suitable PIV UTXO found for transaction fee");
+    }
+
     // Find the ZKHU note to unstake
     ZKHUNoteEntry* targetNote = nullptr;
     uint256 targetCm;
@@ -1230,10 +1431,14 @@ static UniValue khuunstake(const JSONRPCRequest& request)
         yieldBonus = (annualYield * daysStaked) / 365;
     }
 
-    CAmount totalOutput = principal + yieldBonus - nFee;
-    if (totalOutput <= 0) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER, "Output amount after fee would be zero or negative");
+    // CLAUDE.md §2.1: Fee is separate in PIV, NOT deducted from KHU output
+    CAmount totalKHUOutput = principal + yieldBonus;
+    if (totalKHUOutput <= 0) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Output amount would be zero or negative");
     }
+
+    // PIV change output (if any)
+    CAmount nPIVChange = nPIVInputValue - nFee;
 
     // Get witness and anchor for the note
     std::vector<SaplingOutPoint> ops = {saplingOp};
@@ -1252,15 +1457,34 @@ static UniValue khuunstake(const JSONRPCRequest& request)
     builder.SetFee(nFee);
     builder.SetType(CTransaction::TxType::KHU_UNSTAKE);  // Set type BEFORE building
 
-    // Add the Sapling spend
+    // Create and serialize UNSTAKE payload with note commitment (Phase 5/8 fix)
+    // This allows consensus to look up the note directly by cm without nullifier mapping
+    CUnstakeKHUPayload unstakePayload(targetCm);
+    CDataStream payloadStream(SER_NETWORK, PROTOCOL_VERSION);
+    payloadStream << unstakePayload;
+    builder.SetExtraPayload(std::vector<uint8_t>(payloadStream.begin(), payloadStream.end()));
+
+    // Add the Sapling spend (ZKHU note)
     builder.AddSaplingSpend(sk.expsk, note, anchor, witnesses[0].get());
 
-    // Add transparent KHU_T output (principal + yield)
+    // Add PIV transparent input for fee (CLAUDE.md §2.1)
+    builder.AddTransparentInput(pivFeeInput, pivFeeScript, nPIVInputValue);
+
+    // Add transparent KHU_T output (principal + yield - NO fee deduction)
     CPubKey newKey;
     if (!pwallet->GetKeyFromPool(newKey, false)) {
-        throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out");
+        throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for KHU output");
     }
-    builder.AddTransparentOutput(newKey.GetID(), totalOutput);
+    builder.AddTransparentOutput(newKey.GetID(), totalKHUOutput);
+
+    // Add PIV change output if needed
+    if (nPIVChange > 0) {
+        CPubKey pivChangeKey;
+        if (!pwallet->GetKeyFromPool(pivChangeKey, false)) {
+            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for PIV change");
+        }
+        builder.AddTransparentOutput(pivChangeKey.GetID(), nPIVChange);
+    }
 
     // Build with dummy signatures first
     TransactionBuilderResult buildResult = builder.Build(true);
@@ -1299,7 +1523,8 @@ static UniValue khuunstake(const JSONRPCRequest& request)
     result.pushKV("txid", txRef->GetHash().GetHex());
     result.pushKV("principal", ValueFromAmount(principal));
     result.pushKV("yield_bonus", ValueFromAmount(yieldBonus));
-    result.pushKV("total", ValueFromAmount(totalOutput + nFee)); // Before fee deduction
+    result.pushKV("total", ValueFromAmount(totalKHUOutput)); // Full amount (fee is separate in PIV)
+    result.pushKV("fee", ValueFromAmount(nFee));
     result.pushKV("stake_duration_blocks", blocksStaked);
     result.pushKV("stake_duration_days", (double)daysStaked);
 
