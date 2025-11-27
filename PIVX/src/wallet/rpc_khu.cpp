@@ -20,6 +20,7 @@
 #include "khu/khu_state.h"
 #include "khu/khu_unstake.h"
 #include "khu/khu_validation.h"
+#include "khu/zkhu_db.h"
 #include "khu/zkhu_memo.h"
 #include "streams.h"
 #include "primitives/transaction.h"
@@ -33,11 +34,88 @@
 #include "utilmoneystr.h"
 #include "util/validation.h"
 #include "validation.h"
+#include "wallet/fees.h"
 #include "wallet/khu_wallet.h"
 #include "wallet/rpcwallet.h"
 #include "wallet/wallet.h"
 
 #include <univalue.h>
+
+/**
+ * ComputeWitnessForZKHUNote - Compute witness by scanning blockchain (fallback)
+ *
+ * When the wallet's witness cache is incomplete (e.g., after fast block generation
+ * or wallet restart), this function rebuilds the witness from scratch by scanning
+ * the blockchain and building the Sapling merkle tree.
+ *
+ * @param targetCm Note commitment to find
+ * @param targetHeight Block height where the note was created
+ * @param witnessOut Output: the computed witness
+ * @param anchorOut Output: the tree root (anchor)
+ * @return true if witness was successfully computed
+ */
+static bool ComputeWitnessForZKHUNote(
+    const uint256& targetCm,
+    int targetHeight,
+    SaplingWitness& witnessOut,
+    uint256& anchorOut)
+{
+    LOCK(cs_main);
+
+    // Build Sapling merkle tree from genesis up to current tip
+    SaplingMerkleTree saplingTree;
+    bool foundNote = false;
+    int notePosition = -1;
+
+    // Scan blocks from beginning to find our note and build the tree
+    for (int height = 1; height <= chainActive.Height(); height++) {
+        CBlockIndex* pindex = chainActive[height];
+        if (!pindex) continue;
+
+        CBlock block;
+        if (!ReadBlockFromDisk(block, pindex)) {
+            LogPrintf("ComputeWitnessForZKHUNote: Failed to read block at height %d\n", height);
+            return false;
+        }
+
+        // Process each transaction's Sapling outputs
+        for (const auto& tx : block.vtx) {
+            if (!tx->IsShieldedTx() || !tx->sapData) continue;
+
+            for (size_t i = 0; i < tx->sapData->vShieldedOutput.size(); i++) {
+                const uint256& cmu = tx->sapData->vShieldedOutput[i].cmu;
+
+                if (cmu == targetCm && !foundNote) {
+                    // This is our note - capture witness at this point
+                    saplingTree.append(cmu);
+                    witnessOut = saplingTree.witness();
+                    foundNote = true;
+                    notePosition = saplingTree.size() - 1;
+                    LogPrint(BCLog::KHU, "ComputeWitnessForZKHUNote: Found note at height %d, position %d\n",
+                             height, notePosition);
+                } else if (foundNote) {
+                    // Note already found - append to update witness
+                    saplingTree.append(cmu);
+                    witnessOut.append(cmu);
+                } else {
+                    // Haven't found our note yet - just build tree
+                    saplingTree.append(cmu);
+                }
+            }
+        }
+    }
+
+    if (!foundNote) {
+        LogPrintf("ComputeWitnessForZKHUNote: Note commitment not found in blockchain\n");
+        return false;
+    }
+
+    anchorOut = witnessOut.root();
+    LogPrint(BCLog::KHU, "ComputeWitnessForZKHUNote: Success - anchor=%s\n",
+             anchorOut.GetHex().substr(0, 16).c_str());
+
+    return true;
+}
 
 /**
  * khubalance - Get KHU wallet balance
@@ -250,14 +328,11 @@ static UniValue khumint(const JSONRPCRequest& request)
                      FormatMoney(nBalance), FormatMoney(nAmount)));
     }
 
-    CAmount nFee = 10000; // 0.0001 PIV minimum fee
-
-    CAmount nTotalRequired = nAmount + nFee;
-    if (nTotalRequired > nBalance) {
-        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
-            strprintf("Insufficient PIV for amount + fee. Have: %s, Need: %s",
-                     FormatMoney(nBalance), FormatMoney(nTotalRequired)));
-    }
+    // Fee calculation: use minRelayTxFee which matches block assembler requirements
+    // Block assembler requires fee >= blockMinTxFee.GetFee(txSize), which equals minRelayTxFee
+    const size_t BASE_TX_SIZE = 150; // base tx overhead (outputs, payload, etc.)
+    const size_t INPUT_SIZE = 180;   // estimated size per signed input
+    const CAmount MIN_TX_FEE = 10000; // Minimum relay fee (0.0001 PIV)
 
     CPubKey newKey;
     if (!pwallet->GetKeyFromPool(newKey, false)) {
@@ -286,21 +361,39 @@ static UniValue khumint(const JSONRPCRequest& request)
     // Output 1: KHU_T output
     mtx.vout.push_back(CTxOut(nAmount, khuScript));
 
-    // Select coins for input
+    // Select coins for input - first pass to estimate fee
     std::vector<COutput> vAvailableCoins;
     pwallet->AvailableCoins(&vAvailableCoins);
 
+    // Initial coin selection with estimated fee (use minRelayTxFee for block assembler compatibility)
+    size_t nInitialSize = BASE_TX_SIZE + INPUT_SIZE;
+    CAmount nEstimatedFee = std::max(MIN_TX_FEE, ::minRelayTxFee.GetFee(nInitialSize));
+    CAmount nTotalRequired = nAmount + nEstimatedFee;
     CAmount nValueIn = 0;
+    size_t nInputCount = 0;
+
     for (const COutput& out : vAvailableCoins) {
         if (nValueIn >= nTotalRequired) break;
 
         mtx.vin.push_back(CTxIn(out.tx->GetHash(), out.i));
         nValueIn += out.tx->tx->vout[out.i].nValue;
+        nInputCount++;
+
+        // Recalculate estimated fee based on actual input count (with minimum floor)
+        size_t nEstimatedSize = BASE_TX_SIZE + (nInputCount * INPUT_SIZE);
+        nEstimatedFee = std::max(MIN_TX_FEE, ::minRelayTxFee.GetFee(nEstimatedSize));
+        nTotalRequired = nAmount + nEstimatedFee;
     }
 
     if (nValueIn < nTotalRequired) {
-        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, "Unable to select sufficient coins");
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+            strprintf("Unable to select sufficient coins. Have: %s, Need: %s (including fee: %s)",
+                     FormatMoney(nValueIn), FormatMoney(nTotalRequired), FormatMoney(nEstimatedFee)));
     }
+
+    // Calculate final fee based on actual tx size (with minimum floor)
+    size_t nActualSize = BASE_TX_SIZE + (nInputCount * INPUT_SIZE);
+    CAmount nFee = std::max(MIN_TX_FEE, ::minRelayTxFee.GetFee(nActualSize));
 
     // Output 2: Change back to PIV (if any)
     CAmount nChange = nValueIn - nAmount - nFee;
@@ -405,17 +498,16 @@ static UniValue khuredeem(const JSONRPCRequest& request)
                      FormatMoney(nKHUBalance), FormatMoney(nAmount)));
     }
 
-    CAmount nFee = 10000; // 0.0001 PIV (paid from separate PIV input)
+    // ═══════════════════════════════════════════════════════════════════════
+    // FEE CALCULATION: Use minRelayTxFee which matches block assembler requirements
+    // Block assembler requires fee >= blockMinTxFee.GetFee(txSize), which equals minRelayTxFee
+    // ═══════════════════════════════════════════════════════════════════════
+    const size_t BASE_TX_SIZE = 150;    // Base tx overhead + payload
+    const size_t INPUT_SIZE = 180;      // Per input (signature + script)
+    const size_t OUTPUT_SIZE = 34;      // Per output (scriptPubKey + amount)
+    const CAmount MIN_TX_FEE = 10000;   // Minimum relay fee (0.0001 PIV)
 
-    // Check PIV balance for fee (separate from KHU)
-    CAmount nPIVBalance = pwallet->GetAvailableBalance();
-    if (nFee > nPIVBalance) {
-        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
-            strprintf("Insufficient PIV for fee: have %s, need %s",
-                     FormatMoney(nPIVBalance), FormatMoney(nFee)));
-    }
-
-    // Select KHU UTXOs (for redeem amount only)
+    // Select KHU UTXOs first to know input count
     CAmount nKHUValueIn = 0;
     std::vector<COutPoint> vKHUInputs;
 
@@ -434,6 +526,20 @@ static UniValue khuredeem(const JSONRPCRequest& request)
     if (nKHUValueIn < nAmount) {
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
             "Unable to select sufficient KHU UTXOs");
+    }
+
+    // Estimate tx size: KHU inputs + 1 PIV input + up to 3 outputs
+    size_t nEstimatedInputs = vKHUInputs.size() + 1;  // KHU + PIV for fee
+    size_t nEstimatedOutputs = 3;  // PIV output + KHU change + PIV change
+    size_t nEstimatedSize = BASE_TX_SIZE + (nEstimatedInputs * INPUT_SIZE) + (nEstimatedOutputs * OUTPUT_SIZE);
+    CAmount nFee = std::max(MIN_TX_FEE, ::minRelayTxFee.GetFee(nEstimatedSize));
+
+    // Check PIV balance for fee (separate from KHU)
+    CAmount nPIVBalance = pwallet->GetAvailableBalance();
+    if (nFee > nPIVBalance) {
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+            strprintf("Insufficient PIV for fee: have %s, need %s",
+                     FormatMoney(nPIVBalance), FormatMoney(nFee)));
     }
 
     // Select PIV UTXO for fee (smallest one >= fee)
@@ -465,6 +571,10 @@ static UniValue khuredeem(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
             "No suitable PIV UTXO found for fee payment");
     }
+
+    // Recalculate fee with actual input count (with minimum floor)
+    size_t nActualSize = BASE_TX_SIZE + ((vKHUInputs.size() + 1) * INPUT_SIZE) + (nEstimatedOutputs * OUTPUT_SIZE);
+    nFee = std::max(MIN_TX_FEE, ::minRelayTxFee.GetFee(nActualSize));
 
     CPubKey newKey;
     if (!pwallet->GetKeyFromPool(newKey, false)) {
@@ -1034,8 +1144,6 @@ static UniValue khustake(const JSONRPCRequest& request)
 
     // Check KHU balance (fee is paid in PIV, not KHU - per CLAUDE.md §2.1)
     CAmount nKHUBalance = GetKHUBalance(pwallet);
-    // Sapling STAKE transactions are ~1200-1500 bytes, need ~15000 satoshis at 10 sat/byte
-    CAmount nFee = 15000; // 0.00015 PIV
 
     if (nAmount > nKHUBalance) {
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
@@ -1043,15 +1151,18 @@ static UniValue khustake(const JSONRPCRequest& request)
                      FormatMoney(nKHUBalance), FormatMoney(nAmount)));
     }
 
-    // Check PIV balance for fee
-    CAmount nPIVBalance = pwallet->GetAvailableBalance();
-    if (nFee > nPIVBalance) {
-        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
-            strprintf("Insufficient PIV for fee: have %s, need %s",
-                     FormatMoney(nPIVBalance), FormatMoney(nFee)));
-    }
+    // ═══════════════════════════════════════════════════════════════════════
+    // FEE CALCULATION: Use shielded fee formula like PIVX Sapling transactions
+    // Formula: minRelayTxFee.GetFee(txSize) * K, where K = 100 for shielded tx
+    // See: validation.cpp GetShieldedTxMinFee()
+    // ═══════════════════════════════════════════════════════════════════════
+    const size_t BASE_SAPLING_TX_SIZE = 500;   // Base Sapling tx overhead
+    const size_t INPUT_SIZE = 180;              // Per transparent input
+    const size_t SAPLING_OUTPUT_SIZE = 948;     // Sapling shielded output (OutputDescription)
+    const size_t OUTPUT_SIZE = 34;              // Transparent output (change)
+    const unsigned int SHIELDED_FEE_K = 100;    // PIVX shielded tx fee multiplier
 
-    // Select KHU_T UTXOs (for stake amount only)
+    // Select KHU_T UTXOs first to know input count
     CAmount nKHUValueIn = 0;
     std::vector<COutPoint> vKHUInputs;
 
@@ -1070,6 +1181,21 @@ static UniValue khustake(const JSONRPCRequest& request)
     if (nKHUValueIn < nAmount) {
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
             "Unable to select sufficient KHU UTXOs");
+    }
+
+    // Estimate tx size: KHU inputs + 1 PIV input + 1 Sapling output + KHU change + PIV change
+    size_t nEstimatedInputs = vKHUInputs.size() + 1;  // KHU + PIV for fee
+    size_t nEstimatedSize = BASE_SAPLING_TX_SIZE + (nEstimatedInputs * INPUT_SIZE) +
+                            SAPLING_OUTPUT_SIZE + (2 * OUTPUT_SIZE);  // KHU + PIV change
+    // Use shielded fee: minRelayTxFee * K (same as PIVX Sapling transactions)
+    CAmount nFee = ::minRelayTxFee.GetFee(nEstimatedSize) * SHIELDED_FEE_K;
+
+    // Check PIV balance for fee
+    CAmount nPIVBalance = pwallet->GetAvailableBalance();
+    if (nFee > nPIVBalance) {
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+            strprintf("Insufficient PIV for fee: have %s, need %s",
+                     FormatMoney(nPIVBalance), FormatMoney(nFee)));
     }
 
     // Select PIV UTXO for fee (smallest one >= fee to minimize change)
@@ -1101,6 +1227,11 @@ static UniValue khustake(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
             "No suitable PIV UTXO found for fee payment");
     }
+
+    // Recalculate fee with actual input count (shielded formula)
+    size_t nActualSize = BASE_SAPLING_TX_SIZE + ((vKHUInputs.size() + 1) * INPUT_SIZE) +
+                         SAPLING_OUTPUT_SIZE + (2 * OUTPUT_SIZE);
+    nFee = ::minRelayTxFee.GetFee(nActualSize) * SHIELDED_FEE_K;
 
     // Generate or get Sapling address for ZKHU note
     libzcash::SaplingPaymentAddress saplingAddr;
@@ -1281,8 +1412,22 @@ static UniValue khuunstake(const JSONRPCRequest& request)
     }
 
     const uint32_t ZKHU_MATURITY_BLOCKS = 4320;
-    // Sapling UNSTAKE transactions are ~1200-1500 bytes, need ~15000 satoshis at 10 sat/byte
-    CAmount nFee = 15000; // 0.00015 PIV for Sapling tx
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // FEE CALCULATION: Use shielded fee formula like PIVX Sapling transactions
+    // Formula: minRelayTxFee.GetFee(txSize) * K, where K = 100 for shielded tx
+    // See: validation.cpp GetShieldedTxMinFee()
+    // ═══════════════════════════════════════════════════════════════════════
+    const size_t BASE_SAPLING_TX_SIZE = 500;    // Base Sapling tx overhead
+    const size_t INPUT_SIZE = 180;               // Per transparent input
+    const size_t SAPLING_SPEND_SIZE = 384;       // Sapling shielded spend (SpendDescription)
+    const size_t OUTPUT_SIZE = 34;               // Transparent output
+    const unsigned int SHIELDED_FEE_K = 100;     // PIVX shielded tx fee multiplier
+
+    // Estimate: 1 Sapling spend + 1 PIV input + 2 outputs (KHU + PIV change)
+    size_t nEstimatedSize = BASE_SAPLING_TX_SIZE + SAPLING_SPEND_SIZE + INPUT_SIZE + (2 * OUTPUT_SIZE);
+    // Use shielded fee: minRelayTxFee * K (same as PIVX Sapling transactions)
+    CAmount nFee = ::minRelayTxFee.GetFee(nEstimatedSize) * SHIELDED_FEE_K;
 
     // ═══════════════════════════════════════════════════════════════════════
     // CLAUDE.md §2.1: "Tous les frais KHU sont payés en PIV non-bloqué"
@@ -1403,21 +1548,23 @@ static UniValue khuunstake(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_WALLET_ERROR, "Spending key not found for note address");
     }
 
-    // Calculate yield bonus based on stake duration and R_annual
-    KhuGlobalState state;
-    uint16_t R_annual = 0;
-    if (GetCurrentKHUState(state)) {
-        R_annual = state.R_annual;
-    }
-
+    // Get actual accumulated yield from consensus database
+    // CRITICAL: The RPC MUST use the same yield value as consensus
+    // to avoid "output amount mismatch" errors during block validation
     int blocksStaked = targetNote->GetBlocksStaked(nCurrentHeight);
     uint32_t daysStaked = blocksStaked / 1440;
 
     CAmount yieldBonus = 0;
-    if (R_annual > 0 && daysStaked > 0) {
-        // Linear yield calculation: principal * R_annual/10000 * daysStaked/365
-        CAmount annualYield = (principal * R_annual) / 10000;
-        yieldBonus = (annualYield * daysStaked) / 365;
+    CZKHUTreeDB* zkhuDB = GetZKHUDB();
+    if (zkhuDB) {
+        ZKHUNoteData consensusNote;
+        if (zkhuDB->ReadNote(targetCm, consensusNote)) {
+            yieldBonus = consensusNote.Ur_accumulated;
+            LogPrint(BCLog::KHU, "khuunstake: Using consensus yield=%s for cm=%s\n",
+                     FormatMoney(yieldBonus), targetCm.GetHex().substr(0, 16).c_str());
+        } else {
+            LogPrintf("khuunstake: WARNING - note not found in consensus DB, yieldBonus=0\n");
+        }
     }
 
     // CLAUDE.md §2.1: Fee is separate in PIV, NOT deducted from KHU output
@@ -1435,10 +1582,50 @@ static UniValue khuunstake(const JSONRPCRequest& request)
     uint256 anchor;
     saplingMan->GetSaplingNoteWitnesses(ops, witnesses, anchor);
 
+    // Diagnostic: Check if STAKE tx is in wallet and has Sapling note data
+    {
+        auto wtxIt = pwallet->mapWallet.find(saplingOp.hash);
+        if (wtxIt == pwallet->mapWallet.end()) {
+            LogPrintf("khuunstake: DIAGNOSTIC - STAKE tx NOT in mapWallet! txid=%s\n",
+                      saplingOp.hash.GetHex().substr(0, 16));
+        } else {
+            const CWalletTx& wtx = wtxIt->second;
+            LogPrintf("khuunstake: DIAGNOSTIC - STAKE tx in mapWallet, txid=%s, "
+                      "mapSaplingNoteData.size=%zu, IsShieldedTx=%d\n",
+                      saplingOp.hash.GetHex().substr(0, 16),
+                      wtx.mapSaplingNoteData.size(),
+                      wtx.tx->IsShieldedTx() ? 1 : 0);
+
+            auto ndIt = wtx.mapSaplingNoteData.find(saplingOp);
+            if (ndIt == wtx.mapSaplingNoteData.end()) {
+                LogPrintf("khuunstake: DIAGNOSTIC - SaplingOutPoint NOT in mapSaplingNoteData\n");
+            } else {
+                LogPrintf("khuunstake: DIAGNOSTIC - SaplingOutPoint in mapSaplingNoteData, "
+                          "witnesses.size=%zu, witnessHeight=%d\n",
+                          ndIt->second.witnesses.size(),
+                          ndIt->second.witnessHeight);
+            }
+        }
+    }
+
+    SaplingWitness witness;
+    bool usedFallback = false;
     if (witnesses.empty() || !witnesses[0]) {
-        throw JSONRPCError(RPC_WALLET_ERROR,
-            "Missing witness for ZKHU note. The witness cache may be incomplete. "
-            "Try restarting the wallet or running a rescan.");
+        // Fallback: compute witness by scanning blockchain
+        // TODO: Realign ZKHU on standard Sapling note/witness pipeline
+        //       (FindMySaplingNotes + IncrementNoteWitnesses)
+        //       This fallback is temporary for testing.
+        LogPrintf("khuunstake: WITNESS_SOURCE=FALLBACK (wallet cache miss), computing from blockchain...\n");
+        usedFallback = true;
+
+        if (!ComputeWitnessForZKHUNote(targetCm, targetNote->nConfirmedHeight, witness, anchor)) {
+            throw JSONRPCError(RPC_WALLET_ERROR,
+                "Failed to compute witness for ZKHU note. The note may not exist in the blockchain. "
+                "Try running 'khurescannotes' or restarting the wallet.");
+        }
+    } else {
+        LogPrintf("khuunstake: WITNESS_SOURCE=STANDARD_PIPELINE (wallet cache hit)\n");
+        witness = witnesses[0].get();
     }
 
     // Build transaction using TransactionBuilder
@@ -1454,7 +1641,7 @@ static UniValue khuunstake(const JSONRPCRequest& request)
     builder.SetExtraPayload(std::vector<uint8_t>(payloadStream.begin(), payloadStream.end()));
 
     // Add the Sapling spend (ZKHU note)
-    builder.AddSaplingSpend(sk.expsk, note, anchor, witnesses[0].get());
+    builder.AddSaplingSpend(sk.expsk, note, anchor, witness);
 
     // Add PIV transparent input for fee (CLAUDE.md §2.1)
     builder.AddTransparentInput(pivFeeInput, pivFeeScript, nPIVInputValue);
@@ -1466,14 +1653,14 @@ static UniValue khuunstake(const JSONRPCRequest& request)
     }
     builder.AddTransparentOutput(newKey.GetID(), totalKHUOutput);
 
-    // Add PIV change output if needed
-    if (nPIVChange > 0) {
-        CPubKey pivChangeKey;
-        if (!pwallet->GetKeyFromPool(pivChangeKey, false)) {
-            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for PIV change");
-        }
-        builder.AddTransparentOutput(pivChangeKey.GetID(), nPIVChange);
+    // Set transparent change address for PIV change (let builder handle it)
+    // The builder will calculate: change = valueBalance - fee + tIns - tOuts
+    // For UNSTAKE: change = principal - fee + PIVinput - (principal) = PIVinput - fee
+    CPubKey pivChangeKey;
+    if (!pwallet->GetKeyFromPool(pivChangeKey, true)) {
+        throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for PIV change");
     }
+    builder.SendChangeTo(pivChangeKey.GetID());
 
     // Build with dummy signatures first
     TransactionBuilderResult buildResult = builder.Build(true);
@@ -1516,6 +1703,312 @@ static UniValue khuunstake(const JSONRPCRequest& request)
     result.pushKV("fee", ValueFromAmount(nFee));
     result.pushKV("stake_duration_blocks", blocksStaked);
     result.pushKV("stake_duration_days", (double)daysStaked);
+
+    return result;
+}
+
+/**
+ * khudiagnostics - Comprehensive KHU state diagnostic (wallet-only, read-only)
+ *
+ * Returns a unified view of KHU state from both consensus and wallet perspectives.
+ * Useful for debugging wallet/consensus mismatches.
+ *
+ * NO STATE MODIFICATION - pure read operation.
+ */
+static UniValue khudiagnostics(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() > 1) {
+        throw std::runtime_error(
+            "khudiagnostics ( verbose )\n"
+            "\nReturns comprehensive KHU diagnostic information.\n"
+            "\nThis command is READ-ONLY and does NOT modify any state.\n"
+            "Useful for debugging wallet/consensus synchronization issues.\n"
+            "\nArguments:\n"
+            "1. verbose    (boolean, optional, default=false) Include detailed UTXO/note lists\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"consensus_state\": {         (object) State from KhuGlobalState\n"
+            "    \"C\": n,                    (numeric) PIV collateral\n"
+            "    \"U\": n,                    (numeric) KHU_T transparent supply\n"
+            "    \"Z\": n,                    (numeric) ZKHU shielded supply\n"
+            "    \"Cr\": n,                   (numeric) Reward pool\n"
+            "    \"Ur\": n,                   (numeric) Reward rights\n"
+            "    \"T\": n,                    (numeric) DAO Treasury\n"
+            "    \"R_annual_pct\": n,         (numeric) Annual yield rate %\n"
+            "    \"height\": n,               (numeric) State height\n"
+            "    \"invariants_ok\": true|false\n"
+            "  },\n"
+            "  \"wallet_khu_utxos\": {        (object) KHU_T UTXOs in wallet\n"
+            "    \"count\": n,                (numeric) Number of UTXOs\n"
+            "    \"total\": n,                (numeric) Sum of UTXO amounts\n"
+            "    \"by_origin\": {             (object) Breakdown by parent tx type\n"
+            "      \"mint\": n,\n"
+            "      \"redeem_change\": n,\n"
+            "      \"stake_change\": n,\n"
+            "      \"unstake\": n,\n"
+            "      \"other\": n\n"
+            "    },\n"
+            "    \"utxos\": [ ... ]           (array, if verbose) Detailed UTXO list\n"
+            "  },\n"
+            "  \"wallet_staked_notes\": {     (object) ZKHU notes in wallet\n"
+            "    \"count\": n,                (numeric) Total note count\n"
+            "    \"total\": n,                (numeric) Sum of note amounts (principal)\n"
+            "    \"mature_count\": n,         (numeric) Mature notes (>= 4320 blocks)\n"
+            "    \"mature_total\": n,         (numeric) Sum of mature note amounts\n"
+            "    \"immature_count\": n,       (numeric) Immature notes (< 4320 blocks)\n"
+            "    \"immature_total\": n,       (numeric) Sum of immature note amounts\n"
+            "    \"notes\": [ ... ]           (array, if verbose) Detailed note list\n"
+            "  },\n"
+            "  \"sync_status\": {             (object) Wallet/consensus sync check\n"
+            "    \"wallet_U_matches_consensus\": true|false,\n"
+            "    \"wallet_Z_matches_consensus\": true|false,\n"
+            "    \"wallet_U\": n,             (numeric) Wallet's view of U\n"
+            "    \"consensus_U\": n,          (numeric) Consensus U\n"
+            "    \"wallet_Z\": n,             (numeric) Wallet's view of Z\n"
+            "    \"consensus_Z\": n,          (numeric) Consensus Z\n"
+            "    \"discrepancy_U\": n,        (numeric) Difference (wallet - consensus)\n"
+            "    \"discrepancy_Z\": n         (numeric) Difference (wallet - consensus)\n"
+            "  }\n"
+            "}\n"
+            "\nExamples:\n"
+            + HelpExampleCli("khudiagnostics", "")
+            + HelpExampleCli("khudiagnostics", "true")
+            + HelpExampleRpc("khudiagnostics", "true")
+        );
+    }
+
+    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!pwallet) {
+        throw JSONRPCError(RPC_WALLET_NOT_FOUND, "Wallet not found");
+    }
+
+    bool fVerbose = false;
+    if (!request.params[0].isNull()) {
+        // Accept both boolean and integer (for CLI compatibility)
+        if (request.params[0].isBool()) {
+            fVerbose = request.params[0].get_bool();
+        } else if (request.params[0].isNum()) {
+            fVerbose = (request.params[0].get_int() != 0);
+        } else if (request.params[0].isStr()) {
+            std::string val = request.params[0].get_str();
+            fVerbose = (val == "true" || val == "1");
+        }
+    }
+
+    LOCK2(cs_main, pwallet->cs_wallet);
+
+    int nCurrentHeight = chainActive.Height();
+    const uint32_t ZKHU_MATURITY_BLOCKS = 4320;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 1: Consensus State (from KhuGlobalState)
+    // ═══════════════════════════════════════════════════════════════════════
+    UniValue consensusState(UniValue::VOBJ);
+    KhuGlobalState state;
+    bool hasState = GetCurrentKHUState(state);
+
+    if (hasState) {
+        consensusState.pushKV("C", ValueFromAmount(state.C));
+        consensusState.pushKV("U", ValueFromAmount(state.U));
+        consensusState.pushKV("Z", ValueFromAmount(state.Z));
+        consensusState.pushKV("Cr", ValueFromAmount(state.Cr));
+        consensusState.pushKV("Ur", ValueFromAmount(state.Ur));
+        consensusState.pushKV("T", ValueFromAmount(state.T));
+        consensusState.pushKV("R_annual_pct", state.R_annual / 100.0);
+        consensusState.pushKV("height", (int64_t)state.nHeight);
+        consensusState.pushKV("invariants_ok", state.CheckInvariants());
+    } else {
+        consensusState.pushKV("C", 0);
+        consensusState.pushKV("U", 0);
+        consensusState.pushKV("Z", 0);
+        consensusState.pushKV("Cr", 0);
+        consensusState.pushKV("Ur", 0);
+        consensusState.pushKV("T", 0);
+        consensusState.pushKV("R_annual_pct", 0.0);
+        consensusState.pushKV("height", nCurrentHeight);
+        consensusState.pushKV("invariants_ok", true);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 2: Wallet KHU UTXOs (from mapKHUCoins)
+    // ═══════════════════════════════════════════════════════════════════════
+    UniValue walletUtxos(UniValue::VOBJ);
+    CAmount totalUtxoAmount = 0;
+    int utxoCount = 0;
+
+    // Track origin by looking at parent transaction type
+    CAmount fromMint = 0;
+    CAmount fromRedeemChange = 0;
+    CAmount fromStakeChange = 0;
+    CAmount fromUnstake = 0;
+    CAmount fromOther = 0;
+
+    UniValue utxoList(UniValue::VARR);
+
+    for (const auto& pair : pwallet->khuData.mapKHUCoins) {
+        const COutPoint& outpoint = pair.first;
+        const KHUCoinEntry& entry = pair.second;
+
+        // Skip staked UTXOs (they're tracked separately as ZKHU notes)
+        if (entry.coin.fStaked) continue;
+
+        totalUtxoAmount += entry.coin.amount;
+        utxoCount++;
+
+        // Determine origin by looking up parent tx type
+        std::string origin = "unknown";
+        const CWalletTx* parentWtx = pwallet->GetWalletTx(outpoint.hash);
+        if (parentWtx && parentWtx->tx) {
+            CTransaction::TxType txType = static_cast<CTransaction::TxType>(parentWtx->tx->nType);
+            switch (txType) {
+                case CTransaction::TxType::KHU_MINT:
+                    origin = "mint";
+                    fromMint += entry.coin.amount;
+                    break;
+                case CTransaction::TxType::KHU_REDEEM:
+                    origin = "redeem_change";
+                    fromRedeemChange += entry.coin.amount;
+                    break;
+                case CTransaction::TxType::KHU_STAKE:
+                    origin = "stake_change";
+                    fromStakeChange += entry.coin.amount;
+                    break;
+                case CTransaction::TxType::KHU_UNSTAKE:
+                    origin = "unstake";
+                    fromUnstake += entry.coin.amount;
+                    break;
+                default:
+                    origin = "other";
+                    fromOther += entry.coin.amount;
+                    break;
+            }
+        } else {
+            fromOther += entry.coin.amount;
+        }
+
+        if (fVerbose) {
+            UniValue utxoObj(UniValue::VOBJ);
+            utxoObj.pushKV("txid", outpoint.hash.GetHex());
+            utxoObj.pushKV("vout", (int64_t)outpoint.n);
+            utxoObj.pushKV("amount", ValueFromAmount(entry.coin.amount));
+            utxoObj.pushKV("confirmed_height", (int64_t)entry.nConfirmedHeight);
+            utxoObj.pushKV("origin", origin);
+            utxoList.push_back(utxoObj);
+        }
+    }
+
+    walletUtxos.pushKV("count", utxoCount);
+    walletUtxos.pushKV("total", ValueFromAmount(totalUtxoAmount));
+
+    UniValue byOrigin(UniValue::VOBJ);
+    byOrigin.pushKV("mint", ValueFromAmount(fromMint));
+    byOrigin.pushKV("redeem_change", ValueFromAmount(fromRedeemChange));
+    byOrigin.pushKV("stake_change", ValueFromAmount(fromStakeChange));
+    byOrigin.pushKV("unstake", ValueFromAmount(fromUnstake));
+    byOrigin.pushKV("other", ValueFromAmount(fromOther));
+    walletUtxos.pushKV("by_origin", byOrigin);
+
+    if (fVerbose) {
+        walletUtxos.pushKV("utxos", utxoList);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 3: Wallet Staked Notes (from mapZKHUNotes)
+    // ═══════════════════════════════════════════════════════════════════════
+    UniValue walletNotes(UniValue::VOBJ);
+    int noteCount = 0;
+    int matureCount = 0;
+    int immatureCount = 0;
+    CAmount totalNoteAmount = 0;
+    CAmount matureAmount = 0;
+    CAmount immatureAmount = 0;
+
+    UniValue noteList(UniValue::VARR);
+
+    for (const auto& pair : pwallet->khuData.mapZKHUNotes) {
+        const uint256& cm = pair.first;
+        const ZKHUNoteEntry& entry = pair.second;
+
+        // Skip spent notes
+        if (entry.fSpent) continue;
+
+        noteCount++;
+        totalNoteAmount += entry.amount;
+
+        bool isMature = entry.IsMature(nCurrentHeight);
+        int blocksStaked = entry.GetBlocksStaked(nCurrentHeight);
+
+        if (isMature) {
+            matureCount++;
+            matureAmount += entry.amount;
+        } else {
+            immatureCount++;
+            immatureAmount += entry.amount;
+        }
+
+        if (fVerbose) {
+            UniValue noteObj(UniValue::VOBJ);
+            noteObj.pushKV("cm", cm.GetHex());
+            noteObj.pushKV("amount", ValueFromAmount(entry.amount));
+            noteObj.pushKV("stake_height", (int64_t)entry.nStakeStartHeight);
+            noteObj.pushKV("blocks_staked", blocksStaked);
+            noteObj.pushKV("is_mature", isMature);
+            if (!isMature) {
+                noteObj.pushKV("blocks_to_mature", (int64_t)(ZKHU_MATURITY_BLOCKS - blocksStaked));
+            }
+            noteList.push_back(noteObj);
+        }
+    }
+
+    walletNotes.pushKV("count", noteCount);
+    walletNotes.pushKV("total", ValueFromAmount(totalNoteAmount));
+    walletNotes.pushKV("mature_count", matureCount);
+    walletNotes.pushKV("mature_total", ValueFromAmount(matureAmount));
+    walletNotes.pushKV("immature_count", immatureCount);
+    walletNotes.pushKV("immature_total", ValueFromAmount(immatureAmount));
+
+    if (fVerbose) {
+        walletNotes.pushKV("notes", noteList);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 4: Sync Status (compare wallet vs consensus)
+    // ═══════════════════════════════════════════════════════════════════════
+    UniValue syncStatus(UniValue::VOBJ);
+
+    CAmount walletU = totalUtxoAmount;  // Wallet's view of U (transparent KHU)
+    CAmount walletZ = totalNoteAmount;  // Wallet's view of Z (staked ZKHU)
+    CAmount consensusU = hasState ? state.U : 0;
+    CAmount consensusZ = hasState ? state.Z : 0;
+
+    // Note: Wallet's view may not match consensus if:
+    // - Wallet doesn't track ALL KHU UTXOs (e.g., sent to other addresses)
+    // - Pending transactions not yet confirmed
+    // - Wallet needs rescan
+    // This is expected - wallet tracks only OUR UTXOs, consensus tracks ALL
+
+    syncStatus.pushKV("wallet_U", ValueFromAmount(walletU));
+    syncStatus.pushKV("consensus_U", ValueFromAmount(consensusU));
+    syncStatus.pushKV("wallet_Z", ValueFromAmount(walletZ));
+    syncStatus.pushKV("consensus_Z", ValueFromAmount(consensusZ));
+    syncStatus.pushKV("discrepancy_U", ValueFromAmount(walletU - consensusU));
+    syncStatus.pushKV("discrepancy_Z", ValueFromAmount(walletZ - consensusZ));
+
+    // Match check: wallet should be <= consensus (wallet tracks OUR coins only)
+    // A mismatch (wallet > consensus) indicates a bug
+    bool uOk = (walletU <= consensusU);
+    bool zOk = (walletZ <= consensusZ);
+    syncStatus.pushKV("wallet_U_valid", uOk);
+    syncStatus.pushKV("wallet_Z_valid", zOk);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Build final result
+    // ═══════════════════════════════════════════════════════════════════════
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("consensus_state", consensusState);
+    result.pushKV("wallet_khu_utxos", walletUtxos);
+    result.pushKV("wallet_staked_notes", walletNotes);
+    result.pushKV("sync_status", syncStatus);
 
     return result;
 }
@@ -1613,6 +2106,8 @@ static const CRPCCommand khuWalletCommands[] = {
     { "khu",        "khustake",               &khustake,                  false,  {"amount"} },
     { "khu",        "khuunstake",             &khuunstake,                false,  {"note_commitment"} },
     { "khu",        "khuliststaked",          &khuliststaked,             true,   {} },
+    // Diagnostics (read-only)
+    { "khu",        "khudiagnostics",         &khudiagnostics,            true,   {"verbose"} },
 };
 
 void RegisterKHUWalletRPCCommands(CRPCTable& t)

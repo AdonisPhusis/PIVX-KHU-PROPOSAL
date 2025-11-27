@@ -40,6 +40,31 @@ struct SaplingNoteEntry
     int confirmations;
 };
 
+/**
+ * KHU Stake Metadata - tags Sapling notes that are ZKHU stakes
+ * This allows the standard Sapling witness pipeline to track KHU stake notes
+ * alongside regular Shield notes.
+ */
+struct KHUStakeMeta
+{
+    bool is_khu_stake{false};       // True if this note is a KHU_STAKE
+    uint32_t stake_height{0};       // Block height when stake was created
+    bool is_mature{false};          // True if maturity period (4320 blocks) passed
+
+    SERIALIZE_METHODS(KHUStakeMeta, obj)
+    {
+        READWRITE(obj.is_khu_stake);
+        READWRITE(obj.stake_height);
+        READWRITE(obj.is_mature);
+    }
+
+    friend bool operator==(const KHUStakeMeta& a, const KHUStakeMeta& b) {
+        return (a.is_khu_stake == b.is_khu_stake &&
+                a.stake_height == b.stake_height &&
+                a.is_mature == b.is_mature);
+    }
+};
+
 class SaplingNoteData
 {
 public:
@@ -97,6 +122,12 @@ public:
      */
     Optional<uint256> nullifier;
 
+    /**
+     * KHU Stake Metadata - identifies this note as a ZKHU stake note
+     * Set when a KHU_STAKE transaction is detected in FindMySaplingNotes
+     */
+    KHUStakeMeta khu_stake_meta;
+
     SERIALIZE_METHODS(SaplingNoteData, obj)
     {
         int nVersion = s.GetVersion();
@@ -110,6 +141,7 @@ public:
         READWRITE(obj.amount);
         READWRITE(obj.address);
         READWRITE(obj.memo);
+        READWRITE(obj.khu_stake_meta);
     }
 
     friend bool operator==(const SaplingNoteData& a, const SaplingNoteData& b) {
@@ -118,7 +150,8 @@ public:
                 a.witnessHeight == b.witnessHeight &&
                 a.amount == b.amount &&
                 a.address == b.address &&
-                a.memo == b.memo);
+                a.memo == b.memo &&
+                a.khu_stake_meta == b.khu_stake_meta);
     }
 
     friend bool operator!=(const SaplingNoteData& a, const SaplingNoteData& b) {

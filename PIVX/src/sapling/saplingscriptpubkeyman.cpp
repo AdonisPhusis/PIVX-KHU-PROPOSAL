@@ -357,6 +357,23 @@ void SaplingScriptPubKeyMan::IncrementNoteWitnesses(const CBlockIndex* pindex,
                     SaplingNoteData* nd = &ndIt->second;
                     ::WitnessNoteIfMine(nd, chainHeight, nWitnessCacheSize, saplingTreeRes.witness());
                     inBlockArrivingNotes.emplace_back(std::make_pair(wtx, nd));
+
+                    // Update stake_height for KHU_STAKE notes when first witnessed
+                    // This happens when the STAKE tx is confirmed in a block
+                    if (nd->khu_stake_meta.is_khu_stake) {
+                        // Set stake_height if not already set (first confirmation)
+                        if (nd->khu_stake_meta.stake_height == 0) {
+                            nd->khu_stake_meta.stake_height = chainHeight;
+                            LogPrint(BCLog::KHU, "IncrementNoteWitnesses: KHU_STAKE note confirmed, "
+                                     "txid=%s, stake_height=%d, witnesses.size=%zu\n",
+                                     hash.ToString().substr(0, 16), chainHeight, nd->witnesses.size());
+                        } else {
+                            LogPrint(BCLog::KHU, "IncrementNoteWitnesses: processing KHU_STAKE note, "
+                                     "txid=%s, height=%d, stake_height=%d, witnesses.size=%zu\n",
+                                     hash.ToString().substr(0, 16), chainHeight,
+                                     nd->khu_stake_meta.stake_height, nd->witnesses.size());
+                        }
+                    }
                 }
             }
         }
@@ -551,6 +568,17 @@ std::pair<mapSaplingNoteData_t, SaplingIncomingViewingKeyMap> SaplingScriptPubKe
             if (memo[0] < 0xF6) {
                 nd.memo = memo;
             }
+
+            // Tag KHU_STAKE notes for the standard Sapling witness pipeline
+            // This allows IncrementNoteWitnesses to maintain witnesses for ZKHU stake notes
+            if (tx.nType == CTransaction::TxType::KHU_STAKE) {
+                nd.khu_stake_meta.is_khu_stake = true;
+                nd.khu_stake_meta.stake_height = 0;  // Will be set when tx is confirmed
+                nd.khu_stake_meta.is_mature = false;
+                LogPrint(BCLog::KHU, "FindMySaplingNotes: detected KHU_STAKE note, txid=%s, op.n=%d\n",
+                         hash.ToString().substr(0, 16), i);
+            }
+
             noteData.insert(std::make_pair(op, nd));
             break;
         }

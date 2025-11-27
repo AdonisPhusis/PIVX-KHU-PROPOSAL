@@ -223,14 +223,21 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
         LogPrintf("%s: KHU_UNSTAKE detected, txid=%s, vout.size=%zu\n",
                   __func__, txhash.ToString().substr(0, 16).c_str(), tx->vout.size());
 
-        // UNSTAKE creates KHU_T output (Phase 8b)
-        for (size_t i = 0; i < tx->vout.size(); ++i) {
-            const CTxOut& out = tx->vout[i];
+        // UNSTAKE creates:
+        // - vout[0] = KHU_T output (the unstaked principal + yield)
+        // - vout[1] = PIV change (fee change) - NOT KHU, do not track
+        //
+        // Only track vout[0] as KHU coin
+        if (tx->vout.size() > 0) {
+            const CTxOut& out = tx->vout[0];
             if (::IsMine(*pwallet, out.scriptPubKey) != ISMINE_NO) {
                 CKHUUTXO coin(out.nValue, out.scriptPubKey, nHeight);
-                AddKHUCoinToWallet(pwallet, COutPoint(txhash, i), coin, nHeight);
+                AddKHUCoinToWallet(pwallet, COutPoint(txhash, 0), coin, nHeight);
+                LogPrint(BCLog::KHU, "%s: added KHU output %s:0 = %s\n",
+                         __func__, txhash.GetHex().substr(0, 16).c_str(), FormatMoney(out.nValue));
             }
         }
+        // vout[1] if present is PIV fee change - NOT tracked as KHU
 
         // BUG 5 FIX: Mark the ZKHU note as spent
         // Since we know the UNSTAKE transaction amount, find and mark the matching note
@@ -277,17 +284,20 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
     else if (tx->nType == CTransaction::TxType::KHU_REDEEM) {
         // REDEEM structure (from khuredeem RPC):
         // - vout[0] = PIV destination (redeemed amount) - NOT KHU
-        // - vout[1] = KHU_T change (if any) - THIS IS KHU
-        // - vout[2] = PIV fee change (if any) - NOT KHU
+        // - vout[1] = KHU_T change (if any) OR PIV fee change if no KHU change
+        // - vout[2] = PIV fee change (if KHU change exists) - NOT KHU
+        //
+        // BUG FIX: vout[1] is KHU change ONLY if there are 3+ outputs.
+        // If there are exactly 2 outputs, vout[1] is PIV fee change, NOT KHU.
         //
         // STEP 1 above already removed spent KHU inputs.
-        // Now we need to track the KHU change output at vout[1] if present.
 
         LogPrint(BCLog::KHU, "%s: KHU_REDEEM detected, vout.size=%zu\n", __func__, tx->vout.size());
 
         // vout[0] is always PIV (the redeemed amount) - skip it
-        // vout[1] if present is KHU change
-        if (tx->vout.size() >= 2) {
+        // vout[1] is KHU change ONLY if vout.size() >= 3 (meaning PIV change is at vout[2])
+        // If vout.size() == 2, then vout[1] is PIV fee change, NOT KHU
+        if (tx->vout.size() >= 3) {
             const CTxOut& khuChangeOut = tx->vout[1];
             isminetype mine = ::IsMine(*pwallet, khuChangeOut.scriptPubKey);
             if (mine != ISMINE_NO) {
@@ -296,6 +306,9 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
                 LogPrint(BCLog::KHU, "%s: added KHU change from REDEEM %s:1 = %s\n",
                          __func__, txhash.GetHex().substr(0, 16).c_str(), FormatMoney(khuChangeOut.nValue));
             }
+        } else {
+            LogPrint(BCLog::KHU, "%s: KHU_REDEEM has no KHU change (vout.size=%zu, vout[1] is PIV change)\n",
+                     __func__, tx->vout.size());
         }
         // vout[2+] are PIV fee change - NOT tracked as KHU
     }
