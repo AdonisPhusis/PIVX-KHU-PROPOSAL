@@ -1,6 +1,6 @@
 # 05 — PIVX-V6-KHU ROADMAP (FINAL)
 
-**Dernière mise à jour:** 2025-11-25
+**Dernière mise à jour:** 2025-11-27
 **Status Global:** Phases 1-8 COMPLÈTES - PRÊT POUR TESTNET
 
 Roadmap claire, simple, technique, sans dates, uniquement en PHASES NUMÉROTÉES et DURÉES EN BLOCS.
@@ -45,11 +45,8 @@ Phase 8: Wallet/RPC         ✅ (all RPCs implemented)
   - REDEEM (KHU brûlés → PIV créés)
   - Aucun BURN KHU (seul REDEEM détruit du KHU)
 - Créer le tracker UTXO KHU_T.
-- Tous les frais PIVX sont BRÛLÉS.
-- Implémenter l'émission PIVX déflationnaire :
-  - year = (height – activation_height) / 525600
-  - reward_year = max(6 – year, 0)
-  - staker = mn = dao = reward_year.
+- Tous les frais PIVX payés en PIV.
+- Block reward = 0 PIV dès activation V6 (zéro émission immédiate).
 - RPC : getkhuglobalstate.
 
 ### Résultat
@@ -183,7 +180,7 @@ KHU fonctionne comme actif collatéralisé 1:1.
   │  (3m+2j)    │ 2 sem  │ 2 sem │
   ```
 - R% ∈ [0, R_MAX_DYNAMIC]
-- R_MAX_DYNAMIC = max(400, 3700 – year×100) // Décroit 37%→4% sur 33 ans
+- R_MAX_DYNAMIC = max(700, 4000 – year×100) // Décroit 40%→7% sur 33 ans
 - Activation automatique tous les 172800 blocs
 
 **Formule yield (quotidien):**
@@ -206,7 +203,7 @@ Ur -= Y             // yield consommé des droits
 **6.2 — DAO Budget Automatique (NOUVEAU)**
 - **Budget accumulé QUOTIDIENNEMENT** (unifié avec yield, 1440 blocs):
   ```
-  T_daily = (U + Ur) / 182500  // 2% annuel
+  T_daily = (U × R_annual) / 10000 / 20 / 365  // ~2% annuel avec T_DIVISOR=20
   ```
 - **Distribution contrôlée par vote MN (Phase 7):**
   - Propositions DAO soumises (projets dev, marketing, infra)
@@ -214,7 +211,7 @@ Ur -= Y             // yield consommé des droits
   - Proposition acceptée → payé depuis T
   - Proposition rejetée → T conservé
 
-**Accumulation annuelle:** 2%/an de (U + Ur)
+**Accumulation annuelle:** ~2%/an de U (via R_annual / 20)
 
 **Gouvernance:**
 - Masternodes = gouvernants (vote R% + propositions DAO)
@@ -224,13 +221,12 @@ Ur -= Y             // yield consommé des droits
 ✅ **IMPLÉMENTÉ ET VALIDÉ**
 - Daily yield engine opérationnel (1440 blocks)
 - DOMC commit-reveal fonctionnel (172800 block cycles)
-- DAO Treasury accumulation quotidienne (T += (U+Ur)/182500 = 2%/an)
+- DAO Treasury accumulation quotidienne (T = U×R%/20/365 ≈ 2%/an)
 - RPC opérationnels: domccommit, domcreveal, getkhustate
 - Mempool + P2P fonctionnels pour TX DOMC
 - Tests: 36 unitaires + 6 globaux (100% PASS)
-- Création monétaire programmable & décentralisée
-- Financement DAO perpétuel (post année-6 où émission PIVX = 0)
-- Mécanisme déflationniste (burn si propositions rejetées - Phase 7)
+- Création monétaire via R% (yield ZKHU)
+- Financement DAO via T (Treasury accumule dès V6)
 - Équilibre des pouvoirs (MN votent, stakers sanctionnent économiquement)
 
 ---------------------------------------
@@ -309,6 +305,17 @@ Ur -= Y             // yield consommé des droits
 - `mapZKHUNotes` / `mapZKHUNullifiers` in wallet
 - WalletDB persistence (prefix "zkhunote")
 
+### Phase 8c — Diagnostics (✅ COMPLETED)
+
+**RPC Commands:**
+- ✅ `khudiagnostics [verbose]` - Comprehensive wallet/consensus diagnostic
+
+**Output:**
+- `consensus_state`: C, U, Z, Cr, Ur, T, R%, height, invariants_ok
+- `wallet_khu_utxos`: count, total, breakdown by origin (mint/redeem/stake/unstake)
+- `wallet_staked_notes`: count, mature/immature breakdown
+- `sync_status`: wallet vs consensus comparison, discrepancy detection
+
 ### Legacy RPC (Phase 6)
 - ✅ `getkhustate` - Lecture état global KHU
 - ✅ `getkhustatecommitment` - Lecture commitment finality
@@ -363,20 +370,20 @@ SI TESTNET OK → MAINNET.
 **STATUT : ⏳ PLANNED**
 
 Activation du système complet :
-- Emission PIVX 6→0 active.
-- DOMC actif.
-- Finalité masternode.
-- Cr/Ur actifs.
-- Sapling staking-only.
+- Block reward = 0 PIV (zéro émission dès V6).
+- DOMC actif (gouvernance R%).
+- Finalité masternode (LLMQ 12 blocs).
+- Yield R% actif (Cr/Ur).
+- Sapling staking-only (ZKHU).
 - HTLC cross-chain.
-- Fees brûlés.
-- CD et CDr garantis.
+- DAO Treasury (T) accumule.
+- Invariants C==U+Z et Cr==Ur garantis.
 
 ---------------------------------------
 
 ## RÉCAPITULATIF: CE QUI RESTE POUR LE TESTNET
 
-### État Actuel (2025-11-25)
+### État Actuel (2025-11-27)
 ```
 ✅ COMPLÉTÉ:
    - Phase 1-8: Toutes les phases de développement complètes
@@ -412,22 +419,25 @@ Activation du système complet :
    ├── khuunstake [commitment]  ZKHU → KHU_T + yield
    └── khuliststaked            Liste notes ZKHU
 
+   Phase 8c - Diagnostics:
+   └── khudiagnostics [verbose] Debug wallet/consensus sync
+
 🎯 PRÊT POUR TESTNET
 ```
 
 ### Étapes Restantes pour Testnet
 
-#### ÉTAPE 1: Validation Regtest ⏳ (PROCHAINE ÉTAPE)
+#### ÉTAPE 1: Validation Regtest ✅ (COMPLÉTÉ 2025-11-27)
 ```bash
-# Exécuter le script de démonstration
-cd /home/ubuntu/PIVX-V6-KHU
-./test_khu_regtest_demo.sh
+# Tests validés avec khudiagnostics
+pivx-cli khudiagnostics  # Vérifie sync wallet/consensus
 ```
-- [ ] Script s'exécute sans erreur
-- [ ] DAO Treasury > 0 après cycle
-- [ ] Invariants préservés (C==U+Z, Cr==Ur, T≥0)
-- [ ] Transactions MINT/STAKE/UNSTAKE fonctionnelles
-- [ ] Tests reorg en regtest
+- [x] Pipeline complet MINT→STAKE→UNSTAKE→REDEEM fonctionne
+- [x] DAO Treasury accumule (T > 0 après blocs)
+- [x] Invariants préservés (C==U+Z, Cr==Ur, T≥0)
+- [x] Wallet tracking correct (wallet_U == consensus_U)
+- [x] Persistance après restart daemon
+- [x] Edge cases validés (REDEEM avec change, multiple STAKE)
 
 #### ÉTAPE 3: Préparation Infrastructure Testnet (2-4 semaines)
 - [ ] Configurer 3-5 seed nodes testnet
@@ -501,9 +511,16 @@ PHASE 8b - Shielded ZKHU (✅ COMPLETED)
 [x] ZKHU note tracking (mapZKHUNotes)
 [x] WalletDB persistence (zkhunote prefix)
 
-À FAIRE (VALIDATION)
-[ ] Test regtest cycle complet
-[ ] Test MINT/STAKE/UNSTAKE/REDEEM flow
+PHASE 8c - Diagnostics (✅ COMPLETED)
+[x] khudiagnostics - Wallet/consensus sync debug
+[x] Verbose mode with detailed UTXO/note lists
+[x] Discrepancy detection (wallet > consensus = bug)
+
+VALIDATION REGTEST (✅ COMPLETED 2025-11-27)
+[x] Test regtest cycle complet
+[x] Test MINT/STAKE/UNSTAKE/REDEEM flow
+[x] Edge cases: REDEEM avec change, multiple STAKE
+[x] Persistance après restart
 
 À FAIRE (INFRASTRUCTURE)
 [ ] Seed nodes testnet

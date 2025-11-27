@@ -396,8 +396,18 @@ UniValue getdomcstatus(const JSONRPCRequest& request);
 ### 10.4 ZKHU
 
 ```cpp
-UniValue listzkhubalance(const JSONRPCRequest& request);
-UniValue getzkhuinfo(const JSONRPCRequest& request);
+UniValue khustake(const JSONRPCRequest& request);     // KHU_T → ZKHU
+UniValue khuunstake(const JSONRPCRequest& request);   // ZKHU → KHU_T + yield
+UniValue khuliststaked(const JSONRPCRequest& request);// Liste notes ZKHU
+```
+
+### 10.5 Diagnostics
+
+```cpp
+UniValue khudiagnostics(const JSONRPCRequest& request);
+// Output: consensus_state, wallet_khu_utxos, wallet_staked_notes, sync_status
+// Verbose mode: detailed UTXO/note lists
+// sync_status: détection discrepancy wallet > consensus = bug
 ```
 
 ---
@@ -443,11 +453,11 @@ int64_t daily = (note.amount / 10000) * R_annual / 365;
 ```cpp
 void AccumulateDaoTreasury(KhuGlobalState& state) {
     // Utiliser __int128 pour calculs intermédiaires
-    __int128 total = (__int128)state.U + (__int128)state.Ur;
-    __int128 budget = total / 182500;
+    // T_daily = (U × R_annual) / 10000 / T_DIVISOR / 365
+    __int128 daily = (__int128)state.U * state.R_annual / 10000 / T_DIVISOR / 365;
 
-    if (budget > MAX_MONEY) budget = MAX_MONEY;
-    state.T += (CAmount)budget;
+    if (daily > MAX_MONEY) daily = MAX_MONEY;
+    state.T += (CAmount)daily;
 }
 ```
 

@@ -223,7 +223,7 @@ const uint16_t T_DIVISOR = 8;                   // T = U × R% / 8 / 365 (~5% at
 
 ---
 
-## 7. STRUCTURE KhuGlobalState
+## 7. STRUCTURE KhuGlobalState (18 champs)
 
 ```cpp
 struct KhuGlobalState {
@@ -240,18 +240,19 @@ struct KhuGlobalState {
     int64_t T;                      // DAO Treasury Pool (satoshis)
 
     // DOMC parameters (Updated 2025-11-27)
-    uint16_t R_annual;              // Basis points (0-4000), INITIAL = 4000 (40%)
-    uint16_t R_MAX_dynamic;         // max(700, 4000 - year*100) → 40%→7% sur 33 ans
-    uint32_t last_domc_height;
+    uint32_t R_annual;              // Current R% (basis points 0-4000), INITIAL = 4000 (40%)
+    uint32_t R_next;                // Next R% after REVEAL (visible during ADAPTATION, 0 if not set)
+    uint32_t R_MAX_dynamic;         // max(700, 4000 - year*100) → 40%→7% sur 33 ans
 
-    // DOMC cycle (Updated 2025-11-25)
+    // Yield scheduler
+    uint32_t last_yield_update_height;
+    int64_t last_yield_amount;      // For exact undo
+
+    // DOMC cycle (Updated 2025-11-27)
     uint32_t domc_cycle_start;
     uint32_t domc_cycle_length;          // 172800 blocks (4 mois)
     uint32_t domc_commit_phase_start;    // cycle_start + 132480
     uint32_t domc_reveal_deadline;       // cycle_start + 152640
-
-    // Yield scheduler
-    uint32_t last_yield_update_height;
 
     // Chain tracking
     uint32_t nHeight;
@@ -380,10 +381,9 @@ daily = (principal * R_annual) / 10000 / 365;
 
 ### Architecture
 ```
-❌ Pas d'interpolation émission (transition brutale entre années)
 ❌ Pas de yield avant maturity (4320 blocs)
-❌ Pas de DOMC sur émission PIVX (DOMC gouverne R% uniquement)
 ❌ Pas de reorg > 12 blocs (finality LLMQ)
+❌ Block reward post-V6 = 0 (pas de transition progressive)
 ```
 
 ---
@@ -544,16 +544,32 @@ V6 + 33 ans:
 ## 12.3 DAO TREASURY (T) — RÈGLE CRITIQUE (Updated 2025-11-27)
 
 > ⚠️ **T s'accumule selon U × R% / 8, quotidiennement (même timing que Yield).**
+> ⚠️ **IMPORTANT: T est en PIV satoshis, PAS en KHU satoshis!**
 
 ### Formule T (FINAL)
 ```cpp
 // T indexé sur activité économique (U) et R%
 // Diviseur = 8 → donne ~5% de U par an quand R%=40%
-T_daily = (U * R_annual) / 10000 / 8 / 365;
+// IMPORTANT: T est en PIV, pas KHU!
+T_daily = (U * R_annual) / 10000 / 8 / 365;  // PIV satoshis
 
-// Exemple: U=1M, R%=40% (4000 bp)
+// Exemple: U=1M KHU, R%=40% (4000 bp)
 // T_daily = (1M × 4000) / 10000 / 8 / 365 = 1,369.86 PIV/jour
-// T_annual = 1,369.86 × 365 = 500,000 PIV = 5% of U
+// T_annual = 1,369.86 × 365 = 500,000 PIV = 5% équivalent de U
+```
+
+### Pourquoi T en PIV?
+```
+Si T était en KHU, lors du paiement DAO:
+  T -= paiement (KHU)
+  Bénéficiaire reçoit KHU SANS collateral PIV
+  → C reste identique, mais U augmente
+  → C ≠ U + Z  ← VIOLATION INVARIANT!
+
+Solution: T en PIV
+  - T s'accumule virtuellement (indexé sur U × R%)
+  - Paiement DAO = PIV créé ex-nihilo (inflation PIV contrôlée)
+  - AUCUN impact sur C/U/Z (invariants préservés)
 ```
 
 ### Timing
@@ -579,10 +595,12 @@ Trigger: tous les 1440 blocs (1 jour)
 
 ### Propriétés
 - **T >= 0** (invariant)
+- **T en PIV** (pas KHU - CRITIQUE pour invariants!)
 - **T indexé sur U** (activité économique transparente)
 - **T proportionnel à R%** (même levier que yield)
 - **Diviseur 8** → T représente ~1/8ème du yield total (~5% at R=40%)
 - **Post-V6**: T seule source de funding DAO (block reward = 0)
+- **Paiement DAO**: T → PIV directement (pas de conversion KHU)
 
 ---
 
@@ -600,21 +618,33 @@ src/consensus/params.h        → UPGRADE_KHU activation
 
 ---
 
-## 14. RPC COMMANDS (Phase 8)
+## 14. RPC COMMANDS (Phase 8) — ✅ TOUS IMPLÉMENTÉS
 
-### Implémentés
-- `getkhustate` — État global KHU
+### Consensus (Phase 6)
+- `getkhustate` — État global KHU (C, U, Z, Cr, Ur, T, R%)
 - `getkhustatecommitment` — Hash state commitment
 - `domccommit` / `domcreveal` — Votes DOMC
 
-### À implémenter (BLOQUANT pour testnet)
-- `mintkhu <amount>` — PIV → KHU_T
-- `redeemkhu <amount>` — KHU_T → PIV
-- `stakekhu <amount>` — KHU_T → ZKHU
-- `unstakekhu <nullifier>` — ZKHU → KHU_T
-- `sendkhu <address> <amount>` — Transfer KHU_T
-- `getkhubalance` — Balance wallet
-- `listkhuunspent` — Liste UTXOs KHU
+### Transparent KHU_T (Phase 8a)
+- `khumint <amount>` — PIV → KHU_T
+- `khuredeem <amount>` — KHU_T → PIV
+- `khusend <address> <amount>` — Transfer KHU_T
+- `khubalance` — Balance wallet KHU
+- `khulistunspent` — Liste UTXOs KHU_T
+- `khurescan` — Rescan blockchain pour KHU
+- `khugetinfo` — Info générale wallet KHU
+
+### Shielded ZKHU (Phase 8b)
+- `khustake <amount>` — KHU_T → ZKHU
+- `khuunstake [commitment]` — ZKHU → KHU_T + yield
+- `khuliststaked` — Liste notes ZKHU avec maturité
+
+### Diagnostics (Phase 8c)
+- `khudiagnostics [verbose]` — Debug wallet/consensus sync
+  - `consensus_state`: C, U, Z, Cr, Ur, T, R%, invariants
+  - `wallet_khu_utxos`: count, total, breakdown by origin
+  - `wallet_staked_notes`: count, mature/immature
+  - `sync_status`: wallet vs consensus comparison
 
 ---
 
@@ -639,7 +669,7 @@ test/functional/test_runner.py khu*
 L'ordre de sérialisation de `GetHash()` est **IMMUABLE**:
 
 ```cpp
-// Ces 17 champs dans CET ORDRE EXACT (Updated 2025-11-26)
+// Ces 18 champs dans CET ORDRE EXACT (Updated 2025-11-27)
 ss << C;
 ss << U;
 ss << Z;                           // ZKHU supply shielded (stocké, pas calculé)
@@ -647,6 +677,7 @@ ss << Cr;
 ss << Ur;
 ss << T;                           // DAO Treasury (Phase 6.3)
 ss << R_annual;
+ss << R_next;                      // Next R% after REVEAL (visible during ADAPTATION)
 ss << R_MAX_dynamic;
 ss << last_yield_update_height;
 ss << last_yield_amount;           // For exact undo
@@ -707,7 +738,7 @@ Avant chaque commit, vérifier:
 - [ ] `CheckInvariants()` appelé après mutations
 - [ ] Pas de code entre mutations atomiques (C/U, Cr/Ur)
 - [ ] Yield AVANT transactions dans ConnectBlock
-- [ ] Formule émission `max(6-year,0)` respectée
+- [ ] Block reward = 0 post-V6 (vérifié dans GetBlockValue)
 - [ ] Tests passent: `make check`
 
 ---
@@ -724,10 +755,162 @@ En cas d'incertitude sur une implémentation:
 
 ---
 
-**Version:** 2.0
+## 21. ZONES DE DÉVELOPPEMENT (Post-Pipeline)
+
+> ⚠️ **Le pipeline KHU est considéré FONCTIONNEL à partir du 2025-11-27.**
+> Les règles suivantes s'appliquent pour tout développement ultérieur.
+
+### 21.1 🔒 ZONE GELÉE — Intouchable sans validation architecte
+
+**Ces fichiers/fonctions ne peuvent PAS être modifiés sans demande explicite de l'architecte:**
+
+#### Consensus KHU
+```
+❌ ApplyKHUMint / ApplyKHUStake / ApplyKHUUnstake / ApplyKHURedeem
+❌ ProcessKHUBlock, arbres Merkle, invariants (C, U, Z, Cr, Ur, T)
+❌ Émission / inflation / règles de bloc
+❌ Pipeline Sapling côté consensus
+❌ Structure KhuGlobalState / règles de calcul yield
+❌ Types de transactions (KHU_MINT / KHU_STAKE / KHU_UNSTAKE / KHU_REDEEM)
+```
+
+#### Fichiers gelés
+```
+src/khu/khu_validation.cpp      → ProcessKHUTransaction
+src/khu/khu_state.h/cpp         → KhuGlobalState
+src/khu/khu_yield.cpp           → Calcul yield
+src/validation.cpp              → ConnectBlock (partie KHU)
+src/consensus/params.h          → Paramètres V6
+```
+
+### 21.2 ✅ ZONE AUTORISÉE — Modifications permises
+
+**Tu peux intervenir librement sur:**
+
+```
+✅ wallet/khu_wallet.cpp         → Gestion wallet KHU
+✅ wallet/rpc_khu.cpp            → Commandes RPC wallet
+✅ wallet/wallet.cpp             → Intégration KHU côté wallet UNIQUEMENT
+✅ sapling/saplingscriptpubkeyman.{h,cpp} → Micro-ajustements (pas de refonte)
+✅ Scripts de test (test_khu_*.sh, tests unitaires KHU)
+✅ Documentation / tooling / logs
+```
+
+**Règle:** 1 patch = 1 sujet, toujours accompagné d'un test.
+
+### 21.3 📋 ROADMAP Post-Pipeline
+
+#### Phase A: Stabilisation & Nettoyage
+- [ ] Réduire logs KHU verbeux → `LogPrint(BCLog::KHU, ...)` uniquement aux endroits critiques
+- [ ] Messages d'erreur RPC clairs pour l'utilisateur (pas de jargon: anchor, nullifier, etc.)
+- [ ] Vérifier cohérence messages entre RPC
+
+#### Phase B: Outils de Debug / UX
+- [ ] Ajouter RPC `khudiagnostics`:
+  - Récap état global (C, U, Z, Cr, Ur, T)
+  - Nombre de notes stakées + maturité
+  - Statut witness (STANDARD_PIPELINE vs FALLBACK)
+- [ ] Script test court: MINT → STAKE → yield → UNSTAKE → REDEEM
+
+#### Phase C: Robustesse Wallet
+- [ ] Vérifier comportement après `-rescan`
+- [ ] Vérifier comportement après redémarrage wallet
+- [ ] Vérifier comportement après réorg courte
+- [ ] Objectif: fallback witness uniquement dans cas "bordel", JAMAIS casser le consensus
+
+---
+
+## 22. STYLE DE DÉVELOPPEMENT IMPOSÉ
+
+### Règles Absolues
+
+```
+1. Tu ne touches JAMAIS au consensus sans validation architecte
+2. Tu ne changes PAS la sémantique des RPC existants (seulement messages, robustesse, tests)
+3. Chaque modif:
+   - Patch petit et ciblé
+   - Résumé en 2 lignes max dans le commit/diff
+   - Accompagné d'un test regtest ou scénario clair
+4. Si tu as un doute → tu poses la question AVANT d'écrire du code
+```
+
+### Format de Commit
+
+```
+<type>(<scope>): <description courte>
+
+<corps optionnel - 2-3 lignes max>
+
+Test: <commande ou scénario de test>
+```
+
+Types: `fix`, `feat`, `refactor`, `test`, `docs`, `chore`
+Scope: `khu-wallet`, `khu-rpc`, `khu-tests`, `khu-docs`
+
+### Exemple
+
+```
+fix(khu-rpc): Clarify error message for immature unstake
+
+Replace technical "maturity blocks remaining" with user-friendly
+"X days until unstake available".
+
+Test: ./test_khu_pipeline.sh (unstake before maturity)
+```
+
+---
+
+## 23. PIPELINE ZKHU WITNESS (Implémenté 2025-11-27)
+
+### Architecture
+
+Les notes ZKHU utilisent le pipeline Sapling standard pour les witnesses:
+
+```
+FindMySaplingNotes (détection)
+        ↓
+    Tag KHU_STAKE note avec khu_stake_meta
+        ↓
+IncrementNoteWitnesses (mise à jour)
+        ↓
+    Set stake_height à la confirmation
+    Mise à jour witness à chaque bloc
+        ↓
+GetSaplingNoteWitnesses (récupération)
+        ↓
+    UNSTAKE utilise witness du cache wallet
+```
+
+### Fichiers Concernés
+
+```
+sapling/saplingscriptpubkeyman.h   → KHUStakeMeta structure
+sapling/saplingscriptpubkeyman.cpp → FindMySaplingNotes (tag KHU)
+                                   → IncrementNoteWitnesses (stake_height)
+wallet/rpc_khu.cpp                 → ComputeWitnessForZKHUNote (fallback)
+```
+
+### Logs de Diagnostic
+
+Avec `-debug=khu`:
+```
+FindMySaplingNotes: detected KHU_STAKE note, txid=xxx, op.n=0
+IncrementNoteWitnesses: KHU_STAKE note confirmed, txid=xxx, stake_height=252
+khuunstake: WITNESS_SOURCE=STANDARD_PIPELINE (wallet cache hit)
+khuunstake: WITNESS_SOURCE=FALLBACK (wallet cache miss)
+```
+
+### Fallback Witness
+
+Si le wallet cache n'a pas le witness (ex: après rescan), `ComputeWitnessForZKHUNote()` reconstruit le witness en scannant la blockchain. Ce fallback est temporaire et ne devrait être utilisé que dans des cas exceptionnels.
+
+---
+
+**Version:** 2.1
 **Date:** 2025-11-27
-**Status:** ACTIF - FINAL KHU V6 SPEC
+**Status:** ACTIF - POST-PIPELINE STABILIZATION
 **Changelog:**
+- v2.1: Ajout zones gelées/autorisées, roadmap post-pipeline, style dev imposé, doc witness pipeline
 - v2.0: FINAL KHU V6 - Block reward=0 post-V6, R%=40%→7% sur 33 ans, T=U×R%/20/365
 - v1.7: TxType corrigés (6-11 au lieu de 10-17), DOMC_COMMIT/REVEAL séparés, alignement code/doc vérifié
 - v1.6: Simplification structure docs (SPEC, ARCHITECTURE, ROADMAP, IMPLEMENTATION), dossier comprendre/ pour normies, archive/
