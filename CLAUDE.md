@@ -1,6 +1,6 @@
 # CLAUDE.md — PIVX-V6-KHU Development Context
 
-**Last Sync:** 2025-11-26
+**Last Sync:** 2025-11-27
 **Documents Synchronized:** SPEC.md, ARCHITECTURE.md, ROADMAP.md, IMPLEMENTATION.md, blueprints/*
 
 ---
@@ -141,7 +141,7 @@ bool ConnectBlock(...) {
 }
 ```
 
-**Note:** T accumulation (2%/an) et Yield (R%) sont unifiés dans `ApplyDailyUpdatesIfNeeded()` — tous les 1440 blocs.
+**Note:** T accumulation (~5%/an at R=40%) et Yield (R%) sont unifiés dans `ApplyDailyUpdatesIfNeeded()` — tous les 1440 blocs.
 
 **CRITIQUE: Daily updates AVANT transactions (jamais l'inverse)**
 
@@ -197,18 +197,28 @@ const uint32_t BLOCKS_PER_YEAR = 525600;
 const uint32_t MATURITY_BLOCKS = 4320;          // 3 jours
 const uint32_t FINALITY_DEPTH = 12;             // LLMQ finality
 
-// DOMC Cycle (Updated 2025-11-25)
+// DOMC Cycle (Updated 2025-11-27)
 const uint32_t DOMC_CYCLE_LENGTH = 172800;      // 4 mois (~120 jours)
 const uint32_t DOMC_COMMIT_OFFSET = 132480;     // Début phase commit
 const uint32_t DOMC_REVEAL_OFFSET = 152640;     // Début phase reveal
 const uint32_t DOMC_PHASE_DURATION = 20160;     // Durée commit/reveal (~2 semaines)
 
-// Emission (formule sacrée)
-int64_t reward_year = std::max(6 - (int64_t)year, 0LL) * COIN;
-// Cette formule est IMMUABLE - pas d'interpolation, pas de table
+// V6 Emission (FINAL - Updated 2025-11-27)
+// Block reward = 0 après activation V6
+// Toute l'économie est gouvernée par R%
+const int64_t POST_V6_BLOCK_REWARD = 0;
 
-// R_MAX_dynamic
-uint16_t R_MAX = std::max(400, 3700 - year * 100);  // Décroît 37%→4% sur 33 ans
+// R% Parameters (FINAL - Updated 2025-11-27)
+const uint16_t R_INITIAL = 4000;                // 40% initial (4000 basis points)
+const uint16_t R_FLOOR = 700;                   // 7% plancher (700 basis points)
+const uint16_t R_DECAY_PER_YEAR = 100;          // -1%/an (100 basis points)
+const uint16_t R_YEARS_TO_FLOOR = 33;           // Atteint en 33 ans
+
+// R_MAX_dynamic calculation
+uint16_t R_MAX = std::max(700, 4000 - year * 100);  // Décroît 40%→7% sur 33 ans
+
+// T (DAO Treasury) divisor
+const uint16_t T_DIVISOR = 8;                   // T = U × R% / 8 / 365 (~5% at R=40%)
 ```
 
 ---
@@ -229,9 +239,9 @@ struct KhuGlobalState {
     // DAO Treasury (Phase 6)
     int64_t T;                      // DAO Treasury Pool (satoshis)
 
-    // DOMC parameters
-    uint16_t R_annual;              // Basis points (0-3700), INITIAL = 3700 (37%)
-    uint16_t R_MAX_dynamic;         // max(400, 3700 - year*100) → 37%→4% sur 33 ans
+    // DOMC parameters (Updated 2025-11-27)
+    uint16_t R_annual;              // Basis points (0-4000), INITIAL = 4000 (40%)
+    uint16_t R_MAX_dynamic;         // max(700, 4000 - year*100) → 40%→7% sur 33 ans
     uint32_t last_domc_height;
 
     // DOMC cycle (Updated 2025-11-25)
@@ -310,19 +320,39 @@ struct KhuGlobalState {
 
 ---
 
-## 11. EMISSION PIVX (-1/an)
+## 11. MODÈLE ÉCONOMIQUE V6 (FINAL - Updated 2025-11-27)
 
-| Année | reward_year | Par bloc (3 rôles) |
-|-------|-------------|-------------------|
-| 0     | 6 PIV       | 18 PIV           |
-| 1     | 5 PIV       | 15 PIV           |
-| 2     | 4 PIV       | 12 PIV           |
-| 3     | 3 PIV       | 9 PIV            |
-| 4     | 2 PIV       | 6 PIV            |
-| 5     | 1 PIV       | 3 PIV            |
-| 6+    | 0 PIV       | 0 PIV            |
+### Post-V6: Block Reward = 0
 
-**Formule:** `max(6 - year, 0)` — IMMUABLE, pas d'interpolation
+À l'activation V6, le block reward passe à **ZÉRO**. L'économie est entièrement gouvernée par R%.
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  POST-V6: ÉCONOMIE GOUVERNÉE PAR R%                                │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Block Reward = 0 PIV (aucune émission)                           │
+│                                                                     │
+│  Yield (ZKHU):    Z × R% / 365 par jour                           │
+│  Treasury (T):    U × R% / 8 / 365 par jour (~5% at R=40%)          │
+│                                                                     │
+│  R% voté par MN via DOMC (cycles 4 mois)                          │
+│  R_MAX décroît: 40% → 7% sur 33 ans                               │
+│                                                                     │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### Timeline R_MAX
+
+| Année | R_MAX   | Inflation max* |
+|-------|---------|----------------|
+| 0     | 40%     | ~10.5%         |
+| 10    | 30%     | ~7.9%          |
+| 20    | 20%     | ~5.3%          |
+| 30    | 10%     | ~2.6%          |
+| 33+   | 7%      | ~1.84%         |
+
+*Inflation max calculée avec scénario 50/50 (KHU=50% PIV, ZKHU=50% KHU)
 
 ---
 
@@ -396,7 +426,41 @@ CAmount dailyYield = (note.amount * R_annual) / 10000 / 365;
 
 ---
 
-## 12.1 CLARIFICATION R% — RÈGLE CRITIQUE
+## 12.1 CLARIFICATION R% — RÈGLE CRITIQUE (Updated 2025-11-27)
+
+### Cycle DOMC (4 mois = 172800 blocs)
+
+```
+R% ACTIF PENDANT 4 MOIS COMPLETS (jamais interrompu)
+
+0────────────132480────────152640────────172800
+│              │              │              │
+│              │    VOTE      │  ADAPTATION  │
+│              │  (2 sem)     │   (2 sem)    │
+│              │   commits    │              │
+│              │   secrets    │  REVEAL      │
+│              │              │  instantané  │
+│              │              │  ↓           │
+│              │              │  Futur R%    │
+│              │              │  visible     │
+│                                            │
+├────────────────────────────────────────────┤
+│     R% ACTIF PENDANT TOUT LE CYCLE         │
+│              (4 mois)                      │
+└────────────────────────────────────────────┴─────►
+                                             │
+                                   Nouveau R% activé
+```
+
+**Le processus:**
+1. **R% actif 4 mois complets** (jamais interrompu)
+2. **Mois 1-3**: R% actif, pas de vote
+3. **Semaines 13-14**: VOTE (commits secrets), R% toujours actif
+4. **Bloc 152640**: REVEAL instantané → futur R% visible
+5. **Semaines 15-16**: ADAPTATION (tout le monde s'adapte au futur R%)
+6. **Bloc 172800**: Nouveau R% activé automatiquement
+
+### R% Uniforme pour Tous
 
 > ⚠️ **R% est GLOBAL et IDENTIQUE pour TOUS les stakers à un instant T.**
 
@@ -407,12 +471,24 @@ CAmount dailyYield = (note.amount * R_annual) / 10000 / 365;
   - Charlie (staké depuis 1 jour)   → reçoit X%
 ```
 
-**Ce n'est PAS une "dilution des stakers".**
-**C'est une "dilution des arbitrageurs tardifs":**
+### R_MAX — Plafond qui Décroît
 
-- R% diminue au fil du temps (37% → 4% sur 33 ans via DOMC/R_MAX)
-- Un arbitrageur qui arrive TARD reçoit un R% plus faible que s'il était arrivé tôt
-- Mais à un instant donné, TOUS les stakers actifs reçoivent le MÊME taux
+```
+R_MAX = max(7%, 40% - année×1%)
+
+Année 0:   R_MAX = 40%  → MN peuvent voter entre 0% et 40%
+Année 10:  R_MAX = 30%  → MN peuvent voter entre 0% et 30%
+Année 20:  R_MAX = 20%  → MN peuvent voter entre 0% et 20%
+Année 33+: R_MAX = 7%   → MN peuvent voter entre 0% et 7% (plancher)
+```
+
+### Résumé
+
+| Élément | Qui décide? | Comment? |
+|---------|-------------|----------|
+| **R%** (taux réel) | Masternodes | Vote tous les 4 mois |
+| **R_MAX** (plafond) | Protocole | Décroît automatiquement |
+| **Mise à jour R%** | Automatique | Appliqué à la fin du cycle |
 
 ```cpp
 // Code source (khu_yield.cpp ligne 114):
@@ -422,91 +498,91 @@ CAmount dailyYield = CalculateDailyYieldForNote(note.amount, R_annual);
 
 ---
 
-## 12.2 ACTIVATION V6 ET R% — RÈGLE CRITIQUE
+## 12.2 ACTIVATION V6 — RÈGLE CRITIQUE (Updated 2025-11-27)
 
-> ⚠️ **À l'activation V6, DEUX systèmes démarrent EN PARALLÈLE:**
+> ⚠️ **À l'activation V6, l'économie passe entièrement sous gouvernance R%.**
 
-### Système 1: Émission PIVX (Block Reward)
+### Modèle Simplifié Post-V6
 ```
-- 6/6/6 PIV par bloc (Staker/MN/DAO)
-- Décroît de 1 PIV/an: 6→5→4→3→2→1→0
-- Formule: max(6 - year, 0) × COIN
-- IMMUABLE - pas de vote possible
+Block Reward = 0 PIV (aucune émission traditionnelle)
+
+Yield:    Z × R% / 365 par jour
+Treasury: U × R% / 20 / 365 par jour
+
+R% = seul levier économique, voté par MN via DOMC
 ```
 
-### Système 2: Yield KHU (R%)
+### Paramètres R%
 ```
-- R% = 37% initial (3700 basis points)
+- R% initial = 40% (4000 basis points)
 - Actif IMMÉDIATEMENT à l'activation V6
 - Premier cycle DOMC démarre à V6 + 172800 blocs (4 mois)
 - Après 4 mois, les MN votent pour ajuster R%
-- R_MAX_dynamic = max(400, 3700 - year×100) // 37%→4% sur 33 ans
+- R_MAX_dynamic = max(700, 4000 - year×100) // 40%→7% sur 33 ans
 - R% RESTE ACTIF pendant les phases commit/reveal
 ```
 
 ### Timeline
 ```
 V6 Activation:
-  ├─ Émission: 6/6/6 PIV/bloc démarre
-  ├─ R%: 37% actif immédiatement
-  └─ DOMC: Premier cycle dans 4 mois
+  ├─ Block Reward: 0 PIV/bloc
+  ├─ R%: 40% actif immédiatement
+  ├─ Yield: Z × R% / 365
+  └─ Treasury: U × R% / 20 / 365
 
 V6 + 4 mois (172800 blocs):
   └─ DOMC: Premier vote MN pour R%
 
-V6 + 6 ans:
-  ├─ Émission: 0/0/0 PIV/bloc
-  └─ R%: Continue via DOMC (R_MAX → 4% minimum)
+V6 + 33 ans:
+  └─ R_MAX: 7% (plancher atteint)
 ```
 
-**Ces deux systèmes sont INDÉPENDANTS et ADDITIFS.**
+**R% = levier unique de gouvernance économique.**
 
 ---
 
-## 12.3 DAO TREASURY (T) — RÈGLE CRITIQUE
+## 12.3 DAO TREASURY (T) — RÈGLE CRITIQUE (Updated 2025-11-27)
 
-> ⚠️ **T s'accumule à 2% par an, quotidiennement (même timing que Yield).**
+> ⚠️ **T s'accumule selon U × R% / 8, quotidiennement (même timing que Yield).**
 
-### Formule T
+### Formule T (FINAL)
 ```cpp
-// 2% annual = 200 basis points / 365 days
-T_daily = (U + Ur) / 182500;  // ~0.00548% par jour
+// T indexé sur activité économique (U) et R%
+// Diviseur = 8 → donne ~5% de U par an quand R%=40%
+T_daily = (U * R_annual) / 10000 / 8 / 365;
+
+// Exemple: U=1M, R%=40% (4000 bp)
+// T_daily = (1M × 4000) / 10000 / 8 / 365 = 1,369.86 PIV/jour
+// T_annual = 1,369.86 × 365 = 500,000 PIV = 5% of U
 ```
 
 ### Timing
 ```
 T et Yield sont unifiés dans ApplyDailyUpdatesIfNeeded():
-  1. T += (U + Ur) / 182500    // DAO Treasury (GLOBAL)
-  2. Pour chaque note: yield  // Staking Yield (INDIVIDUEL)
+  1. T += U × R% / 8 / 365       // DAO Treasury (GLOBAL, ~5% at R=40%)
+  2. Pour chaque note: yield     // Staking Yield (INDIVIDUEL)
 
 Trigger: tous les 1440 blocs (1 jour)
 ```
 
 ### T vs YIELD — Distinction Critique
 ```
-┌──────────────┬─────────────────────┬──────────────────────────┐
-│ Métrique     │ T (DAO Treasury)    │ YIELD (Staking R%)       │
-├──────────────┼─────────────────────┼──────────────────────────┤
-│ Calcul       │ GLOBAL (1×)         │ INDIVIDUEL (par note)    │
-│ Base         │ (U + Ur) total      │ note.amount              │
-│ Formule      │ (U+Ur) / 182500     │ note.amt × R / 10000/365 │
-│ Destination  │ state.T             │ note.accumulated + Cr/Ur │
-└──────────────┴─────────────────────┴──────────────────────────┘
-```
-
-### Transition DAO (Année 1+)
-```
-Année 0:   DAO = 6 PIV/bloc + T accumule
-Année 1:   DAO = 5 PIV/bloc + T disponible pour proposals
-Année 2-5: DAO emission décroît, T devient source principale
-Année 6+:  DAO = 0 PIV/bloc → T seule source de funding
+┌──────────────┬─────────────────────────┬──────────────────────────┐
+│ Métrique     │ T (DAO Treasury)        │ YIELD (Staking R%)       │
+├──────────────┼─────────────────────────┼──────────────────────────┤
+│ Calcul       │ GLOBAL (1×)             │ INDIVIDUEL (par note)    │
+│ Base         │ U (transparent supply)  │ note.amount (ZKHU)       │
+│ Formule      │ U × R% / 8 / 365        │ note.amt × R% / 365      │
+│ Destination  │ state.T                 │ note.accumulated + Cr/Ur │
+└──────────────┴─────────────────────────┴──────────────────────────┘
 ```
 
 ### Propriétés
 - **T >= 0** (invariant)
-- **T indépendant de C/U/Cr/Ur** (pas d'impact sur invariants principaux)
-- **Phase 6**: Accumulation uniquement
-- **Phase 7**: Spending via DAO proposals (MN vote)
+- **T indexé sur U** (activité économique transparente)
+- **T proportionnel à R%** (même levier que yield)
+- **Diviseur 8** → T représente ~1/8ème du yield total (~5% at R=40%)
+- **Post-V6**: T seule source de funding DAO (block reward = 0)
 
 ---
 
@@ -648,10 +724,11 @@ En cas d'incertitude sur une implémentation:
 
 ---
 
-**Version:** 1.7
-**Date:** 2025-11-26
-**Status:** ACTIF
+**Version:** 2.0
+**Date:** 2025-11-27
+**Status:** ACTIF - FINAL KHU V6 SPEC
 **Changelog:**
+- v2.0: FINAL KHU V6 - Block reward=0 post-V6, R%=40%→7% sur 33 ans, T=U×R%/20/365
 - v1.7: TxType corrigés (6-11 au lieu de 10-17), DOMC_COMMIT/REVEAL séparés, alignement code/doc vérifié
 - v1.6: Simplification structure docs (SPEC, ARCHITECTURE, ROADMAP, IMPLEMENTATION), dossier comprendre/ pour normies, archive/
 - v1.5: Ajout section 12.0 MATURITY explicite (3 jours, aucun yield avant), Y (Yield) au lieu de B (Bonus), calcul yield détaillé

@@ -1,7 +1,7 @@
 # 06 — YIELD R% BLUEPRINT
 
-**Date:** 2025-11-22
-**Version:** 1.0
+**Date:** 2025-11-27
+**Version:** 2.0
 **Status:** CANONIQUE (IMMUABLE)
 
 ---
@@ -485,22 +485,43 @@ void OnZKHUUnstake(const uint256& nullifier) {
 
 ## 5. GOUVERNANCE R% (DOMC)
 
-### 5.1 R_MAX_dynamic (Bornes Décroissantes)
+### 5.1 Principe de Gouvernance R%
 
-**R% est borné par R_MAX_dynamic qui décroît avec le temps.**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  R%     = Taux de yield, VOTÉ par les masternodes               │
+│  R_MAX  = Plafond du vote, DÉCROÎT AUTOMATIQUEMENT (-1%/an)    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. Les MN votent pour R% entre 0% et R_MAX                    │
+│  2. Après le vote → R% MIS À JOUR AUTOMATIQUEMENT              │
+│  3. R_MAX décroît: 40% → 7% sur 33 ans (plancher)              │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+| Élément | Qui décide? | Comment? |
+|---------|-------------|----------|
+| **R%** (taux réel) | Masternodes | Vote tous les 4 mois |
+| **R_MAX** (plafond) | Protocole | Décroît automatiquement |
+| **Mise à jour R%** | Automatique | Appliqué à la fin du cycle |
+```
+
+### 5.2 R_MAX_dynamic (Plafond Décroissant)
+
+**R_MAX = plafond du vote qui décroît automatiquement avec le temps.**
 
 ```cpp
 /**
  * Calculer R_MAX_dynamic pour une hauteur donnée
  *
- * Année 0-33 : Décroît de 37% à 4% (-1%/an)
- * Année 34+ : Plancher 4% (jamais en dessous)
+ * Année 0-33 : Décroît de 40% à 7% (-1%/an)
+ * Année 34+ : Plancher 7% (jamais en dessous)
  */
 uint16_t GetRMaxDynamic(uint32_t nHeight, uint32_t nActivationHeight) {
     uint32_t year = (nHeight - nActivationHeight) / BLOCKS_PER_YEAR;
 
-    // Formule : max(400, 3700 - year × 100)
-    uint16_t r_max = std::max(400, 3700 - year * 100);
+    // Formule : max(700, 4000 - year × 100)
+    uint16_t r_max = std::max(700, 4000 - year * 100);
 
     return r_max;
 }
@@ -510,11 +531,11 @@ uint16_t GetRMaxDynamic(uint32_t nHeight, uint32_t nActivationHeight) {
 
 | Année | R_MAX_dynamic | Pourcentage |
 |-------|---------------|-------------|
-| 0     | 3700 bp       | 37.00%      |
-| 10    | 2700 bp       | 27.00%      |
-| 20    | 1700 bp       | 17.00%      |
-| 33    | 400 bp        | 4.00%       |
-| 34+   | 400 bp        | 4.00%       |
+| 0     | 4000 bp       | 40.00%      |
+| 10    | 3000 bp       | 30.00%      |
+| 20    | 2000 bp       | 20.00%      |
+| 33    | 700 bp        | 7.00%       |
+| 34+   | 700 bp        | 7.00%       |
 
 **Graphique :**
 ```
@@ -607,94 +628,87 @@ class CMasternodePing {
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ ⚠️ IMPORTANT: R% = 25.00% ACTIF PENDANT LES 4 MOIS COMPLETS    │
+│ ⚠️ IMPORTANT: R% ACTIF PENDANT LES 4 MOIS COMPLETS              │
 │ Les processus de gouvernance se déroulent EN PARALLÈLE          │
-│ Toutes positions relatives à nActivationHeight (fork V6)       │
+│ REVEAL = INSTANTANÉ au bloc 152640                              │
 └─────────────────────────────────────────────────────────────────┘
+
+R% ACTIF PENDANT 4 MOIS COMPLETS (jamais interrompu)
+
+0────────────132480────────152640────────172800
+│              │              │              │
+│              │    VOTE      │  ADAPTATION  │
+│              │  (2 sem)     │   (2 sem)    │
+│              │   commits    │              │
+│              │   secrets    │  REVEAL      │
+│              │              │  instantané  │
+│              │              │  ↓           │
+│              │              │  Futur R%    │
+│              │              │  visible     │
+│                                            │
+├────────────────────────────────────────────┤
+│     R% ACTIF PENDANT TOUT LE CYCLE         │
+│              (4 mois)                      │
+└────────────────────────────────────────────┴─────►
+                                             │
+                                   Nouveau R% activé
 
 ┌─────────────────────────────────────────────────────────────────┐
 │ PHASE 1 : R% ACTIF UNIQUEMENT — 3 mois + 2 jours               │
-│           (132480 blocs depuis nActivationHeight)               │
+│           Position: 0 → 132480                                  │
 ├─────────────────────────────────────────────────────────────────┤
-│ • R% = 25.00% ACTIF (yield distribué chaque jour)              │
+│ • R% ACTIF (yield distribué chaque jour)                       │
 │ • AUCUNE gouvernance (période stable)                          │
 │ • LP planifient avec certitude totale                          │
-│                                                                 │
-│ Position dans cycle: 0 → 132480                                │
-│         └──── R% actif = 25.00%, pas de vote ────┘             │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│ PHASE 2 : COMMIT (2 SEMAINES) — R% TOUJOURS ACTIF 25.00%       │
+│ PHASE 2 : VOTE (2 SEMAINES) — R% TOUJOURS ACTIF                │
 │           Position: 132480 → 152640                             │
 ├─────────────────────────────────────────────────────────────────┤
-│ ✅ R% = 25.00% CONTINUE d'être distribué (yield quotidien)     │
-│ 🔄 EN PARALLÈLE: Gouvernance commence (commit votes)           │
+│ ✅ R% CONTINUE d'être distribué (yield quotidien)              │
+│ 🔄 EN PARALLÈLE: MN soumettent commits secrets                 │
 │                                                                 │
-│ Processus commit (parallèle):                                  │
+│ Processus:                                                     │
 │ 1. MN choisit R_proposal (ex: 2250 = 22.50%)                   │
 │ 2. MN génère secret aléatoire (32 bytes)                       │
 │ 3. MN calcule commitment = SHA256(R_proposal || secret)        │
 │ 4. MN broadcast commitment via ping                            │
 │                                                                 │
 │ 🔒 VOTES CACHÉS (commitment SHA256 uniquement)                 │
-│ 🔒 R% actuel (25.00%) INCHANGÉ pendant cette phase             │
-│                                                                 │
-│ Position: nActivationHeight + 132480 + (nHeight % 172800)      │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│ PHASE 3 : REVEAL (BLOC 152640) — R% TOUJOURS ACTIF 25.00%      │
-│           Position: nActivationHeight + 152640 + (cycle × …)   │
+│ BLOC 152640 : REVEAL INSTANTANÉ                                │
 ├─────────────────────────────────────────────────────────────────┤
-│ ✅ R% = 25.00% CONTINUE d'être distribué                       │
-│ 🔄 REVEAL automatique au bloc fixe:                            │
+│ ⚡ INSTANTANÉ: Tous les votes sont dévoilés                    │
 │                                                                 │
-│   1. Validation reveals: SHA256(R || secret) == commitment     │
+│   1. Validation: SHA256(R || secret) == commitment             │
 │   2. Consensus: R_next = moyenne(reveals_valides)              │
-│   3. Auto-proposal créée: "KHU_R_22.50_NEXT"                   │
-│   4. R% actuel (25.00%) INCHANGÉ                               │
-│                                                                 │
-│ Position exacte: nActivationHeight + (cycle × 172800) + 152640 │
+│   3. R_next VISIBLE immédiatement                              │
+│   4. R% actuel TOUJOURS ACTIF                                  │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│ PHASE 4 : PRÉAVIS (2 SEMAINES) — R% TOUJOURS ACTIF 25.00%      │
+│ PHASE 3 : ADAPTATION (2 SEMAINES) — R% TOUJOURS ACTIF          │
 │           Position: 152640 → 172800                             │
 ├─────────────────────────────────────────────────────────────────┤
-│ ✅ R% = 25.00% CONTINUE d'être distribué (jusqu'à la fin)      │
-│ 👁️ EN PARALLÈLE: R_next = 22.50% VISIBLE (auto-proposal)       │
+│ ✅ R% actuel CONTINUE d'être distribué (jusqu'à la fin)        │
+│ 👁️ Futur R% VISIBLE (tout le monde peut s'adapter)             │
 │                                                                 │
 │ • LP voient R_next 2 SEMAINES AVANT activation                 │
 │ • Adaptation stratégies / rééquilibrage pools                  │
 │ • Calendrier prévisible (bloc activation connu)                │
-│ • R% actuel (25.00%) ACTIF jusqu'au dernier bloc               │
-│                                                                 │
-│ Position: nActivationHeight + (cycle × 172800) + [152640..172800] │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│ ACTIVATION (BLOC 172800) — NOUVEAU R% ACTIVÉ                    │
-│ Position: nActivationHeight + ((cycle+1) × 172800)             │
+│ BLOC 172800 : NOUVEAU R% ACTIVÉ                                │
 ├─────────────────────────────────────────────────────────────────┤
-│ • R% = 22.50% ACTIVÉ (remplace 25.00%)                         │
-│ • Nouveau cycle commence (position reset à 0)                  │
-│ • R_next actif pour 4 MOIS COMPLETS                            │
-│ • Prochain commit dans 132480 blocs (3 mois + 2 jours)         │
+│ • Nouveau R% ACTIVÉ (remplace l'ancien)                        │
+│ • Nouveau cycle commence                                       │
+│ • R% actif pour 4 MOIS COMPLETS                                │
+│ • Prochain vote dans 132480 blocs (3 mois + 2 jours)           │
 └─────────────────────────────────────────────────────────────────┘
-
-CYCLE TOTAL: 172800 blocs (4 mois exacts) puis répétition infinie
-
-TIMELINE VISUELLE (positions relatives à nActivationHeight):
-
-0────────132480────152640────172800────────────────►
-│   R% ACTIF  │ COMMIT │PRÉAVIS│  Cycle 2 (R% nouveau)
-│   25.00%    │+25.00% │+25.00%│  22.50% actif 4 mois
-│  (3m+2j)    │ 2 sem  │ 2 sem │
-└─────────────┴────────┴───────┴─────────────────────►
-                       ▲
-                    REVEAL
-              (bloc fixe calculé)
 
 FORMULE UNIVERSELLE:
 Position dans cycle = (nHeight - nActivationHeight) % 172800
@@ -1439,17 +1453,17 @@ BOOST_AUTO_TEST_CASE(test_no_compounding)
 
 BOOST_AUTO_TEST_CASE(test_r_max_dynamic)
 {
-    // Année 0 : 30%
-    BOOST_CHECK_EQUAL(GetRMaxDynamic(0, 0), 3000);
+    // Année 0 : 40%
+    BOOST_CHECK_EQUAL(GetRMaxDynamic(0, 0), 4000);
 
-    // Année 10 : 20%
-    BOOST_CHECK_EQUAL(GetRMaxDynamic(525600 * 10, 0), 2000);
+    // Année 10 : 30%
+    BOOST_CHECK_EQUAL(GetRMaxDynamic(525600 * 10, 0), 3000);
 
-    // Année 26 : 4% (plancher)
-    BOOST_CHECK_EQUAL(GetRMaxDynamic(525600 * 26, 0), 400);
+    // Année 33 : 7% (plancher)
+    BOOST_CHECK_EQUAL(GetRMaxDynamic(525600 * 33, 0), 700);
 
-    // Année 100 : 4% (plancher)
-    BOOST_CHECK_EQUAL(GetRMaxDynamic(525600 * 100, 0), 400);
+    // Année 100 : 7% (plancher)
+    BOOST_CHECK_EQUAL(GetRMaxDynamic(525600 * 100, 0), 700);
 }
 
 BOOST_AUTO_TEST_CASE(test_maturity)
@@ -1499,6 +1513,6 @@ BOOST_AUTO_TEST_SUITE_END()
 
 **FIN DU BLUEPRINT YIELD R%**
 
-**Version:** 1.0
-**Date:** 2025-11-22
+**Version:** 2.0
+**Date:** 2025-11-27
 **Status:** CANONIQUE

@@ -1,8 +1,8 @@
 # PIVX-V6-KHU — CANONICAL SPECIFICATION
 
-Version: 2.0.0
+Version: 2.1.0
 Status: FINAL
-Last Update: 2025-11-26
+Last Update: 2025-11-27
 
 ---
 
@@ -60,8 +60,8 @@ struct KhuGlobalState {
     int64_t  T;                  // DAO Treasury Pool (satoshis)
 
     // === DOMC ===
-    uint16_t R_annual;           // Yield rate (basis points 0-3700)
-    uint16_t R_MAX_dynamic;      // Plafond R% dynamique
+    uint16_t R_annual;           // Yield rate (basis points 0-4000)
+    uint16_t R_MAX_dynamic;      // Plafond R% dynamique (max(700, 4000 - year×100))
 
     // === YIELD SCHEDULER ===
     uint32_t last_yield_update_height;
@@ -229,19 +229,19 @@ mature = (current_height - stake_start_height) >= MATURITY_BLOCKS
 daily_yield = (principal × R_annual) / 10000 / 365
 ```
 
-où `R_annual` est en basis points (3700 = 37%).
+où `R_annual` est en basis points (4000 = 40%).
 
 ### 6.2 R_MAX_dynamic (plafond)
 
 ```
 year = (nHeight - ACTIVATION_HEIGHT) / 525600
-R_MAX_dynamic = max(400, 3700 - year × 100)
+R_MAX_dynamic = max(700, 4000 - year × 100)
 
 Schedule:
-  Year 0:   3700 (37%)
-  Year 10:  2700 (27%)
-  Year 20:  1700 (17%)
-  Year 33:  400  (4%) — minimum permanent
+  Year 0:   4000 (40%)
+  Year 10:  3000 (30%)
+  Year 20:  2000 (20%)
+  Year 33:  700  (7%) — minimum permanent
 ```
 
 ### 6.3 Contrainte
@@ -307,7 +307,7 @@ Tous les fees: payés en PIV, BURN (pas au producteur de bloc)
 ### 8.1 Accumulation quotidienne
 
 ```
-T_daily = (U + Ur) / 182500    // 2% annuel / 365 jours
+T_daily = (U × R_annual) / 10000 / 8 / 365    // ~5% annuel avec T_DIVISOR=8
 
 Trigger: tous les 1440 blocs (même timing que yield)
 ```
@@ -324,37 +324,87 @@ Année 6+:  DAO = 0 PIV/bloc → T seule source
 
 ## 9. DOMC — GOUVERNANCE R%
 
-### 9.1 Cycle (4 mois)
+### 9.1 Principe
+
+```
+R%     = Taux de yield annuel, VOTÉ par les masternodes
+R_MAX  = Plafond du vote, DÉCROÎT AUTOMATIQUEMENT (-1%/an)
+
+Les MN votent pour R% entre 0% et R_MAX
+Après le vote → R% MIS À JOUR AUTOMATIQUEMENT
+```
+
+### 9.2 Cycle (4 mois)
 
 ```
 DOMC_CYCLE_LENGTH = 172800        // 4 mois (~120 jours)
-DOMC_COMMIT_OFFSET = 132480       // Début phase commit
-DOMC_REVEAL_OFFSET = 152640       // Début phase reveal
+DOMC_COMMIT_OFFSET = 132480       // Début phase vote (commits secrets)
+DOMC_REVEAL_OFFSET = 152640       // REVEAL instantané + début adaptation
 DOMC_PHASE_DURATION = 20160       // ~2 semaines par phase
 
+R% ACTIF PENDANT 4 MOIS COMPLETS (jamais interrompu)
+
+0────────────132480────────152640────────172800
+│              │              │              │
+│              │    VOTE      │  ADAPTATION  │
+│              │  (2 sem)     │   (2 sem)    │
+│              │   commits    │              │
+│              │   secrets    │  REVEAL      │
+│              │              │  instantané  │
+│              │              │  ↓           │
+│              │              │  Futur R%    │
+│              │              │  visible     │
+│                                            │
+├────────────────────────────────────────────┤
+│     R% ACTIF PENDANT TOUT LE CYCLE         │
+│              (4 mois)                      │
+└────────────────────────────────────────────┴─────►
+                                             │
+                                   Nouveau R% activé
+
 Timeline:
-  [0 - 132479]:       Normal operation, R_annual actif
-  [132480 - 152639]:  COMMIT phase (MN submit votes)
-  [152640 - 172799]:  REVEAL phase (votes revealed)
-  [172800]:           Nouveau R_annual activé
+  [0 - 132479]:       R% actif, pas de vote
+  [132480 - 152639]:  VOTE (commits secrets), R% toujours actif
+  [152640]:           REVEAL instantané → futur R% visible
+  [152640 - 172799]:  ADAPTATION (2 semaines pour s'adapter), R% toujours actif
+  [172800]:           → Nouveau R% ACTIVÉ AUTOMATIQUEMENT
 ```
 
-### 9.2 Calcul du nouveau R%
+### 9.3 Calcul du nouveau R%
 
 ```
 1. Collecter tous les votes révélés valides
 2. median_R = median(all_valid_R_proposals)
-3. if (median_R > R_MAX_dynamic) median_R = R_MAX_dynamic
-4. R_annual = median_R
+3. if (median_R > R_MAX_dynamic) → median_R = R_MAX_dynamic
+4. R_annual = median_R  // MISE À JOUR AUTOMATIQUE
 ```
 
-### 9.3 Bootstrap
+### 9.4 R_MAX_dynamic — Plafond qui décroît
 
 ```
-Initial R_annual = 3700 (37%)
+R_MAX_dynamic = max(700, 4000 - year × 100)
+
+Année 0:   R_MAX = 40%  → MN peuvent voter entre 0% et 40%
+Année 10:  R_MAX = 30%  → MN peuvent voter entre 0% et 30%
+Année 20:  R_MAX = 20%  → MN peuvent voter entre 0% et 20%
+Année 33+: R_MAX = 7%   → MN peuvent voter entre 0% et 7% (plancher)
+```
+
+### 9.5 Bootstrap
+
+```
+Initial R_annual = 4000 (40%)
 R% actif IMMÉDIATEMENT à l'activation V6
-Premier cycle DOMC: ACTIVATION_HEIGHT + 172800
+Premier vote DOMC: ACTIVATION_HEIGHT + 172800 blocs (après 4 mois)
 ```
+
+### 9.6 Résumé
+
+| Élément | Qui décide? | Comment? |
+|---------|-------------|----------|
+| **R%** (taux réel) | Masternodes | Vote tous les 4 mois |
+| **R_MAX** (plafond) | Protocole | Décroît automatiquement |
+| **Mise à jour R%** | Automatique | Appliqué à la fin du cycle |
 
 ---
 
@@ -385,12 +435,11 @@ FINALITY_DEPTH = 12
 
 // DOMC
 DOMC_CYCLE_LENGTH = 172800      // 4 mois
-INITIAL_R = 3700                // 37%
-FLOOR_R_MAX = 400               // 4%
+INITIAL_R = 4000                // 40%
+FLOOR_R_MAX = 700               // 7%
 
 // DAO Treasury
-T_ANNUAL_RATE = 200             // 2%
-T_DAILY_DIVISOR = 182500
+T_DIVISOR = 8                   // Treasury = 1/8 of yield rate (~5% at R=40%)
 
 // Precision
 COIN = 100000000                // 1 PIV/KHU = 10^8 satoshis
@@ -402,16 +451,22 @@ BASIS_POINT = 1                 // 0.01%
 ## 12. TRANSACTION TYPES
 
 ```cpp
-enum TxType {
-    TX_NORMAL        = 0,
-    TX_KHU_MINT      = 10,
-    TX_KHU_REDEEM    = 11,
-    TX_KHU_STAKE     = 12,
-    TX_KHU_UNSTAKE   = 13,
-    TX_DOMC_VOTE     = 14,
-    TX_HTLC_CREATE   = 15,
-    TX_HTLC_CLAIM    = 16,
-    TX_HTLC_REFUND   = 17,
+enum TxType : int16_t {
+    // PIVX standard
+    NORMAL      = 0,
+    PROREG      = 1,
+    PROUPSERV   = 2,
+    PROUPREG    = 3,
+    PROUPREV    = 4,
+    LLMQCOMM    = 5,
+
+    // KHU types (Phase 2-6)
+    KHU_MINT        = 6,    // PIV → KHU_T
+    KHU_REDEEM      = 7,    // KHU_T → PIV
+    KHU_STAKE       = 8,    // KHU_T → ZKHU
+    KHU_UNSTAKE     = 9,    // ZKHU → KHU_T + yield
+    KHU_DOMC_COMMIT = 10,   // DOMC commit (Hash(R || salt))
+    KHU_DOMC_REVEAL = 11,   // DOMC reveal (R + salt)
 };
 ```
 

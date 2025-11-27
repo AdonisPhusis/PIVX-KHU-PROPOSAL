@@ -64,9 +64,30 @@ Cr == Ur        // Reward pool = Reward rights
 
 ```
 Maturity:       4320 blocs (3 jours)
-R% initial:     37%
+R% initial:     40% (voté par MN tous les 4 mois)
+R_MAX:          40% → 7% sur 33 ans (plafond vote, décroît auto)
 DOMC cycle:     172800 blocs (4 mois)
 Finality:       12 blocs
+```
+
+### Gouvernance R% (Cycle DOMC 4 mois)
+
+```
+R% ACTIF PENDANT 4 MOIS COMPLETS
+
+0────────132480────────152640────────172800
+│           │            │            │
+│           │   VOTE     │ ADAPTATION │
+│           │  (2 sem)   │  (2 sem)   │
+│           │            │            │
+│           │            │ REVEAL     │
+│           │            │ instantané │
+│                                     │
+├─────────────────────────────────────┤
+│   R% ACTIF TOUT LE CYCLE (4 mois)   │
+└─────────────────────────────────────┴──► Nouveau R%
+
+R_MAX = Plafond du vote, décroît 40% → 7% sur 33 ans
 ```
 
 ---

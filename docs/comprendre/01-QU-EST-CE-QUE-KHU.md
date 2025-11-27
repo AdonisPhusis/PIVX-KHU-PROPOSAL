@@ -40,9 +40,41 @@ Pourquoi? Pour éviter les abus (stake → unstake immédiat).
 
 ## Le taux R%
 
-- Commence à **37%** par an
-- Les masternodes votent pour l'ajuster tous les 4 mois
-- Maximum décroît avec le temps (37% → 4% sur 33 ans)
+- **R% initial = 40%** par an (à l'activation V6)
+- **R% actif pendant 4 mois complets** (cycle DOMC)
+- **Les MN votent R% entre 0% et R_MAX**
+- **À la fin du cycle**: Nouveau R% activé automatiquement
+- **R_MAX décroît automatiquement**: 40% → 7% sur 33 ans (plancher)
+
+```
+CYCLE DOMC (4 mois = 172800 blocs)
+══════════════════════════════════════════════════════════════
+
+0────────────132480────────152640────────172800
+│              │              │              │
+│              │    VOTE      │  ADAPTATION  │
+│              │  (2 sem)     │   (2 sem)    │
+│              │              │              │
+│              │              │ REVEAL       │
+│              │              │ instantané   │
+│              │              │ ↓            │
+│              │              │ Futur R%     │
+│              │              │ visible      │
+│                                            │
+├────────────────────────────────────────────┤
+│     R% ACTIF PENDANT TOUT LE CYCLE         │
+│              (4 mois)                      │
+└────────────────────────────────────────────┴─────►
+                                             │
+                                   Nouveau R% activé
+
+
+R_MAX (plafond du vote) décroît avec le temps:
+  Année 0:   R_MAX = 40%  → MN votent entre 0% et 40%
+  Année 10:  R_MAX = 30%  → MN votent entre 0% et 30%
+  Année 20:  R_MAX = 20%  → MN votent entre 0% et 20%
+  Année 33+: R_MAX = 7%   → MN votent entre 0% et 7%
+```
 
 ## Exemple concret
 
@@ -55,8 +87,8 @@ Jour 0: STAKE 10,000 KHU → devient 10,000 ZKHU (privé)
 Jour 1-3: Période de maturity (pas de rendement)
 
 Jour 4-30: Rendement s'accumule
-  - R = 37% par an = 0.1% par jour
-  - 27 jours × 10 KHU/jour = 270 KHU de rendement
+  - R = 40% par an = ~0.11% par jour
+  - 27 jours × 10.96 KHU/jour = ~296 KHU de rendement
 
 Jour 30: UNSTAKE → reçoit 10,270 KHU
 Jour 30: REDEEM → reçoit 10,270 PIV
