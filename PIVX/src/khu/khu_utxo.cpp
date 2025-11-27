@@ -12,14 +12,44 @@
 
 #include <unordered_map>
 
-// Phase 2: Simple in-memory KHU UTXO tracking
-// Future phases will integrate with CCoinsViewCache properly
+// External function to get DB (defined in khu_validation.cpp)
+extern CKHUStateDB* GetKHUStateDB();
+
+// Phase 2: KHU UTXO tracking with LevelDB persistence
+// In-memory cache for performance, backed by LevelDB for persistence
 static RecursiveMutex cs_khu_utxos;
 static std::unordered_map<COutPoint, CKHUUTXO, SaltedOutpointHasher> mapKHUUTXOs GUARDED_BY(cs_khu_utxos);
+static bool fKHUUTXOsLoaded = false;
+
+// Initialize UTXO cache from database (called at startup)
+static void LoadKHUUTXOsFromDB()
+{
+    AssertLockHeld(cs_khu_utxos);
+
+    if (fKHUUTXOsLoaded) return;
+
+    CKHUStateDB* db = GetKHUStateDB();
+    if (!db) {
+        LogPrintf("%s: WARNING - KHU DB not available yet\n", __func__);
+        return;
+    }
+
+    std::vector<std::pair<COutPoint, CKHUUTXO>> utxos;
+    if (db->LoadAllKHUUTXOs(utxos)) {
+        for (const auto& pair : utxos) {
+            mapKHUUTXOs[pair.first] = pair.second;
+        }
+        LogPrint(BCLog::KHU, "%s: Loaded %zu KHU UTXOs from database\n", __func__, utxos.size());
+        fKHUUTXOsLoaded = true;
+    }
+}
 
 bool AddKHUCoin(CCoinsViewCache& view, const COutPoint& outpoint, const CKHUUTXO& coin)
 {
     LOCK(cs_khu_utxos);
+
+    // Ensure cache is loaded
+    LoadKHUUTXOsFromDB();
 
     LogPrint(BCLog::KHU, "%s: adding %s KHU at %s:%d (height %d)\n",
              __func__, FormatMoney(coin.amount), outpoint.hash.ToString().substr(0,16).c_str(),
@@ -36,8 +66,21 @@ bool AddKHUCoin(CCoinsViewCache& view, const COutPoint& outpoint, const CKHUUTXO
         }
     }
 
-    // Ajouter le coin
+    // Ajouter le coin à la cache
     mapKHUUTXOs[outpoint] = coin;
+
+    // Persister dans LevelDB
+    CKHUStateDB* db = GetKHUStateDB();
+    if (db) {
+        if (!db->WriteKHUUTXO(outpoint, coin)) {
+            LogPrintf("ERROR: %s: Failed to persist UTXO to database\n", __func__);
+            // Continue anyway - in-memory cache is updated
+        } else {
+            LogPrint(BCLog::KHU, "%s: Persisted UTXO to LevelDB at %s\n", __func__, outpoint.ToString());
+        }
+    } else {
+        LogPrintf("WARNING: %s: KHU StateDB not available for UTXO persistence\n", __func__);
+    }
 
     LogPrint(BCLog::KHU, "%s: added %s KHU at %s\n",
              __func__, FormatMoney(coin.amount), outpoint.ToString());
@@ -48,6 +91,9 @@ bool AddKHUCoin(CCoinsViewCache& view, const COutPoint& outpoint, const CKHUUTXO
 bool SpendKHUCoin(CCoinsViewCache& view, const COutPoint& outpoint)
 {
     LOCK(cs_khu_utxos);
+
+    // Ensure cache is loaded
+    LoadKHUUTXOsFromDB();
 
     LogPrint(BCLog::KHU, "%s: looking for %s:%d\n",
               __func__, outpoint.hash.ToString().substr(0,16).c_str(), outpoint.n);
@@ -68,8 +114,17 @@ bool SpendKHUCoin(CCoinsViewCache& view, const COutPoint& outpoint)
     LogPrint(BCLog::KHU, "SpendKHUCoin: spending %s:%d value=%s\n",
              outpoint.hash.ToString().substr(0,16).c_str(), outpoint.n, FormatMoney(it->second.amount));
 
-    // Marquer comme dépensé
-    it->second.Clear();
+    // Supprimer de la cache
+    mapKHUUTXOs.erase(it);
+
+    // Supprimer de LevelDB
+    CKHUStateDB* db = GetKHUStateDB();
+    if (db) {
+        if (!db->EraseKHUUTXO(outpoint)) {
+            LogPrintf("ERROR: %s: Failed to erase UTXO from database\n", __func__);
+            // Continue anyway - in-memory cache is updated
+        }
+    }
 
     return true;
 }
@@ -77,6 +132,9 @@ bool SpendKHUCoin(CCoinsViewCache& view, const COutPoint& outpoint)
 bool GetKHUCoin(const CCoinsViewCache& view, const COutPoint& outpoint, CKHUUTXO& coin)
 {
     LOCK(cs_khu_utxos);
+
+    // Ensure cache is loaded
+    LoadKHUUTXOsFromDB();
 
     LogPrint(BCLog::KHU, "%s: looking for %s:%d\n",
               __func__, outpoint.hash.ToString().substr(0,16).c_str(), outpoint.n);
@@ -105,6 +163,9 @@ bool HaveKHUCoin(const CCoinsViewCache& view, const COutPoint& outpoint)
 {
     LOCK(cs_khu_utxos);
 
+    // Ensure cache is loaded
+    LoadKHUUTXOsFromDB();
+
     auto it = mapKHUUTXOs.find(outpoint);
     if (it == mapKHUUTXOs.end()) {
         return false;
@@ -117,6 +178,9 @@ bool GetKHUCoinFromTracking(const COutPoint& outpoint, CKHUUTXO& coin)
 {
     LOCK(cs_khu_utxos);
 
+    // Ensure cache is loaded
+    LoadKHUUTXOsFromDB();
+
     auto it = mapKHUUTXOs.find(outpoint);
     if (it == mapKHUUTXOs.end()) {
         return false;
@@ -127,5 +191,27 @@ bool GetKHUCoinFromTracking(const COutPoint& outpoint, CKHUUTXO& coin)
     }
 
     coin = it->second;
+    return true;
+}
+
+// Restore a spent KHU UTXO (used during reorg/undo)
+bool RestoreKHUCoin(const COutPoint& outpoint, const CKHUUTXO& coin)
+{
+    LOCK(cs_khu_utxos);
+
+    LogPrint(BCLog::KHU, "%s: restoring %s KHU at %s:%d\n",
+             __func__, FormatMoney(coin.amount), outpoint.hash.ToString().substr(0,16).c_str(), outpoint.n);
+
+    // Ajouter à la cache
+    mapKHUUTXOs[outpoint] = coin;
+
+    // Persister dans LevelDB
+    CKHUStateDB* db = GetKHUStateDB();
+    if (db) {
+        if (!db->WriteKHUUTXO(outpoint, coin)) {
+            LogPrintf("ERROR: %s: Failed to persist restored UTXO to database\n", __func__);
+        }
+    }
+
     return true;
 }

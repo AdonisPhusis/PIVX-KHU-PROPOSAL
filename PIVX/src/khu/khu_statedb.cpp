@@ -5,9 +5,11 @@
 #include "khu/khu_statedb.h"
 
 #include "util/system.h"
+#include "streams.h"
 
 static const char DB_KHU_STATE = 'K';
 static const char DB_KHU_STATE_PREFIX = 'S';
+static const char DB_KHU_UTXO_PREFIX = 'U';
 
 CKHUStateDB::CKHUStateDB(size_t nCacheSize, bool fMemory, bool fWipe) :
     CDBWrapper(GetDataDir() / "khu" / "state", nCacheSize, fMemory, fWipe)
@@ -46,4 +48,51 @@ KhuGlobalState CKHUStateDB::LoadKHUState_OrGenesis(int nHeight)
     state.SetNull();
     state.nHeight = nHeight;
     return state;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// KHU UTXO Persistence
+// ═══════════════════════════════════════════════════════════════════════════
+
+bool CKHUStateDB::WriteKHUUTXO(const COutPoint& outpoint, const CKHUUTXO& utxo)
+{
+    return Write(std::make_pair(DB_KHU_UTXO_PREFIX, outpoint), utxo);
+}
+
+bool CKHUStateDB::ReadKHUUTXO(const COutPoint& outpoint, CKHUUTXO& utxo)
+{
+    return Read(std::make_pair(DB_KHU_UTXO_PREFIX, outpoint), utxo);
+}
+
+bool CKHUStateDB::EraseKHUUTXO(const COutPoint& outpoint)
+{
+    return Erase(std::make_pair(DB_KHU_UTXO_PREFIX, outpoint));
+}
+
+bool CKHUStateDB::ExistsKHUUTXO(const COutPoint& outpoint)
+{
+    return Exists(std::make_pair(DB_KHU_UTXO_PREFIX, outpoint));
+}
+
+bool CKHUStateDB::LoadAllKHUUTXOs(std::vector<std::pair<COutPoint, CKHUUTXO>>& utxos)
+{
+    std::unique_ptr<CDBIterator> pcursor(NewIterator());
+
+    // Seek to start of UTXO prefix
+    pcursor->Seek(std::make_pair(DB_KHU_UTXO_PREFIX, COutPoint()));
+
+    while (pcursor->Valid()) {
+        std::pair<char, COutPoint> key;
+        if (pcursor->GetKey(key) && key.first == DB_KHU_UTXO_PREFIX) {
+            CKHUUTXO utxo;
+            if (pcursor->GetValue(utxo)) {
+                utxos.emplace_back(key.second, utxo);
+            }
+            pcursor->Next();
+        } else {
+            break;
+        }
+    }
+
+    return true;
 }

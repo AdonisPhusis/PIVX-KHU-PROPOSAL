@@ -1348,7 +1348,7 @@ int ApplyTxInUndo(Coin&& undo, CCoinsViewCache& view, const COutPoint& out)
 
 /** Undo the effects of this block (with given index) on the UTXO set represented by coins.
  *  When FAILED is returned, view is left in an indeterminate state. */
-DisconnectResult DisconnectBlock(CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view)
+DisconnectResult DisconnectBlock(CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view, bool fJustCheck = false)
 {
     AssertLockHeld(cs_main);
 
@@ -1468,7 +1468,7 @@ DisconnectResult DisconnectBlock(CBlock& block, const CBlockIndex* pindex, CCoin
             khuGlobalState.nHeight = pindex->nHeight;
         }
 
-        if (!DisconnectKHUBlock(block, const_cast<CBlockIndex*>(pindex), validationState, view, khuGlobalState, consensus)) {
+        if (!DisconnectKHUBlock(block, const_cast<CBlockIndex*>(pindex), validationState, view, khuGlobalState, consensus, fJustCheck)) {
             error("%s: DisconnectKHUBlock failed for %s: %s", __func__,
                   pindex->GetBlockHash().ToString(), validationState.GetRejectReason());
             return DISCONNECT_FAILED;
@@ -3839,9 +3839,10 @@ bool CVerifyDB::VerifyDB(CCoinsView* coinsview, int nCheckLevel, int nCheckDepth
             }
         }
         // check level 3: check for inconsistencies during memory-only disconnect of tip blocks
+        // IMPORTANT: fJustCheck=true to avoid modifying KHU LevelDB state during verification
         if (nCheckLevel >= 3 && pindex == pindexState && (coins.DynamicMemoryUsage() + pcoinsTip->DynamicMemoryUsage()) <= nCoinCacheUsage) {
             assert(coins.GetBestBlock() == pindex->GetBlockHash());
-            DisconnectResult res = DisconnectBlock(block, pindex, coins);
+            DisconnectResult res = DisconnectBlock(block, pindex, coins, /*fJustCheck=*/true);
             if (res == DISCONNECT_FAILED) {
                 return error("%s: *** irrecoverable inconsistency in block data at %d, hash=%s", __func__,
                              pindex->nHeight, pindex->GetBlockHash().ToString());

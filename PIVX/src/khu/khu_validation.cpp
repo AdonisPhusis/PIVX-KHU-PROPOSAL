@@ -335,11 +335,22 @@ bool DisconnectKHUBlock(const CBlock& block,
                        CValidationState& validationState,
                        CCoinsViewCache& view,
                        KhuGlobalState& khuState,
-                       const Consensus::Params& consensusParams)
+                       const Consensus::Params& consensusParams,
+                       bool fJustCheck)
 {
     LOCK(cs_khu);
 
     const int nHeight = pindex->nHeight;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // fJustCheck MODE: Skip all mutations, just return success
+    // This is used by VerifyDB which does disconnect/reconnect cycles for validation
+    // without actually modifying the KHU database state.
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (fJustCheck) {
+        LogPrint(BCLog::KHU, "KHU: DisconnectKHUBlock fJustCheck=true, skipping mutations for block %d\n", nHeight);
+        return true;
+    }
 
     CKHUStateDB* db = GetKHUStateDB();
     if (!db) {

@@ -7,8 +7,11 @@
 
 #include "dbwrapper.h"
 #include "khu/khu_state.h"
+#include "khu/khu_coins.h"
+#include "primitives/transaction.h"
 
 #include <stdint.h>
+#include <vector>
 
 /**
  * CKHUStateDB - LevelDB persistence layer for KHU global state
@@ -73,6 +76,55 @@ public:
      * @return KHU state (existing or genesis)
      */
     KhuGlobalState LoadKHUState_OrGenesis(int nHeight);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // KHU UTXO Persistence (Phase 2)
+    // Database keys: 'K' + 'U' + outpoint -> CKHUUTXO
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * WriteKHUUTXO - Persist a KHU UTXO
+     *
+     * @param outpoint Transaction outpoint (txid + vout)
+     * @param utxo KHU UTXO to write
+     * @return true on success
+     */
+    bool WriteKHUUTXO(const COutPoint& outpoint, const CKHUUTXO& utxo);
+
+    /**
+     * ReadKHUUTXO - Read a KHU UTXO
+     *
+     * @param outpoint Transaction outpoint
+     * @param utxo Output parameter for UTXO
+     * @return true if UTXO exists
+     */
+    bool ReadKHUUTXO(const COutPoint& outpoint, CKHUUTXO& utxo);
+
+    /**
+     * EraseKHUUTXO - Delete a KHU UTXO (when spent)
+     *
+     * @param outpoint Transaction outpoint
+     * @return true on success
+     */
+    bool EraseKHUUTXO(const COutPoint& outpoint);
+
+    /**
+     * ExistsKHUUTXO - Check if UTXO exists
+     *
+     * @param outpoint Transaction outpoint
+     * @return true if UTXO exists
+     */
+    bool ExistsKHUUTXO(const COutPoint& outpoint);
+
+    /**
+     * LoadAllKHUUTXOs - Load all UTXOs into memory cache
+     *
+     * Called at startup to populate the in-memory cache.
+     *
+     * @param utxos Output vector for all UTXOs
+     * @return true on success
+     */
+    bool LoadAllKHUUTXOs(std::vector<std::pair<COutPoint, CKHUUTXO>>& utxos);
 };
 
 #endif // PIVX_KHU_STATEDB_H

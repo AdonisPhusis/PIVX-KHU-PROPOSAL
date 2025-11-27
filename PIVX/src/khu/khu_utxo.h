@@ -80,4 +80,15 @@ bool HaveKHUCoin(const CCoinsViewCache& view, const COutPoint& outpoint);
  */
 bool GetKHUCoinFromTracking(const COutPoint& outpoint, CKHUUTXO& coin);
 
+/**
+ * RestoreKHUCoin - Restore a spent KHU UTXO (used during reorg/undo)
+ *
+ * Called by UndoKHURedeem() to restore a KHU_T UTXO that was spent.
+ *
+ * @param outpoint Transaction outpoint
+ * @param coin KHU UTXO to restore
+ * @return true on success
+ */
+bool RestoreKHUCoin(const COutPoint& outpoint, const CKHUUTXO& coin);
+
 #endif // PIVX_KHU_UTXO_H

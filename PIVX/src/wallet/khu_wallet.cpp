@@ -220,6 +220,9 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
         }
     }
     else if (tx->nType == CTransaction::TxType::KHU_UNSTAKE) {
+        LogPrintf("%s: KHU_UNSTAKE detected, txid=%s, vout.size=%zu\n",
+                  __func__, txhash.ToString().substr(0, 16).c_str(), tx->vout.size());
+
         // UNSTAKE creates KHU_T output (Phase 8b)
         for (size_t i = 0; i < tx->vout.size(); ++i) {
             const CTxOut& out = tx->vout[i];
@@ -228,8 +231,73 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
                 AddKHUCoinToWallet(pwallet, COutPoint(txhash, i), coin, nHeight);
             }
         }
-        // Also track the ZKHU note being spent (reduce staked balance)
-        // TODO Phase 8b: Update nKHUStaked when note is spent
+
+        // BUG 5 FIX: Mark the ZKHU note as spent
+        // Since we know the UNSTAKE transaction amount, find and mark the matching note
+        // The note commitment is stored in the wallet's mapZKHUNotes keyed by cm
+        CAmount unstakeAmount = 0;
+        bool hasSapData = tx->sapData.is_initialized();
+        LogPrintf("%s: hasSapData=%d\n", __func__, hasSapData);
+
+        if (hasSapData && tx->sapData->valueBalance > 0) {
+            // valueBalance is positive in UNSTAKE (inflow from Sapling)
+            unstakeAmount = tx->sapData->valueBalance;
+            LogPrintf("%s: valueBalance=%lld (unstakeAmount=%s)\n",
+                      __func__, tx->sapData->valueBalance, FormatMoney(unstakeAmount).c_str());
+        }
+
+        // Find unspent note matching this amount and mark it spent
+        // Note: If multiple notes have same amount, we mark the first one found
+        bool noteMarked = false;
+        size_t mapSize = pwallet->khuData.mapZKHUNotes.size();
+        LogPrintf("%s: mapZKHUNotes.size=%zu, searching for amount=%s\n",
+                  __func__, mapSize, FormatMoney(unstakeAmount).c_str());
+
+        for (auto& pair : pwallet->khuData.mapZKHUNotes) {
+            LogPrintf("%s: checking note cm=%s amount=%s fSpent=%d\n",
+                      __func__, pair.first.GetHex().substr(0, 16).c_str(),
+                      FormatMoney(pair.second.amount).c_str(), pair.second.fSpent);
+
+            if (!pair.second.fSpent && pair.second.amount == unstakeAmount) {
+                pair.second.fSpent = true;
+                WriteZKHUNoteToDB(pwallet, pair.first, pair.second);
+                LogPrintf("%s: BUG5 FIX SUCCESS - marked ZKHU note spent cm=%s amount=%s\n",
+                          __func__, pair.first.GetHex().substr(0, 16).c_str(), FormatMoney(unstakeAmount).c_str());
+                noteMarked = true;
+                break;
+            }
+        }
+        if (noteMarked) {
+            pwallet->khuData.UpdateBalance();
+        } else if (unstakeAmount > 0) {
+            LogPrintf("%s: WARNING - could not find ZKHU note to mark spent amount=%s\n",
+                      __func__, FormatMoney(unstakeAmount).c_str());
+        }
+    }
+    else if (tx->nType == CTransaction::TxType::KHU_REDEEM) {
+        // REDEEM structure (from khuredeem RPC):
+        // - vout[0] = PIV destination (redeemed amount) - NOT KHU
+        // - vout[1] = KHU_T change (if any) - THIS IS KHU
+        // - vout[2] = PIV fee change (if any) - NOT KHU
+        //
+        // STEP 1 above already removed spent KHU inputs.
+        // Now we need to track the KHU change output at vout[1] if present.
+
+        LogPrint(BCLog::KHU, "%s: KHU_REDEEM detected, vout.size=%zu\n", __func__, tx->vout.size());
+
+        // vout[0] is always PIV (the redeemed amount) - skip it
+        // vout[1] if present is KHU change
+        if (tx->vout.size() >= 2) {
+            const CTxOut& khuChangeOut = tx->vout[1];
+            isminetype mine = ::IsMine(*pwallet, khuChangeOut.scriptPubKey);
+            if (mine != ISMINE_NO) {
+                CKHUUTXO coin(khuChangeOut.nValue, khuChangeOut.scriptPubKey, nHeight);
+                AddKHUCoinToWallet(pwallet, COutPoint(txhash, 1), coin, nHeight);
+                LogPrint(BCLog::KHU, "%s: added KHU change from REDEEM %s:1 = %s\n",
+                         __func__, txhash.GetHex().substr(0, 16).c_str(), FormatMoney(khuChangeOut.nValue));
+            }
+        }
+        // vout[2+] are PIV fee change - NOT tracked as KHU
     }
     else if (tx->nType == CTransaction::TxType::KHU_STAKE) {
         // STAKE creates:
@@ -260,7 +328,13 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
 
                 // Add to map (this will be counted by UpdateBalance)
                 pwallet->khuData.mapZKHUNotes[cm] = noteEntry;
-                LogPrint(BCLog::KHU, "%s: added ZKHU note cm=%s amount=%d\n",
+
+                // Persist to database (BUG 4 FIX: was missing, notes lost on restart)
+                if (!WriteZKHUNoteToDB(pwallet, cm, noteEntry)) {
+                    LogPrintf("ERROR: %s: Failed to persist ZKHU note to DB\n", __func__);
+                }
+
+                LogPrint(BCLog::KHU, "%s: added ZKHU note cm=%s amount=%d (persisted to DB)\n",
                          __func__, cm.GetHex().substr(0, 16).c_str(), stakedAmount);
             }
         }
