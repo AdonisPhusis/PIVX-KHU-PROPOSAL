@@ -1,6 +1,6 @@
 # CLAUDE.md — PIVX-V6-KHU Development Context
 
-**Last Sync:** 2025-11-27
+**Last Sync:** 2025-11-28
 **Documents Synchronized:** SPEC.md, ARCHITECTURE.md, ROADMAP.md, IMPLEMENTATION.md, blueprints/*
 
 ---
@@ -13,6 +13,38 @@ Tu reçois les consignes de ChatGPT (architecte) et tu exécutes, mais tu restes
 **Organisation documentation:**
 - Tous les documents sont dans `/docs` à la racine
 - JAMAIS de fichiers dans le dossier `/PIVX/` (sauf code C++)
+
+---
+
+## 0.1 DÉPÔTS GIT
+
+### Dépôt Officiel (Testnet Public)
+```
+https://github.com/AdonisPhusis/PIVX-KHU-PROPOSAL
+```
+- Remote: `official`
+- Branche: `main`
+- **Cible par défaut pour `git push`**
+
+### Dépôt Développement
+```
+https://github.com/AdonisPhusis/PIVX-V6-KHU
+```
+- Remote: `origin`
+- Branche: `testnet-ready-v1`
+
+### Tags Importants
+| Tag | Description |
+|-----|-------------|
+| `v6.0.0-testnet-ready` | Version gelée, prête pour testnet |
+| `v6.0-phase7-frozen` | Phase 7 complète |
+| `v2.0-docs-freeze` | Documentation gelée |
+
+### Commandes Git
+```bash
+git push                              # → official/main (PIVX-KHU-PROPOSAL)
+git push origin testnet-ready-v1      # → origin (PIVX-V6-KHU dev)
+```
 
 ---
 
