@@ -5,12 +5,30 @@
 #ifndef PIVX_KHU_STAKE_H
 #define PIVX_KHU_STAKE_H
 
+#include "amount.h"
 #include "khu/khu_state.h"
 #include "primitives/transaction.h"
 
 class CCoinsViewCache;
 class CValidationState;
 namespace Consensus { struct Params; }
+
+/**
+ * Minimum stake amount (anti-spam protection)
+ *
+ * Prevents economic spam attacks with micro-stakes.
+ * 1 PIV minimum ensures that transaction fees make spam uneconomical.
+ *
+ * Economic rationale:
+ * - Yield for 1 PIV @ 40% for 3 days = 1 × 0.40 × 3/365 = 0.00329 PIV
+ * - Transaction fees (stake + unstake) = ~0.0002 PIV
+ * - Net positive, but too small to abuse at scale
+ *
+ * Without minimum:
+ * - 0.01 PIV stake yield = 0.0000329 PIV (less than fees)
+ * - Spam creates DB bloat without economic benefit
+ */
+static constexpr CAmount MIN_STAKE_AMOUNT = 1 * COIN;  // 1 PIV minimum
 
 /**
  * STAKE (KHU_T → ZKHU)

@@ -33,11 +33,24 @@ namespace khu_yield {
 /** Yield distribution interval (1 day = 1440 blocks at 1 min/block) */
 static constexpr uint32_t YIELD_INTERVAL = 1440;
 
-/** Note maturity period (3 days = 4320 blocks) */
+/** Note maturity period - PRODUCTION (3 days = 4320 blocks) */
 static constexpr uint32_t MATURITY_BLOCKS = 4320;
+
+/** Note maturity period - REGTEST (21 hours = 1260 blocks for fast testing) */
+static constexpr uint32_t MATURITY_BLOCKS_REGTEST = 1260;
 
 /** Days per year for yield calculation */
 static constexpr uint32_t DAYS_PER_YEAR = 365;
+
+/**
+ * GetMaturityBlocks - Get network-aware maturity period
+ *
+ * Returns MATURITY_BLOCKS_REGTEST (1260) for regtest, MATURITY_BLOCKS (4320) otherwise.
+ * This allows faster testing of yield mechanics on regtest.
+ *
+ * @return Maturity blocks for current network
+ */
+uint32_t GetMaturityBlocks();
 
 // ============================================================================
 // Public Functions

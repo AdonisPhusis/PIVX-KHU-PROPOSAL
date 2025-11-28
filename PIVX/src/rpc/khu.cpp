@@ -4,15 +4,19 @@
 
 #include "khu/khu_validation.h"
 
+#include "budget/budgetmanager.h"
 #include "chain.h"
 #include "chainparams.h"
+#include "evo/deterministicmns.h"
 #include "key_io.h"
 #include "khu/khu_commitment.h"
 #include "khu/khu_commitmentdb.h"
+#include "khu/khu_dao.h"
 #include "khu/khu_domc.h"
 #include "khu/khu_domc_tx.h"
 #include "khu/khu_domcdb.h"
 #include "khu/khu_state.h"
+#include "masternodeman.h"
 #include "primitives/transaction.h"
 #include "rpc/server.h"
 #include "sync.h"
@@ -66,9 +70,12 @@ static UniValue getkhustate(const JSONRPCRequest& request)
             "  \"U\": n,                (numeric) Supply (KHU_T in circulation)\n"
             "  \"Cr\": n,               (numeric) Reward collateral pool\n"
             "  \"Ur\": n,               (numeric) Unstake rights (accumulated yield)\n"
-            "  \"R_annual\": n,         (numeric) Annual yield rate (centièmes: 2555 = 25.55%)\n"
-            "  \"R_annual_pct\": x.xx,  (numeric) Annual yield rate (percentage)\n"
-            "  \"R_MAX_dynamic\": n,    (numeric) Maximum R% allowed by DOMC\n"
+            "  \"T\": n,                (numeric) DAO Treasury (in PIV, not KHU!)\n"
+            "  \"R_annual\": n,         (numeric) Current annual yield rate (basis points: 4000 = 40.00%)\n"
+            "  \"R_annual_pct\": x.xx,  (numeric) Current annual yield rate (percentage)\n"
+            "  \"R_next\": n,           (numeric) Next R% after REVEAL (visible during ADAPTATION, 0 if not set)\n"
+            "  \"R_next_pct\": x.xx,    (numeric) Next R% (percentage)\n"
+            "  \"R_MAX_dynamic\": n,    (numeric) Maximum R% allowed by DOMC (decreases yearly)\n"
             "  \"last_yield_update_height\": n, (numeric) Last yield update block\n"
             "  \"last_domc_height\": n, (numeric) Last DOMC cycle completion\n"
             "  \"invariants_ok\": true|false,  (boolean) Are invariants satisfied?\n"
@@ -94,11 +101,14 @@ static UniValue getkhustate(const JSONRPCRequest& request)
     result.pushKV("blockhash", state.hashBlock.GetHex());
     result.pushKV("C", ValueFromAmount(state.C));
     result.pushKV("U", ValueFromAmount(state.U));
+    result.pushKV("Z", ValueFromAmount(state.Z));  // ZKHU shielded supply
     result.pushKV("Cr", ValueFromAmount(state.Cr));
     result.pushKV("Ur", ValueFromAmount(state.Ur));
     result.pushKV("T", ValueFromAmount(state.T));
     result.pushKV("R_annual", (int64_t)state.R_annual);
     result.pushKV("R_annual_pct", state.R_annual / 100.0);
+    result.pushKV("R_next", (int64_t)state.R_next);
+    result.pushKV("R_next_pct", state.R_next / 100.0);
     result.pushKV("R_MAX_dynamic", (int64_t)state.R_MAX_dynamic);
     result.pushKV("last_yield_update_height", (int64_t)state.last_yield_update_height);
     result.pushKV("domc_cycle_start", (int64_t)state.domc_cycle_start);
@@ -476,6 +486,91 @@ static UniValue domcreveal(const JSONRPCRequest& request)
 }
 
 // ============================================================================
+// DAO TREASURY INFO COMMAND
+// ============================================================================
+
+/**
+ * khudaoinfo - Get DAO system info (Treasury T and budget proposals)
+ *
+ * Post-V6, budget proposals are funded from DAO Treasury (T) instead of
+ * block rewards. Use standard PIVX budget commands to manage proposals:
+ *   - preparebudget: Create proposal collateral tx
+ *   - submitbudget: Submit proposal to network
+ *   - mnbudgetvote: Vote on proposal (masternode)
+ *   - getbudgetinfo: List proposals
+ *
+ * This command shows Treasury status and integration with budget system.
+ */
+static UniValue khudaoinfo(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 0) {
+        throw std::runtime_error(
+            "khudaoinfo\n"
+            "\nGet DAO Treasury information and budget proposal status.\n"
+            "\nPost-V6, budget proposals are funded from DAO Treasury (T) instead of block rewards.\n"
+            "Use standard PIVX budget commands to manage proposals:\n"
+            "  - preparebudget: Create proposal collateral tx\n"
+            "  - submitbudget: Submit proposal to network\n"
+            "  - mnbudgetvote: Vote on proposal (masternode)\n"
+            "  - getbudgetinfo: List proposals\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"treasury_balance\": n,       (numeric) Current DAO Treasury balance (PIV)\n"
+            "  \"daily_accumulation\": n,     (numeric) Daily treasury accumulation\n"
+            "  \"total_budget\": n,           (numeric) Available budget for proposals\n"
+            "  \"proposal_count\": n,         (numeric) Number of proposals\n"
+            "  \"next_superblock\": n,        (numeric) Next superblock height\n"
+            "  \"blocks_until_superblock\": n,(numeric) Blocks until next superblock\n"
+            "  \"masternode_count\": n,       (numeric) Active masternodes\n"
+            "  \"current_height\": n,         (numeric) Current block height\n"
+            "  \"r_annual_pct\": n,           (numeric) Current R% (affects T accumulation)\n"
+            "}\n"
+            "\nExamples:\n"
+            + HelpExampleCli("khudaoinfo", "")
+            + HelpExampleRpc("khudaoinfo", "")
+        );
+    }
+
+    LOCK(cs_main);
+
+    KhuGlobalState state;
+    if (!GetCurrentKHUState(state)) {
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Unable to load KHU state");
+    }
+
+    int nHeight = chainActive.Height();
+    int mnCount = mnodeman.CountEnabled();
+
+    // Calculate daily accumulation using existing function
+    CAmount dailyAccum = khu_dao::CalculateDAOBudget(state);
+
+    // Get budget info from existing system
+    CAmount totalBudget = g_budgetman.GetTotalBudget(nHeight);
+    int proposalCount = g_budgetman.CountProposals();
+
+    // Next superblock (budget payment block)
+    const int budgetCycleBlocks = Params().GetConsensus().nBudgetCycleBlocks;
+    int nextSuperblock = nHeight - (nHeight % budgetCycleBlocks) + budgetCycleBlocks;
+    int blocksUntil = nextSuperblock - nHeight;
+
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("treasury_balance", ValueFromAmount(state.T));
+    result.pushKV("daily_accumulation", ValueFromAmount(dailyAccum));
+    result.pushKV("total_budget", ValueFromAmount(totalBudget));
+    result.pushKV("proposal_count", proposalCount);
+    result.pushKV("next_superblock", nextSuperblock);
+    result.pushKV("blocks_until_superblock", blocksUntil);
+    result.pushKV("masternode_count", mnCount);
+    result.pushKV("current_height", nHeight);
+    result.pushKV("r_annual_pct", state.R_annual / 100.0);
+
+    // Add note about using existing commands
+    result.pushKV("note", "Use preparebudget/submitbudget/mnbudgetvote/getbudgetinfo for proposal management");
+
+    return result;
+}
+
+// ============================================================================
 // RPC Command Registration
 // ============================================================================
 
@@ -484,6 +579,8 @@ static UniValue domcreveal(const JSONRPCRequest& request)
 
 // RPC command table (to be registered in rpc/register.cpp)
 // NOTE: Wallet RPCs moved to wallet/rpc_khu.cpp
+// NOTE: DAO proposals use existing PIVX budget system (preparebudget, submitbudget, etc.)
+//       Post-V6, budget is funded from T instead of block rewards (GetTotalBudget returns T)
 static const CRPCCommand commands[] = {
     //  category    name                      actor (function)            okSafe  argNames
     //  ----------- ------------------------  ------------------------    ------  ----------
@@ -491,6 +588,8 @@ static const CRPCCommand commands[] = {
     { "khu",        "getkhustatecommitment",  &getkhustatecommitment,     true,   {"height"} },
     { "khu",        "domccommit",             &domccommit,                false,  {"R_proposal", "mn_outpoint"} },
     { "khu",        "domcreveal",             &domcreveal,                false,  {"R_proposal", "salt", "mn_outpoint"} },
+    // DAO Treasury info (integrates with existing budget system)
+    { "khu",        "khudaoinfo",             &khudaoinfo,                true,   {} },
 };
 
 void RegisterKHURPCCommands(CRPCTable& t)

@@ -854,18 +854,13 @@ CAmount GetBlockValue(int nHeight)
 {
     const Consensus::Params& consensus = Params().GetConsensus();
 
-    // KHU V6.0 NEW EMISSION: 6→0 per year (Phase 1-Emission)
-    // Formula: reward_year = max(6 - year, 0) where year = (height - activation) / 525600
-    // Distribution: staker=reward_year, MN=reward_year, DAO=reward_year
-    // Total emission per block = 3 * reward_year
+    // KHU V6.0: ZERO BLOCK REWARD IMMEDIATELY
+    // At V6 activation, block reward = 0 PIV (no transition, immediate zero)
+    // Economy is governed by:
+    //   - R% yield for ZKHU stakers (40%→7% over 33 years via DOMC)
+    //   - T (DAO Treasury) accumulates from U × R% / 8 / 365
     if (NetworkUpgradeActive(nHeight, consensus, Consensus::UPGRADE_V6_0)) {
-        const int nActivationHeight = consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight;
-        const int64_t year = (nHeight - nActivationHeight) / Consensus::Params::BLOCKS_PER_YEAR;
-        const int64_t reward_year = std::max(6LL - year, 0LL);
-        // Block value = reward_year (staker compartment only)
-        // MN payment separate via GetMasternodePayment()
-        // DAO payment via budget system (future/existing)
-        return reward_year * COIN;
+        return 0;  // Zero emission immediately at V6 activation
     }
 
     // LEGACY PIVX EMISSION (pre-V6.0)
@@ -907,12 +902,11 @@ int64_t GetMasternodePayment(int nHeight)
 {
     const Consensus::Params& consensus = Params().GetConsensus();
 
-    // KHU V6.0: Masternode reward = reward_year
+    // KHU V6.0: ZERO MASTERNODE PAYMENT IMMEDIATELY
+    // At V6 activation, block reward = 0 PIV (no transition, immediate zero)
+    // Economy is governed by R% yield and T (treasury), not block rewards.
     if (NetworkUpgradeActive(nHeight, consensus, Consensus::UPGRADE_V6_0)) {
-        const int nActivationHeight = consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight;
-        const int64_t year = (nHeight - nActivationHeight) / Consensus::Params::BLOCKS_PER_YEAR;
-        const int64_t reward_year = std::max(6LL - year, 0LL);
-        return reward_year * COIN;
+        return 0;  // Zero emission immediately at V6 activation
     }
 
     // LEGACY: V5.5 MN reward
@@ -1540,6 +1534,43 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     const bool isPoSActive = consensus.NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_POS);
     const bool isV5UpgradeEnforced = consensus.NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_V5_0);
     const bool isV6UpgradeEnforced = consensus.NetworkUpgradeActive(pindex->nHeight, Consensus::UPGRADE_V6_0);
+
+    // KHU V6.0: FINALITY VIA MASTERNODES (ChainLocks mandatory after 12 blocks)
+    // After V6 activation, blocks older than 12 confirmations MUST have a ChainLock
+    // This transfers finality from stakers to masternodes via LLMQ
+    // Note: This check applies to the chain we're building on, not the current block
+    if (isV6UpgradeEnforced && pindex->pprev) {
+        // Check if the block we're building on (12 blocks back) has a ChainLock
+        const int FINALITY_DEPTH = 12;
+        CBlockIndex* pindexCheck = pindex->pprev;
+        int depth = 0;
+
+        // Walk back to find block at FINALITY_DEPTH
+        while (pindexCheck && depth < FINALITY_DEPTH) {
+            pindexCheck = pindexCheck->pprev;
+            depth++;
+        }
+
+        // If we have 12+ blocks of history after V6, enforce ChainLock on ancestors
+        if (pindexCheck && depth == FINALITY_DEPTH &&
+            consensus.NetworkUpgradeActive(pindexCheck->nHeight, Consensus::UPGRADE_V6_0)) {
+
+            // Check if the block at FINALITY_DEPTH has a ChainLock
+            // Only enforce if ChainLocks spork is active OR if we're past V6 + 12
+            if (sporkManager.IsSporkActive(SPORK_23_CHAINLOCKS_ENFORCEMENT)) {
+                if (!llmq::chainLocksHandler->HasChainLock(pindexCheck->nHeight, pindexCheck->GetBlockHash())) {
+                    // Don't reject during initial sync - only warn
+                    if (g_tiertwo_sync_state.IsSynced()) {
+                        return state.DoS(10, error("%s: V6 finality requires ChainLock for block at depth %d (height %d)",
+                                                   __func__, FINALITY_DEPTH, pindexCheck->nHeight),
+                                         REJECT_INVALID, "v6-chainlock-required");
+                    } else {
+                        LogPrint(BCLog::KHU, "KHU: Warning - block at depth %d lacks ChainLock (syncing)\n", FINALITY_DEPTH);
+                    }
+                }
+            }
+        }
+    }
 
     // Coinbase output should be empty if proof-of-stake block (before v6 enforcement)
     if (!isV6UpgradeEnforced && isPoSBlock && (block.vtx[0]->vout.size() != 1 || !block.vtx[0]->vout[0].IsEmpty()))

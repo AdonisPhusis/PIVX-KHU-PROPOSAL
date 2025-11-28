@@ -27,39 +27,91 @@ namespace Consensus { struct Params; }
  * - Result: median(R) clamped to R_MAX_dynamic
  * - No minimum quorum (v1): ≥1 vote → apply median, 0 votes → R unchanged
  *
- * CYCLE PHASES:
- * 1. Normal phase: 0 → 132480 blocks
- * 2. Commit phase: 132480 → 152640 blocks (20160 blocks = ~2 weeks)
- * 3. Reveal phase: 152640 → 172800 blocks (20160 blocks = ~2 weeks)
- * 4. Finalization: At 172800 → calculate median, start new cycle
+ * CYCLE PHASES (R% ACTIVE FOR FULL 4 MONTHS):
+ * 1. R% active only: 0 → 132480 blocks (~3 months)
+ * 2. VOTE phase: 132480 → 152640 blocks (commits + reveals, ~2 weeks)
+ * 3. REVEAL INSTANT: Block 152640 → calculate median, R_next visible
+ * 4. ADAPTATION phase: 152640 → 172800 blocks (everyone adapts, ~2 weeks)
+ * 5. ACTIVATION: Block 172800 → R_next becomes R_annual, new cycle starts
+ *
+ * TIMELINE:
+ * 0────────────132480────────152640────────172800
+ * │              │              │              │
+ * │              │    VOTE      │  ADAPTATION  │
+ * │              │  (2 weeks)   │  (2 weeks)   │
+ * │              │  commits +   │              │
+ * │              │  reveals     │  REVEAL      │
+ * │              │              │  instant     │
+ * │              │              │  ↓           │
+ * │              │              │  R_next      │
+ * │              │              │  visible     │
+ * │                                            │
+ * ├────────────────────────────────────────────┤
+ * │     R% ACTIVE FOR FULL CYCLE (4 months)    │
+ * └────────────────────────────────────────────┴──► New R% activated
  */
 
 namespace khu_domc {
 
-// DOMC cycle parameters (consensus-critical)
-static const uint32_t DOMC_CYCLE_LENGTH = 172800;      // 4 months (172800 blocks)
-static const uint32_t DOMC_COMMIT_OFFSET = 132480;     // Start commit phase at 132480
-static const uint32_t DOMC_REVEAL_OFFSET = 152640;     // Start reveal phase at 152640
-static const uint32_t DOMC_COMMIT_DURATION = 20160;    // Commit window: 20160 blocks (~2 weeks)
-static const uint32_t DOMC_REVEAL_DURATION = 20160;    // Reveal window: 20160 blocks (~2 weeks)
+// =============================================================================
+// DOMC cycle parameters (network-dependent)
+// =============================================================================
+//
+// MAINNET/TESTNET (production):
+//   - DOMC_CYCLE_LENGTH = 172800 blocks (~4 months)
+//   - DOMC_VOTE_OFFSET = 132480 blocks (~3 months into cycle)
+//   - DOMC_REVEAL_HEIGHT = 152640 blocks (~3.5 months into cycle)
+//
+// REGTEST (fast testing):
+//   - DOMC_CYCLE_LENGTH = 1008 blocks (~1 week at 10 blocks/min for regtest)
+//   - DOMC_VOTE_OFFSET = 720 blocks (~5 days into cycle)
+//   - DOMC_REVEAL_HEIGHT = 864 blocks (~6 days into cycle)
+//
+// Use GetDomcCycleLength(), GetDomcVoteOffset(), GetDomcRevealHeight() functions
+// which return the appropriate values based on the active network.
+// =============================================================================
 
-// R% limits (basis points: 3700 = 37.00%)
+// Production values (mainnet/testnet)
+static const uint32_t DOMC_CYCLE_LENGTH = 172800;      // 4 months (172800 blocks)
+static const uint32_t DOMC_VOTE_OFFSET = 132480;       // Start VOTE phase (commits+reveals) at 132480
+static const uint32_t DOMC_REVEAL_HEIGHT = 152640;     // REVEAL instant at 152640 (R_next calculated)
+static const uint32_t DOMC_VOTE_DURATION = 20160;      // VOTE window: 20160 blocks (~2 weeks)
+static const uint32_t DOMC_ADAPTATION_DURATION = 20160; // ADAPTATION window: 20160 blocks (~2 weeks)
+
+// RegTest values (fast testing - ~1 week cycle)
+static const uint32_t DOMC_CYCLE_LENGTH_REGTEST = 1008;     // ~1 week (1008 blocks)
+static const uint32_t DOMC_VOTE_OFFSET_REGTEST = 720;       // Start VOTE at ~5 days
+static const uint32_t DOMC_REVEAL_HEIGHT_REGTEST = 864;     // REVEAL at ~6 days
+static const uint32_t DOMC_VOTE_DURATION_REGTEST = 144;     // VOTE window: 144 blocks (~1 day)
+static const uint32_t DOMC_ADAPTATION_DURATION_REGTEST = 144; // ADAPTATION: 144 blocks (~1 day)
+
+// Network-aware getter functions (defined in khu_domc.cpp)
+uint32_t GetDomcCycleLength();
+uint32_t GetDomcVoteOffset();
+uint32_t GetDomcRevealHeight();
+uint32_t GetDomcVoteDuration();
+uint32_t GetDomcAdaptationDuration();
+
+// Legacy aliases for backward compatibility
+static const uint32_t DOMC_COMMIT_OFFSET = DOMC_VOTE_OFFSET;
+static const uint32_t DOMC_REVEAL_OFFSET = DOMC_REVEAL_HEIGHT;
+
+// R% limits (basis points: 4000 = 40.00%)
 static const uint16_t R_MIN = 0;       // Minimum R%: 0.00%
 static const uint16_t R_MAX = 5000;    // Absolute maximum R%: 50.00%
-static const uint16_t R_DEFAULT = 3700; // Default R% at V6 activation: 37.00%
+static const uint16_t R_DEFAULT = 4000; // Default R% at V6 activation: 40.00%
 
-// R_MAX_dynamic formula: max(400, 3700 - year × 100)
-// Year 0:  3700 bp (37%)
-// Year 33: 400 bp (4%) - minimum guaranteed
-static const uint16_t R_MAX_DYNAMIC_INITIAL = 3700;  // 37% at V6 activation
-static const uint16_t R_MAX_DYNAMIC_MIN = 400;       // 4% minimum (floor)
+// R_MAX_dynamic formula: max(700, 4000 - year × 100)
+// Year 0:  4000 bp (40%)
+// Year 33: 700 bp (7%) - minimum guaranteed
+static const uint16_t R_MAX_DYNAMIC_INITIAL = 4000;  // 40% at V6 activation
+static const uint16_t R_MAX_DYNAMIC_MIN = 700;       // 7% minimum (floor)
 static const uint16_t R_MAX_DYNAMIC_DECAY = 100;     // -1% per year
 
 // DAO Treasury (T) - Phase 6.3
-// T accumulates 2% annual, daily (same trigger as yield)
-// T_daily = (U + Ur) / 182500
-static const int64_t T_ANNUAL_RATE = 200;     // 2% annual (basis points)
-static const int64_t T_DAILY_DIVISOR = 182500; // (U+Ur) / 182500 = daily T
+// T accumulates based on U and R%: T_daily = U × R% / T_DIVISOR / 365
+// At R=40%: T = 40%/8 = 5% annual, at R=7%: T = 7%/8 = 0.875% annual
+static const uint16_t T_DIVISOR = 8;           // Treasury = 1/8 of yield rate (~5% at R=40%)
 
 /**
  * DomcCommit - Masternode commit for R% vote
@@ -192,28 +244,49 @@ uint32_t GetCurrentCycleId(uint32_t nHeight, uint32_t nActivationHeight);
 bool IsDomcCycleBoundary(uint32_t nHeight, uint32_t nActivationHeight);
 
 /**
- * IsDomcCommitPhase - Check if current height is in commit phase
+ * IsDomcVotePhase - Check if current height is in VOTE phase
  *
- * Commit phase: [cycle_start + 132480, cycle_start + 152640)
+ * VOTE phase: [cycle_start + 132480, cycle_start + 152640)
+ * During this phase: MN submit commits AND reveals
  * Duration: 20160 blocks (~2 weeks)
  *
  * @param nHeight Current block height
  * @param cycleStart Cycle start height
- * @return true if in commit phase
+ * @return true if in VOTE phase
  */
-bool IsDomcCommitPhase(uint32_t nHeight, uint32_t cycleStart);
+bool IsDomcVotePhase(uint32_t nHeight, uint32_t cycleStart);
 
 /**
- * IsDomcRevealPhase - Check if current height is in reveal phase
+ * IsDomcAdaptationPhase - Check if current height is in ADAPTATION phase
  *
- * Reveal phase: [cycle_start + 152640, cycle_start + 172800)
+ * ADAPTATION phase: [cycle_start + 152640, cycle_start + 172800)
+ * During this phase: R_next is visible, everyone adapts
  * Duration: 20160 blocks (~2 weeks)
  *
  * @param nHeight Current block height
  * @param cycleStart Cycle start height
- * @return true if in reveal phase
+ * @return true if in ADAPTATION phase
  */
-bool IsDomcRevealPhase(uint32_t nHeight, uint32_t cycleStart);
+bool IsDomcAdaptationPhase(uint32_t nHeight, uint32_t cycleStart);
+
+/**
+ * IsRevealHeight - Check if current height is the REVEAL instant
+ *
+ * At REVEAL height (152640): calculate median R_next from votes
+ *
+ * @param nHeight Current block height
+ * @param cycleStart Cycle start height
+ * @return true if this is the reveal height
+ */
+bool IsRevealHeight(uint32_t nHeight, uint32_t cycleStart);
+
+// Legacy aliases for backward compatibility
+inline bool IsDomcCommitPhase(uint32_t nHeight, uint32_t cycleStart) {
+    return IsDomcVotePhase(nHeight, cycleStart);
+}
+inline bool IsDomcRevealPhase(uint32_t nHeight, uint32_t cycleStart) {
+    return IsDomcAdaptationPhase(nHeight, cycleStart);
+}
 
 /**
  * CalculateDomcMedian - Calculate median R% from valid reveals
@@ -241,21 +314,45 @@ uint16_t CalculateDomcMedian(
  * Called at cycle boundary in ConnectBlock.
  * Updates domc_cycle_start, domc_commit_phase_start, domc_reveal_deadline.
  *
+ * CRITICAL: At V6 activation (first cycle), this also initializes:
+ *   - R_annual = R_DEFAULT (4000 bp = 40%)
+ *   - R_MAX_dynamic = R_MAX_DYNAMIC_INITIAL (4000 bp = 40%)
+ *
  * @param state [IN/OUT] Global state to update
  * @param nHeight Current block height (cycle start)
+ * @param isFirstCycle true if this is V6 activation (first cycle ever)
  */
 void InitializeDomcCycle(
     KhuGlobalState& state,
-    uint32_t nHeight
+    uint32_t nHeight,
+    bool isFirstCycle = false
 );
 
 /**
- * FinalizeDomcCycle - Finalize previous cycle and update R_annual
+ * ProcessRevealInstant - Process REVEAL instant at block 152640
+ *
+ * Called at REVEAL height in ConnectBlock.
+ * 1. Collect valid reveals from current cycle
+ * 2. Calculate median(R) with clamping
+ * 3. Set state.R_next (visible during ADAPTATION phase)
+ *
+ * @param state [IN/OUT] Global state to update (R_next)
+ * @param nHeight Current block height (REVEAL height)
+ * @param consensusParams Consensus parameters (for activation height)
+ * @return true on success, false on error
+ */
+bool ProcessRevealInstant(
+    KhuGlobalState& state,
+    uint32_t nHeight,
+    const Consensus::Params& consensusParams
+);
+
+/**
+ * FinalizeDomcCycle - Finalize cycle and activate R_next as R_annual
  *
  * Called at cycle boundary in ConnectBlock (BEFORE InitializeDomcCycle).
- * 1. Collect valid reveals from previous cycle
- * 2. Calculate median(R) with clamping
- * 3. Update state.R_annual
+ * 1. R_annual = R_next (activate the voted rate)
+ * 2. R_next = 0 (reset for next cycle)
  *
  * @param state [IN/OUT] Global state to update (R_annual)
  * @param nHeight Current block height (cycle boundary)
@@ -292,14 +389,14 @@ bool UndoFinalizeDomcCycle(
  * CalculateRMaxDynamic - Calculate R_MAX_dynamic based on year since activation
  *
  * FORMULA CONSENSUS:
- *   R_MAX_dynamic = max(400, 3700 - year × 100)
+ *   R_MAX_dynamic = max(700, 4000 - year × 100)
  *
  * Timeline:
- *   Year 0:  3700 bp (37%)
- *   Year 1:  3600 bp (36%)
+ *   Year 0:  4000 bp (40%)
+ *   Year 1:  3900 bp (39%)
  *   ...
- *   Year 33: 400 bp (4%) - minimum
- *   Year 34+: 400 bp (4%) - floor
+ *   Year 33: 700 bp (7%) - minimum
+ *   Year 34+: 700 bp (7%) - floor
  *
  * @param nHeight Current block height
  * @param nActivationHeight V6.0 activation height

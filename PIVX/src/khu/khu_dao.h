@@ -18,16 +18,22 @@ namespace khu_dao {
 // ============================================================================
 
 /**
- * DAO Treasury accumulates 2% annual, calculated daily (same trigger as yield).
- * Formula: T_daily = (U + Ur) / T_DAILY_DIVISOR
- * Where T_DAILY_DIVISOR = 10000 / (200 / 365) = 182500
+ * DAO Treasury accumulates ~5% annual (at R=40%), calculated daily (same trigger as yield).
  *
- * Verification: 2% annual = 200 basis points
- *   daily_rate = 200 / 365 / 10000 = 1 / 182500
- *   T_daily = (U + Ur) * (1 / 182500) = (U + Ur) / 182500
+ * FORMULA:
+ *   T_daily = (U × R_annual) / 10000 / T_DIVISOR / 365
+ *
+ * Where T_DIVISOR = 8 (from khu_domc.h) => Treasury = 1/8 of yield rate
+ *
+ * Example at R=40% (4000 bp):
+ *   T_annual = U × R / 10000 / T_DIVISOR = U × 4000 / 10000 / 8 = U × 0.05 = 5%
+ *
+ * Example at R=7% (700 bp, year 33):
+ *   T_annual = U × 700 / 10000 / 8 = U × 0.00875 = 0.875%
+ *
+ * As R% decreases over 33 years (40%→7%), T% also decreases proportionally.
  */
 static const uint32_t DAO_CYCLE_LENGTH = 1440;    // Daily (same as yield)
-static const int64_t T_DAILY_DIVISOR = 182500;    // (U+Ur) / 182500 = daily T (2% annual)
 
 /**
  * Check if current height is a DAO cycle boundary (daily)
@@ -47,17 +53,21 @@ bool IsDaoCycleBoundary(
 /**
  * Calculate daily DAO Treasury budget from current global state
  *
- * FORMULA CONSENSUS (2% annual):
- *   T_daily = (U + Ur) / 182500
+ * FORMULA:
+ *   T_daily = (U × R_annual) / 10000 / T_DIVISOR / 365
  *
- * Example:
- * - U + Ur = 1,000,000 KHU (1e14 satoshis)
- * - T_daily = 1e14 / 182500 = 547,945,205 satoshis (~547.9 KHU/day)
- * - Annual: 547.9 × 365 = 199,985 KHU ≈ 2% of 1M
+ * Where T_DIVISOR = 8 => Treasury = 1/8 of yield rate (~5% at R=40%)
+ *
+ * Example at R=40% (4000 bp):
+ * - U = 1,000,000 KHU (1e14 satoshis)
+ * - T_daily = 1e14 × 4000 / 10000 / 8 / 365 = 1,369,863,013 satoshis (~1369.9 KHU/day)
+ * - Annual: 1369.9 × 365 = 500,000 KHU ≈ 5% of 1M
+ *
+ * Note: T% decreases proportionally as R% decreases over 33 years.
  *
  * Uses 128-bit arithmetic to prevent overflow.
  *
- * @param state Current global state (uses U and Ur)
+ * @param state Current global state (uses U and R_annual)
  * @return Daily DAO budget in satoshis (0 on overflow)
  */
 CAmount CalculateDAOBudget(
@@ -95,6 +105,38 @@ bool UndoDaoTreasuryIfNeeded(
     KhuGlobalState& state,
     uint32_t nHeight,
     const Consensus::Params& consensusParams
+);
+
+/**
+ * Deduct budget payment from DAO Treasury (T)
+ *
+ * Called when a budget proposal is paid via superblock (post-V6).
+ * After V6, proposals are funded from T instead of block inflation.
+ *
+ * CONSENSUS CRITICAL: Must be called in ProcessKHUBlock after all transactions
+ * when a budget payment is detected in the coinbase.
+ *
+ * @param state [IN/OUT] Global state to modify (T decreases)
+ * @param nAmount Amount to deduct (in satoshis)
+ * @return true if successful, false if T < nAmount (insufficient funds)
+ */
+bool DeductBudgetPayment(
+    KhuGlobalState& state,
+    CAmount nAmount
+);
+
+/**
+ * Undo budget payment deduction (for DisconnectBlock)
+ *
+ * Reverses DeductBudgetPayment by adding back the amount to T.
+ *
+ * @param state [IN/OUT] Global state to restore
+ * @param nAmount Amount to restore (in satoshis)
+ * @return true on success, false on overflow
+ */
+bool UndoBudgetPayment(
+    KhuGlobalState& state,
+    CAmount nAmount
 );
 
 } // namespace khu_dao

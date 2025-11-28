@@ -4,6 +4,7 @@
 
 #include "khu/khu_validation.h"
 
+#include "budget/budgetmanager.h"
 #include "chain.h"
 #include "consensus/params.h"
 #include "khu/khu_commitment.h"
@@ -115,6 +116,43 @@ bool GetCurrentKHUState(KhuGlobalState& state)
     return db->ReadKHUState(pindex->nHeight, state);
 }
 
+// Get current DAO Treasury balance (T) for budget system
+// Called by CBudgetManager::GetTotalBudget() after V6 activation
+CAmount GetKhuTreasuryBalance()
+{
+    KhuGlobalState state;
+    if (!GetCurrentKHUState(state)) {
+        return 0;
+    }
+    return state.T;
+}
+
+// Deduct amount from DAO Treasury when a proposal is paid
+// Returns true if sufficient funds and deduction successful
+bool DeductFromKhuTreasury(CAmount amount, const uint256& proposalHash)
+{
+    LOCK(cs_khu);
+
+    KhuGlobalState state;
+    if (!GetCurrentKHUState(state)) {
+        LogPrintf("KHU: DeductFromKhuTreasury - failed to get current state\n");
+        return false;
+    }
+
+    if (state.T < amount) {
+        LogPrintf("KHU: DeductFromKhuTreasury - insufficient treasury balance: T=%lld, requested=%lld\n",
+                  state.T, amount);
+        return false;
+    }
+
+    // Deduction will be applied during block processing
+    // This function is called to validate the proposal payment is possible
+    LogPrint(BCLog::KHU, "KHU: Treasury deduction validated: amount=%lld, proposal=%s, T_remaining=%lld\n",
+             amount, proposalHash.ToString().substr(0, 16), state.T - amount);
+
+    return true;
+}
+
 bool ProcessKHUBlock(const CBlock& block,
                      CBlockIndex* pindex,
                      CCoinsViewCache& view,
@@ -182,44 +220,68 @@ bool ProcessKHUBlock(const CBlock& block,
     // STEP 7: PersistState()
 
     // STEP 0: Update R_MAX_dynamic based on year since activation
-    // Formula: R_MAX_dynamic = max(400, 3700 - year × 100)
-    // Decreases by 1% per year from 37% to 4% floor
+    // Formula: R_MAX_dynamic = max(700, 4000 - year × 100)
+    // Decreases by 1% per year from 40% to 7% floor
     khu_domc::UpdateRMaxDynamic(newState, nHeight,
         consensusParams.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight);
 
     // STEP 1: DOMC cycle boundary (Phase 6.2)
-    // At cycle boundary: finalize previous cycle (calculate median R), initialize new cycle
-    if (khu_domc::IsDomcCycleBoundary(nHeight, consensusParams.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight)) {
-        // Finalize previous cycle: calculate median(R) from reveals, update R_annual
+    // At cycle boundary: finalize previous cycle (R_next → R_annual), initialize new cycle
+    uint32_t V6_activation = consensusParams.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight;
+    if (khu_domc::IsDomcCycleBoundary(nHeight, V6_activation)) {
+        // Finalize previous cycle: R_next → R_annual (ACTIVATION)
         if (!khu_domc::FinalizeDomcCycle(newState, nHeight, consensusParams)) {
             return validationState.Error("domc-finalize-failed");
         }
 
-        // Initialize new cycle: update cycle_start, commit_phase_start, reveal_deadline
-        khu_domc::InitializeDomcCycle(newState, nHeight);
+        // Check if this is the FIRST cycle (V6 activation block)
+        // At V6 activation, R_annual must be initialized to R_DEFAULT (40%)
+        bool isFirstCycle = (nHeight == V6_activation);
 
-        LogPrint(BCLog::KHU, "ProcessKHUBlock: DOMC cycle boundary at height %u, R_annual=%u (%.2f%%), R_MAX=%u (%.2f%%)\n",
+        // Initialize new cycle: update cycle_start, commit_phase_start, reveal_deadline
+        // If isFirstCycle=true, also initializes R_annual to R_DEFAULT (4000 bp = 40%)
+        khu_domc::InitializeDomcCycle(newState, nHeight, isFirstCycle);
+
+        LogPrint(BCLog::KHU, "ProcessKHUBlock: DOMC cycle boundary at height %u, R_annual=%u (%.2f%%), R_MAX=%u (%.2f%%)%s\n",
                  nHeight, newState.R_annual, newState.R_annual / 100.0,
-                 newState.R_MAX_dynamic, newState.R_MAX_dynamic / 100.0);
+                 newState.R_MAX_dynamic, newState.R_MAX_dynamic / 100.0,
+                 isFirstCycle ? " [FIRST CYCLE - V6 ACTIVATION]" : "");
+    }
+
+    // STEP 1b: DOMC REVEAL instant (Phase 6.2)
+    // At REVEAL height (block 152640 of cycle): calculate median(R) → R_next
+    // R_next is visible during ADAPTATION phase (blocks 152640-172800)
+    uint32_t cycleStart = khu_domc::GetCurrentCycleId(nHeight, V6_activation);
+    if (khu_domc::IsRevealHeight(nHeight, cycleStart)) {
+        if (!khu_domc::ProcessRevealInstant(newState, nHeight, consensusParams)) {
+            return validationState.Error("domc-reveal-failed");
+        }
+
+        LogPrint(BCLog::KHU, "ProcessKHUBlock: DOMC REVEAL at height %u, R_next=%u (%.2f%%), R_annual remains %u (%.2f%%)\n",
+                 nHeight, newState.R_next, newState.R_next / 100.0,
+                 newState.R_annual, newState.R_annual / 100.0);
     }
 
     // STEP 2: DAO Treasury accumulation (Phase 6.3)
     // Budget calculated on INITIAL state (before yield/transactions)
-    if (!khu_dao::AccumulateDaoTreasuryIfNeeded(newState, nHeight, consensusParams)) {
+    // Only apply when !fJustCheck (no DB writes in DAO, but for consistency)
+    if (!fJustCheck && !khu_dao::AccumulateDaoTreasuryIfNeeded(newState, nHeight, consensusParams)) {
         return validationState.Error("dao-treasury-failed");
     }
 
     // STEP 3: Daily Yield distribution (Phase 6.1)
     // Apply daily yield to all mature staked notes (every 1440 blocks)
-    // This updates Ur += total_yield (Cr remains unchanged)
-    uint32_t V6_activation = consensusParams.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight;
-    if (khu_yield::ShouldApplyDailyYield(nHeight, V6_activation, newState.last_yield_update_height)) {
+    // This updates Cr += total_yield, Ur += total_yield (invariant Cr==Ur preserved)
+    // CRITICAL: Only apply when !fJustCheck to avoid double DB writes
+    // ApplyDailyYield writes to ZKHU note DB, so must skip during fJustCheck=true
+    // Note: V6_activation already defined above (STEP 1)
+    if (!fJustCheck && khu_yield::ShouldApplyDailyYield(nHeight, V6_activation, newState.last_yield_update_height)) {
         if (!khu_yield::ApplyDailyYield(newState, nHeight, V6_activation)) {
             return validationState.Error("daily-yield-failed");
         }
 
-        LogPrint(BCLog::KHU, "ProcessKHUBlock: Applied daily yield at height %u, Ur=%d\n",
-                 nHeight, newState.Ur);
+        LogPrint(BCLog::KHU, "ProcessKHUBlock: Applied daily yield at height %u, Cr=%d Ur=%d\n",
+                 nHeight, newState.Cr, newState.Ur);
     }
 
     // STEP 4: Process KHU transactions
@@ -305,6 +367,27 @@ bool ProcessKHUBlock(const CBlock& block,
         }
     }
     LogPrint(BCLog::KHU, "ProcessKHUBlock: Processed %d KHU transactions at height %d\n", nKHUTxCount, nHeight);
+
+    // STEP 5: Budget Payment Deduction (Phase 6.3 - DAO Treasury)
+    // Post-V6: If this is a budget payment block (superblock), deduct amount from T
+    // Budget payments are validated in validation.cpp via IsBlockValueValid/IsBudgetPaymentBlock
+    // Here we update the KHU state T to reflect the payment
+    if (!fJustCheck) {
+        CAmount nBudgetAmt = 0;
+        if (g_budgetman.GetExpectedPayeeAmount(nHeight, nBudgetAmt) && nBudgetAmt > 0) {
+            LogPrint(BCLog::KHU, "ProcessKHUBlock: Budget payment detected at height %d, amount=%lld\n",
+                     nHeight, (long long)nBudgetAmt);
+
+            if (!khu_dao::DeductBudgetPayment(newState, nBudgetAmt)) {
+                return validationState.Error(strprintf(
+                    "Insufficient DAO Treasury T=%lld for budget payment=%lld at height %d",
+                    (long long)newState.T, (long long)nBudgetAmt, nHeight));
+            }
+
+            LogPrint(BCLog::KHU, "ProcessKHUBlock: Deducted budget %lld from T, T_after=%lld\n",
+                     (long long)nBudgetAmt, (long long)newState.T);
+        }
+    }
 
     // Verify invariants (CRITICAL)
     if (!newState.CheckInvariants()) {
@@ -453,8 +536,27 @@ bool DisconnectKHUBlock(const CBlock& block,
                  nHeight, khuState.Ur);
     }
 
+    // PHASE 6: Undo DOMC REVEAL instant (Phase 6.2)
+    // Must be undone AFTER Daily Yield, BEFORE DOMC cycle (reverse order of Connect)
+    // At REVEAL height: restore R_next to value before ProcessRevealInstant
+    uint32_t cycleStart = khu_domc::GetCurrentCycleId(nHeight, V6_activation);
+    if (khu_domc::IsRevealHeight(nHeight, cycleStart)) {
+        // Read previous state to restore R_next
+        KhuGlobalState prevState;
+        if (db->ReadKHUState(nHeight - 1, prevState)) {
+            khuState.R_next = prevState.R_next;
+            LogPrint(BCLog::KHU, "DisconnectKHUBlock: Undid DOMC REVEAL at height %u, R_next restored to %u\n",
+                     nHeight, khuState.R_next);
+        } else {
+            // Fallback: reset R_next to 0 (no REVEAL processed)
+            khuState.R_next = 0;
+            LogPrint(BCLog::KHU, "DisconnectKHUBlock: Undid DOMC REVEAL at height %u, R_next reset to 0 (fallback)\n",
+                     nHeight);
+        }
+    }
+
     // PHASE 6: Undo DOMC cycle finalization (Phase 6.2)
-    // Must be undone AFTER Daily Yield, BEFORE DAO (reverse order of Connect)
+    // Must be undone AFTER REVEAL instant, BEFORE DAO (reverse order of Connect)
     // At cycle boundary: undo R_annual update from previous cycle finalization
     if (khu_domc::IsDomcCycleBoundary(nHeight, V6_activation)) {
         if (!khu_domc::UndoFinalizeDomcCycle(khuState, nHeight, consensusParams)) {
@@ -464,6 +566,21 @@ bool DisconnectKHUBlock(const CBlock& block,
 
         LogPrint(BCLog::KHU, "DisconnectKHUBlock: Undid DOMC cycle finalization at height %u, R_annual=%u\n",
                  nHeight, khuState.R_annual);
+    }
+
+    // PHASE 6: Undo Budget Payment (Phase 6.3 - must be BEFORE DAO Treasury in disconnect)
+    // This is the reverse order of Connect (Budget was applied AFTER DAO in Connect)
+    {
+        CAmount nBudgetAmt = 0;
+        if (g_budgetman.GetExpectedPayeeAmount(nHeight, nBudgetAmt) && nBudgetAmt > 0) {
+            if (!khu_dao::UndoBudgetPayment(khuState, nBudgetAmt)) {
+                return validationState.Invalid(false, REJECT_INVALID, "undo-budget-payment-failed",
+                    strprintf("Failed to undo budget payment %lld at height %d",
+                              (long long)nBudgetAmt, nHeight));
+            }
+            LogPrint(BCLog::KHU, "DisconnectKHUBlock: Undid budget payment %lld, T_after=%lld\n",
+                     (long long)nBudgetAmt, (long long)khuState.T);
+        }
     }
 
     // PHASE 6: Undo DAO Treasury (Phase 6.3)

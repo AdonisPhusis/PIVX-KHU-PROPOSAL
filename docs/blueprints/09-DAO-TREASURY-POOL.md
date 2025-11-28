@@ -1,7 +1,7 @@
 # 09 — DAO TREASURY POOL BLUEPRINT
 
-**Date:** 2025-11-26
-**Version:** 2.0
+**Date:** 2025-11-27
+**Version:** 2.1
 **Status:** CANONIQUE
 
 ---
@@ -21,13 +21,13 @@
 
 ### 1.1 Le Problème
 
-**Après l'année 6, l'émission PIVX tombe à 0 PIV/bloc.**
+**À l'activation V6, l'émission PIVX tombe à 0 PIV/bloc IMMÉDIATEMENT.**
 
 ```
-Année 0-6:  Block reward DAO = 6→5→4→3→2→1→0 PIV/bloc
-Année 6+:   Block reward DAO = 0 PIV/bloc
+PRE-V6:   Block reward = 20 PIV/bloc (6 Staker + 4 MN + 10 DAO)
+POST-V6:  Block reward = 0 PIV/bloc (IMMÉDIAT)
 
-→ Comment financer la DAO après l'année 6?
+→ Comment financer la DAO après V6?
 ```
 
 ### 1.2 La Solution: Pool Interne T
@@ -40,7 +40,7 @@ Année 6+:   Block reward DAO = 0 PIV/bloc
 ├────────────────────────────────────────────────┤
 │ • Variable dans KhuGlobalState                 │
 │ • S'incrémente QUOTIDIENNEMENT (1440 blocs)    │
-│ • T_daily = (U + Ur) / 182500  (2% annuel)     │
+│ • T_daily = (U × R_annual) / 10000 / 8 / 365   │
 │ • Unifié avec yield dans ApplyDailyUpdates     │
 │ • Propositions DAO peuvent dépenser depuis T   │
 └────────────────────────────────────────────────┘
@@ -50,7 +50,7 @@ Année 6+:   Block reward DAO = 0 PIV/bloc
 
 ```
 ✅ AUTOMATIQUE:  T s'incrémente sans intervention humaine
-✅ MATHÉMATIQUE: Formule fixe (U + Ur) / 182500 par jour (2% annuel)
+✅ MATHÉMATIQUE: T_daily = (U × R_annual) / 10000 / 8 / 365 (~5% at R=40%)
 ✅ TRANSPARENT:  Visible dans KhuGlobalState
 ✅ GOUVERNÉ:     Dépenses approuvées par vote MN (Phase 7)
 ✅ PERPÉTUEL:    Continue indéfiniment (après année 6)
@@ -75,7 +75,7 @@ Année 6+:   Block reward DAO = 0 PIV/bloc
 │ (quotidien)  │      │            │      │ par MN       │
 │              │      │ Accumule   │      │              │
 │ T_daily =    │      │ perpétuel  │      │ T -= montant │
-│ (U+Ur)/182500│      └────────────┘      └──────────────┘
+│ (U×R%)/20/365│      └────────────┘      └──────────────┘
 └──────────────┘                            Gouverné (MN)
   Automatique                               (Phase 7)
 ```
@@ -89,7 +89,8 @@ void ApplyDailyUpdatesIfNeeded(KhuGlobalState& state, uint32_t nHeight) {
     if ((nHeight - state.last_yield_update_height) >= BLOCKS_PER_DAY) {  // 1440
 
         // 1. DAO Treasury accumulation (GLOBAL)
-        int64_t T_daily = (state.U + state.Ur) / 182500;  // 2% annuel
+        // T_daily = (U × R_annual) / 10000 / T_DIVISOR / 365
+        int64_t T_daily = CalculateDaoTreasuryDaily(state.U, state.R_annual);
         state.T += T_daily;
 
         // 2. Yield per-note (INDIVIDUEL)
@@ -126,7 +127,7 @@ struct KhuGlobalState {
     int64_t Ur;  // reward rights
 
     // DAO treasury
-    int64_t T;   // DAO pool accumulator (2%/an)
+    int64_t T;   // DAO pool accumulator (~5%/an at R=40%)
 
     // ... autres champs ...
 };
@@ -147,33 +148,22 @@ Nouvel invariant:
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│ Année 0-6: DOUBLE financement DAO                   │
+│ POST-V6: Pool T = SEUL financement DAO              │
 ├─────────────────────────────────────────────────────┤
-│ Source 1: Block reward DAO (6→0 PIV/bloc)           │
-│   • Via émission PIVX (Blueprint 01)                │
-│   • Payé chaque bloc                                │
-│   • Termine à l'année 6                             │
+│ Block reward = 0 PIV (immédiat à V6)                │
 │                                                     │
-│ Source 2: Pool T accumulation                       │
-│   • (U + Ur) / 182500 quotidien (2%/an)             │
-│   • Pool interne (pas de paiement)                  │
-│   • Commence dès activation                         │
+│ Pool T accumulation:                                │
+│   • Formule: (U × R_annual) / 10000 / 8 / 365       │
+│   • Trigger: tous les 1440 blocs (quotidien)        │
+│   • Pool interne (pas de paiement externe)          │
+│   • Commence dès activation V6                      │
 │   • Continue perpétuellement                        │
+│   • ~5% annuel de U quand R%=40%                    │
+│   • Décroît avec R% (40%→7% sur 33 ans)             │
 │                                                     │
-│ Total DAO = Source 1 + accumulation T               │
-└─────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────┐
-│ Année 6+: UN SEUL système DAO                       │
-├─────────────────────────────────────────────────────┤
-│ Source 1: Block reward = 0 PIV                      │
-│                                                     │
-│ Source 2: Pool T                                    │
-│   • Accumulation: (U + Ur) / 182500 quotidien       │
-│   • Dépenses: Propositions votées (Phase 7)         │
+│ Dépenses:                                           │
+│   • Propositions votées par MN (Phase 7)            │
 │   • Seul mécanisme de financement DAO               │
-│                                                     │
-│ Total DAO = Pool T uniquement                       │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -186,12 +176,12 @@ Nouvel invariant:
 ```cpp
 // Timing (voir SPEC.md)
 static const uint32_t BLOCKS_PER_DAY = 1440;
-static const uint32_t T_DAILY_DIVISOR = 182500;  // 2% annual / 365 days
+static const uint32_t T_DIVISOR = 8;   // Treasury = 1/8 of yield rate (~5% at R=40%)
 
 // Dérivation:
-// 2% annual = 200 basis points
-// Daily = 200 / 365 = 0.548% par jour
-// Diviseur = 10000 × 365 / 200 = 182500
+// T_daily = (U × R_annual) / 10000 / 8 / 365
+// With R_annual = 4000 (40%): T ≈ U × 5% / 365
+// T_DIVISOR = 8 (Treasury gets 1/8th of yield rate)
 ```
 
 ### 3.2 Formule Canonique
@@ -200,17 +190,17 @@ static const uint32_t T_DAILY_DIVISOR = 182500;  // 2% annual / 365 days
 /**
  * Calcul accumulation quotidienne T
  *
- * Formule: T_daily = (U + Ur) / 182500
+ * Formule: T_daily = (U × R_annual) / 10000 / T_DIVISOR / 365
  *
  * @param U Supply KHU_T
- * @param Ur Reward rights
+ * @param R_annual Annual rate in basis points (4000 = 40%)
  * @return Montant à ajouter à T
  */
-int64_t CalculateDaoTreasuryDaily(int64_t U, int64_t Ur)
+int64_t CalculateDaoTreasuryDaily(int64_t U, uint16_t R_annual)
 {
     // OVERFLOW PROTECTION: Utilise __int128
-    __int128 total = (__int128)U + (__int128)Ur;
-    __int128 daily = total / T_DAILY_DIVISOR;
+    // T = (U × R_annual) / 10000 / T_DIVISOR / 365
+    __int128 daily = (__int128)U * R_annual / 10000 / T_DIVISOR / 365;
 
     if (daily > MAX_MONEY) {
         LogPrintf("WARNING: CalculateDaoTreasuryDaily overflow\n");
@@ -224,23 +214,24 @@ int64_t CalculateDaoTreasuryDaily(int64_t U, int64_t Ur)
 ### 3.3 Exemples Numériques
 
 ```
-Exemple 1: Jour 1 après activation
+Exemple 1: Jour 1 après activation (R% = 40%)
   U = 1,000,000 KHU
-  Ur = 0 KHU (pas encore de yield)
-  T_daily = 1,000,000 / 182500 = 5.48 KHU
-  T: 0 → 5.48
+  R_annual = 4000 (40%)
+  T_daily = (1,000,000 × 4000) / 10000 / 8 / 365 = 13.70 KHU
+  T: 0 → 13.70
 
-Exemple 2: Jour 100
+Exemple 2: Jour 100 (R% = 40%)
   U = 1,500,000 KHU
-  Ur = 50,000 KHU
-  T_daily = 1,550,000 / 182500 = 8.49 KHU
-  T: (accumulé) → T + 8.49
+  R_annual = 4000
+  T_daily = (1,500,000 × 4000) / 10000 / 8 / 365 = 20.55 KHU
+  T: (accumulé) → T + 20.55
 
 Exemple 3: Année 1 (365 jours)
   U moyen = 2,000,000 KHU
-  Ur moyen = 200,000 KHU
-  T_annual = (2,200,000 / 182500) × 365 = 43,973 KHU
-  ≈ 2% × 2,200,000 = 44,000 KHU ✓
+  R_annual = 4000
+  T_annual = (2,000,000 × 4000) / 10000 / 8 = 100,000 KHU
+  ≈ U × R% / 8 = 2,000,000 × 40% / 8 = 100,000 KHU ✓
+  ≈ 5% de U annuel (à R%=40%)
 ```
 
 ### 3.4 Sécurité & Protection
@@ -277,16 +268,16 @@ src/khu/khu_yield.cpp    (modifier ApplyDailyUpdatesIfNeeded)
 #include <cstdint>
 
 // DAO Treasury Pool (T) — Phase 6
-// T accumulates (U + Ur) / 182500 daily (2% annual)
+// T = (U × R_annual) / 10000 / T_DIVISOR / 365
 // Unified with yield in ApplyDailyUpdatesIfNeeded()
 
-static const uint32_t T_DAILY_DIVISOR = 182500;
+static const uint32_t T_DIVISOR = 8;  // Treasury = 1/8 of yield rate (~5% at R=40%)
 
 /**
  * Calculate daily T accumulation
- * Formula: (U + Ur) / 182500 = 2% annual / 365
+ * Formula: (U × R_annual) / 10000 / T_DIVISOR / 365
  */
-int64_t CalculateDaoTreasuryDaily(int64_t U, int64_t Ur);
+int64_t CalculateDaoTreasuryDaily(int64_t U, uint16_t R_annual);
 
 #endif // PIVX_KHU_DAO_H
 ```
@@ -297,14 +288,16 @@ int64_t CalculateDaoTreasuryDaily(int64_t U, int64_t Ur);
 #include "khu/khu_dao.h"
 #include "amount.h"
 #include "logging.h"
+#include "khu/khu_domc.h"  // For T_DIVISOR
 
-int64_t CalculateDaoTreasuryDaily(int64_t U, int64_t Ur)
+int64_t CalculateDaoTreasuryDaily(int64_t U, uint16_t R_annual)
 {
-    __int128 total = (__int128)U + (__int128)Ur;
-    __int128 daily = total / T_DAILY_DIVISOR;
+    // T = (U × R_annual) / 10000 / T_DIVISOR / 365
+    // With T_DIVISOR = 8 → T ≈ 5% annual at R=40%
+    __int128 daily = (__int128)U * R_annual / 10000 / khu_domc::T_DIVISOR / 365;
 
     if (daily < 0 || daily > MAX_MONEY) {
-        LogPrintf("WARNING: CalculateDaoTreasuryDaily overflow (U=%lld, Ur=%lld)\n", U, Ur);
+        LogPrintf("WARNING: CalculateDaoTreasuryDaily overflow (U=%lld, R=%u)\n", U, R_annual);
         return 0;
     }
 
@@ -348,32 +341,33 @@ BOOST_AUTO_TEST_SUITE(khu_dao_tests)
 
 BOOST_AUTO_TEST_CASE(dao_daily_calculation)
 {
-    // T_daily = (U + Ur) / 182500
+    // T_daily = (U × R_annual) / 10000 / T_DIVISOR / 365
 
-    // Case 1: 1M KHU
-    int64_t daily = CalculateDaoTreasuryDaily(1000000 * COIN, 0);
-    int64_t expected = (1000000 * COIN) / 182500;
+    // Case 1: 1M KHU @ 40%
+    int64_t daily = CalculateDaoTreasuryDaily(1000000 * COIN, 4000);
+    // = (1,000,000 × 4000) / 10000 / 20 / 365 = 5.48 KHU
+    int64_t expected = ((__int128)1000000 * COIN * 4000) / 10000 / 20 / 365;
     BOOST_CHECK_EQUAL(daily, expected);
 
-    // Case 2: 1.5M KHU + 0.5M Ur
-    daily = CalculateDaoTreasuryDaily(1500000 * COIN, 500000 * COIN);
-    expected = (2000000 * COIN) / 182500;
+    // Case 2: 1.5M KHU @ 40%
+    daily = CalculateDaoTreasuryDaily(1500000 * COIN, 4000);
+    expected = ((__int128)1500000 * COIN * 4000) / 10000 / 20 / 365;
     BOOST_CHECK_EQUAL(daily, expected);
 }
 
 BOOST_AUTO_TEST_CASE(dao_annual_rate)
 {
-    // Verify 2% annual rate
+    // Verify T_annual = U × R% / 20 (at R% = 40%, T ≈ 2%)
     int64_t U = 1000000 * COIN;
-    int64_t Ur = 0;
+    uint16_t R_annual = 4000;  // 40%
 
     int64_t annual = 0;
     for (int day = 0; day < 365; day++) {
-        annual += CalculateDaoTreasuryDaily(U, Ur);
+        annual += CalculateDaoTreasuryDaily(U, R_annual);
     }
 
-    // Should be ~2% of U
-    int64_t expected = (U * 2) / 100;
+    // Should be U × 40% / 20 = 2% of U
+    int64_t expected = ((__int128)U * R_annual) / 10000 / 20;
     int64_t tolerance = expected / 100;  // 1% tolerance
 
     BOOST_CHECK(abs(annual - expected) < tolerance);
@@ -412,7 +406,7 @@ BOOST_AUTO_TEST_SUITE_END()
 Avant merge:
 □ Tests unitaires passent
 □ T s'incrémente correctement tous les 1440 blocs
-□ Formule (U + Ur) / 182500 = 2% annuel vérifiée
+□ Formule (U × R_annual) / 10000 / T_DIVISOR / 365 vérifiée
 □ Protection overflow testée
 □ Invariant T >= 0 vérifié
 □ Unifié avec yield (même ApplyDailyUpdatesIfNeeded)
@@ -426,16 +420,16 @@ Avant merge:
 
 ### Questions Générales
 
-**Q: Pourquoi 2% annuel?**
-A: Compromis entre financement suffisant et inflation contrôlée. 2% est comparable à l'inflation ciblée des économies stables.
+**Q: Pourquoi ~5% annuel (à R%=40%)?**
+A: T_DIVISOR=8 signifie que T représente 1/8 du taux de yield. À R%=40%, cela donne ~5% annuel de U. À mesure que R% décroît (40%→7% sur 33 ans), T décroît proportionnellement (~0.875% à R%=7%).
 
 **Q: Pourquoi quotidien et pas tous les 4 mois?**
 A: Unification avec le yield (même timing = code plus simple). Le résultat annuel est identique.
 
 **Q: T est-il de l'argent "magique"?**
-A: T est une réserve mathématique qui représente des droits futurs à financement DAO. Les PIV sont créés uniquement quand une proposition est approuvée (Phase 7).
+A: T est une réserve mathématique qui représente des droits futurs à financement DAO. Les KHU sont créés uniquement quand une proposition est approuvée (Phase 7).
 
-**Q: T augmente la supply PIV?**
+**Q: T augmente la supply?**
 A: Non dans Phase 6 (accumulation uniquement). En Phase 7, les dépenses depuis T créeront de l'inflation contrôlée et gouvernée.
 
 ### Questions Techniques
@@ -465,12 +459,15 @@ A: Nécessite un hard fork (consensus change).
 ╚═══════════════════════════════════════════════════════════╝
 
 RÈGLES FONDAMENTALES (NON-NÉGOCIABLES):
-1. T_daily = (U + Ur) / 182500 (2% annuel)
-2. Calculé tous les 1440 blocs (quotidien)
-3. Unifié avec yield dans ApplyDailyUpdatesIfNeeded()
-4. T >= 0 (invariant)
-5. Pas d'adresse, pas de transaction (pool interne)
-6. Accumulation perpétuelle (pas de burn)
+1. T_daily = (U × R_annual) / 10000 / T_DIVISOR / 365
+2. T_DIVISOR = 8 (défini dans khu_domc.h)
+3. ~5% annuel de U à R%=40%, décroît avec R%
+4. Calculé tous les 1440 blocs (quotidien)
+5. Unifié avec yield dans ApplyDailyUpdatesIfNeeded()
+6. T >= 0 (invariant)
+7. Pas d'adresse, pas de transaction (pool interne)
+8. Accumulation perpétuelle (pas de burn)
+9. POST-V6: Seule source de financement DAO (block reward = 0)
 
 Référence: SPEC.md §8 (DAO Treasury)
 ```

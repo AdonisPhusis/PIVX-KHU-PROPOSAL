@@ -49,33 +49,33 @@ double R_percent = R_annual / 100.0;  // 2555 / 100 = 25.55%
 
 ### 1.2 Pourquoi R% est Nécessaire ?
 
-**Après l'année 6, l'émission PIVX tombe à 0.**
+**À l'activation V6, l'émission PIVX tombe à 0 IMMÉDIATEMENT.**
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│ TIMELINE PIVX v6-KHU                                 │
+│ TIMELINE PIVX V6-KHU                                 │
 ├──────────────────────────────────────────────────────┤
-│ Année 0-6 :                                          │
-│   • Émission PIVX : 18→15→12→9→6→3→0 PIV/bloc       │
-│   • Stakers PIV : reward_year PIV/bloc               │
-│   • Stakers KHU : reward_year PIV + R% KHU           │
+│ PRE-V6 (PIVX V5.6 actuel) :                          │
+│   • Block reward : 20 PIV/bloc                       │
+│   • Staker : 6 PIV, MN : 4 PIV, DAO : 10 PIV         │
 │                                                      │
-│ Année 6+ :                                           │
-│   • Émission PIVX : 0 PIV/bloc ❌                    │
+│ POST-V6 (IMMÉDIAT) :                                 │
+│   • Block reward : 0 PIV/bloc ❌                     │
 │   • Stakers PIV : 0 récompense ❌                    │
-│   • Stakers KHU : R% KHU uniquement ✅               │
+│   • Stakers KHU : R% yield uniquement ✅             │
 │                                                      │
 │ → R% devient la SEULE récompense pour stakers       │
+│ → Économie gouvernée par R% (40%→7% sur 33 ans)     │
 └──────────────────────────────────────────────────────┘
 ```
 
-**Sans R%, après année 6 :**
+**Sans R%, après V6 :**
 - Pas de récompense pour stakers
 - Pas d'incitation à sécuriser le réseau
 - Réseau devient vulnérable
 
 **Avec R% :**
-- Stakers continuent d'être récompensés
+- Stakers KHU continuent d'être récompensés
 - Incitation perpétuelle à staker
 - Sécurité réseau maintenue
 
@@ -83,13 +83,11 @@ double R_percent = R_annual / 100.0;  // 2555 / 100 = 25.55%
 
 ```
 ┌─────────────────────────────────────────┐
-│ ÉMISSION PIVX (reward_year)             │
+│ ÉMISSION PIVX (POST-V6)                 │
 ├─────────────────────────────────────────┤
-│ • Source : Création monétaire PIVX      │
-│ • Formule : max(6 - year, 0) × COIN     │
-│ • Bénéficiaires : Staker + MN + DAO     │
-│ • Gouvernance : AUCUNE (immuable)       │
-│ • Fin : Année 6 (0 PIV/bloc)            │
+│ • Block reward : 0 PIV (immédiat à V6)  │
+│ • Staker/MN/DAO : 0 PIV/bloc            │
+│ • Fin immédiate à l'activation V6       │
 └─────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────┐
@@ -99,11 +97,11 @@ double R_percent = R_annual / 100.0;  // 2555 / 100 = 25.55%
 │ • Formule : (amount × R%) / 365 / 10000 │
 │ • Bénéficiaires : Stakers KHU uniquement│
 │ • Gouvernance : DOMC (vote MN)          │
-│ • Fin : Jamais (perpétuel)              │
+│ • R% : 40%→7% sur 33 ans (perpétuel)    │
 └─────────────────────────────────────────┘
 ```
 
-**INTERDICTION ABSOLUE : R% et reward_year NE DOIVENT JAMAIS s'influencer.**
+**RÈGLE : L'économie post-V6 est ENTIÈREMENT gouvernée par R% (yield) et T (treasury).**
 
 ---
 

@@ -50,10 +50,17 @@ bool CheckKHUStake(
                         REJECT_INVALID, "bad-stake-input-type");
     }
 
-    // 4. Verify amount > 0
+    // 4. Verify amount > 0 and >= MIN_STAKE_AMOUNT (anti-spam)
     if (khuCoin.amount <= 0) {
         return state.DoS(100, error("%s: invalid amount %d", __func__, khuCoin.amount),
                         REJECT_INVALID, "bad-stake-amount");
+    }
+
+    // 4b. Anti-spam: Minimum stake amount check
+    if (khuCoin.amount < MIN_STAKE_AMOUNT) {
+        return state.DoS(10, error("%s: stake amount %s below minimum %s",
+                                  __func__, FormatMoney(khuCoin.amount), FormatMoney(MIN_STAKE_AMOUNT)),
+                        REJECT_INVALID, "bad-stake-amount-too-small");
     }
 
     // 5. Input KHU_T not already staked (fStaked == false)
@@ -122,6 +129,12 @@ bool ApplyKHUStake(
     CAmount amount = -tx.sapData->valueBalance;
     if (amount <= 0) {
         return error("%s: invalid stake amount from valueBalance: %d", __func__, amount);
+    }
+
+    // 2b. Anti-spam: Minimum stake amount (redundant with CheckKHUStake, but safe)
+    if (amount < MIN_STAKE_AMOUNT) {
+        return error("%s: stake amount %s below minimum %s",
+                    __func__, FormatMoney(amount), FormatMoney(MIN_STAKE_AMOUNT));
     }
 
     LogPrint(BCLog::KHU, "%s: Stake amount from valueBalance: %d satoshis\n", __func__, amount);

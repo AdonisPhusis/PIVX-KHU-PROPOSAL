@@ -62,6 +62,22 @@ public:
     bool WriteNullifierMapping(const uint256& nullifier, const uint256& cm);
     bool ReadNullifierMapping(const uint256& nullifier, uint256& cm) const;
     bool EraseNullifierMapping(const uint256& nullifier);
+
+    /**
+     * Iterate all ZKHU notes (for yield calculation)
+     * Bug #8 Fix: Uses encapsulated iteration with correct key format
+     * @param func Functor: bool(uint256 noteId, ZKHUNoteData& data) - return false to stop
+     * @return true if iteration completed, false on error
+     */
+    template<typename Func>
+    bool IterateNotes(Func func) const;
+
+    /**
+     * Get all ZKHU notes as a vector (convenience function)
+     * Note: Not const because NewIterator() is non-const in CDBWrapper
+     * @return vector of (noteId, noteData) pairs
+     */
+    std::vector<std::pair<uint256, ZKHUNoteData>> GetAllNotes();
 };
 
 #endif // PIVX_KHU_ZKHU_DB_H

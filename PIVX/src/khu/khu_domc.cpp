@@ -7,6 +7,7 @@
 #include "khu/khu_state.h"
 #include "khu/khu_statedb.h"
 #include "khu/khu_validation.h"
+#include "chainparams.h"
 #include "consensus/params.h"
 #include "hash.h"
 #include "logging.h"
@@ -14,6 +15,35 @@
 #include <algorithm>
 
 namespace khu_domc {
+
+// ============================================================================
+// Network-aware parameter getters (RegTest uses shorter cycles for testing)
+// ============================================================================
+
+uint32_t GetDomcCycleLength()
+{
+    return Params().IsRegTestNet() ? DOMC_CYCLE_LENGTH_REGTEST : DOMC_CYCLE_LENGTH;
+}
+
+uint32_t GetDomcVoteOffset()
+{
+    return Params().IsRegTestNet() ? DOMC_VOTE_OFFSET_REGTEST : DOMC_VOTE_OFFSET;
+}
+
+uint32_t GetDomcRevealHeight()
+{
+    return Params().IsRegTestNet() ? DOMC_REVEAL_HEIGHT_REGTEST : DOMC_REVEAL_HEIGHT;
+}
+
+uint32_t GetDomcVoteDuration()
+{
+    return Params().IsRegTestNet() ? DOMC_VOTE_DURATION_REGTEST : DOMC_VOTE_DURATION;
+}
+
+uint32_t GetDomcAdaptationDuration()
+{
+    return Params().IsRegTestNet() ? DOMC_ADAPTATION_DURATION_REGTEST : DOMC_ADAPTATION_DURATION;
+}
 
 // ============================================================================
 // DomcCommit implementation
@@ -63,9 +93,10 @@ uint32_t GetCurrentCycleId(uint32_t nHeight, uint32_t nActivationHeight)
         return 0; // Before activation
     }
 
+    uint32_t cycleLen = GetDomcCycleLength();
     uint32_t blocks_since_activation = nHeight - nActivationHeight;
-    uint32_t cycle_number = blocks_since_activation / DOMC_CYCLE_LENGTH;
-    return nActivationHeight + (cycle_number * DOMC_CYCLE_LENGTH);
+    uint32_t cycle_number = blocks_since_activation / cycleLen;
+    return nActivationHeight + (cycle_number * cycleLen);
 }
 
 bool IsDomcCycleBoundary(uint32_t nHeight, uint32_t nActivationHeight)
@@ -80,29 +111,42 @@ bool IsDomcCycleBoundary(uint32_t nHeight, uint32_t nActivationHeight)
         return true;
     }
 
-    // Subsequent cycles: every DOMC_CYCLE_LENGTH blocks
+    // Subsequent cycles: every DOMC_CYCLE_LENGTH blocks (network-dependent)
     uint32_t blocks_since_activation = nHeight - nActivationHeight;
-    return (blocks_since_activation % DOMC_CYCLE_LENGTH) == 0;
+    return (blocks_since_activation % GetDomcCycleLength()) == 0;
 }
 
-bool IsDomcCommitPhase(uint32_t nHeight, uint32_t cycleStart)
+bool IsDomcVotePhase(uint32_t nHeight, uint32_t cycleStart)
 {
     if (nHeight < cycleStart) {
         return false;
     }
 
     uint32_t offset = nHeight - cycleStart;
-    return (offset >= DOMC_COMMIT_OFFSET && offset < DOMC_REVEAL_OFFSET);
+    // VOTE phase: [VOTE_OFFSET, REVEAL_HEIGHT) - MN submit commits AND reveals
+    return (offset >= GetDomcVoteOffset() && offset < GetDomcRevealHeight());
 }
 
-bool IsDomcRevealPhase(uint32_t nHeight, uint32_t cycleStart)
+bool IsDomcAdaptationPhase(uint32_t nHeight, uint32_t cycleStart)
 {
     if (nHeight < cycleStart) {
         return false;
     }
 
     uint32_t offset = nHeight - cycleStart;
-    return (offset >= DOMC_REVEAL_OFFSET && offset < DOMC_CYCLE_LENGTH);
+    // ADAPTATION phase: [REVEAL_HEIGHT, CYCLE_LENGTH) - R_next visible, everyone adapts
+    return (offset >= GetDomcRevealHeight() && offset < GetDomcCycleLength());
+}
+
+bool IsRevealHeight(uint32_t nHeight, uint32_t cycleStart)
+{
+    if (nHeight < cycleStart) {
+        return false;
+    }
+
+    uint32_t offset = nHeight - cycleStart;
+    // REVEAL instant at REVEAL_HEIGHT (network-dependent)
+    return (offset == GetDomcRevealHeight());
 }
 
 // ============================================================================
@@ -183,19 +227,64 @@ uint16_t CalculateDomcMedian(
 
 void InitializeDomcCycle(
     KhuGlobalState& state,
-    uint32_t nHeight
+    uint32_t nHeight,
+    bool isFirstCycle
 )
 {
     state.domc_cycle_start = nHeight;
-    state.domc_cycle_length = DOMC_CYCLE_LENGTH;
-    state.domc_commit_phase_start = nHeight + DOMC_COMMIT_OFFSET;
-    state.domc_reveal_deadline = nHeight + DOMC_REVEAL_OFFSET;
+    state.domc_cycle_length = GetDomcCycleLength();
+    state.domc_commit_phase_start = nHeight + GetDomcVoteOffset();
+    state.domc_reveal_deadline = nHeight + GetDomcRevealHeight();
+
+    // CRITICAL: At V6 activation (first cycle), initialize R_annual to R_DEFAULT (40%)
+    // This is the ONLY place where R_annual is set to 40% for the first time.
+    // SetNull() initializes R_annual = 0, so we MUST set it here.
+    if (isFirstCycle) {
+        state.R_annual = R_DEFAULT;  // 4000 basis points = 40%
+        state.R_MAX_dynamic = R_MAX_DYNAMIC_INITIAL;  // 4000 basis points = 40%
+        LogPrint(BCLog::KHU, "InitializeDomcCycle: FIRST CYCLE at V6 activation - R_annual initialized to %u (%.2f%%)\n",
+                 state.R_annual, state.R_annual / 100.0);
+    }
 
     LogPrint(BCLog::KHU, "InitializeDomcCycle: New cycle at height %u\n", nHeight);
-    LogPrint(BCLog::KHU, "  Commit phase: %u - %u\n",
+    LogPrint(BCLog::KHU, "  VOTE phase: %u - %u\n",
              state.domc_commit_phase_start, state.domc_reveal_deadline - 1);
-    LogPrint(BCLog::KHU, "  Reveal phase: %u - %u\n",
-             state.domc_reveal_deadline, nHeight + DOMC_CYCLE_LENGTH - 1);
+    LogPrint(BCLog::KHU, "  REVEAL instant: %u\n", state.domc_reveal_deadline);
+    LogPrint(BCLog::KHU, "  ADAPTATION phase: %u - %u\n",
+             state.domc_reveal_deadline, nHeight + GetDomcCycleLength() - 1);
+}
+
+bool ProcessRevealInstant(
+    KhuGlobalState& state,
+    uint32_t nHeight,
+    const Consensus::Params& consensusParams
+)
+{
+    uint32_t V6_activation = consensusParams.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight;
+
+    // Must be at REVEAL height within current cycle
+    uint32_t cycleStart = GetCurrentCycleId(nHeight, V6_activation);
+    if (!IsRevealHeight(nHeight, cycleStart)) {
+        LogPrintf("ERROR: ProcessRevealInstant called at non-reveal height %u (cycle %u)\n",
+                  nHeight, cycleStart);
+        return false;
+    }
+
+    LogPrint(BCLog::KHU, "ProcessRevealInstant: Processing REVEAL at height %u (cycle %u)\n",
+             nHeight, cycleStart);
+
+    // Calculate median R% from valid reveals for THIS cycle
+    uint16_t R_next_value = CalculateDomcMedian(cycleStart, state.R_annual, state.R_MAX_dynamic);
+
+    // Store in R_next (visible during ADAPTATION phase)
+    state.R_next = R_next_value;
+
+    LogPrint(BCLog::KHU, "ProcessRevealInstant: R_next set to %u (%.2f%%) - visible during ADAPTATION\n",
+             R_next_value, R_next_value / 100.0);
+    LogPrint(BCLog::KHU, "ProcessRevealInstant: Current R_annual remains %u (%.2f%%) until cycle end\n",
+             state.R_annual, state.R_annual / 100.0);
+
+    return true;
 }
 
 bool FinalizeDomcCycle(
@@ -204,10 +293,18 @@ bool FinalizeDomcCycle(
     const Consensus::Params& consensusParams
 )
 {
-    // Calculate previous cycle ID
-    uint32_t prevCycleId = nHeight - DOMC_CYCLE_LENGTH;
+    uint32_t V6_activation = consensusParams.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight;
 
-    if (prevCycleId < consensusParams.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight) {
+    // First cycle boundary at activation height - nothing to finalize
+    if (nHeight == V6_activation) {
+        LogPrint(BCLog::KHU, "FinalizeDomcCycle: First cycle at V6 activation, nothing to finalize\n");
+        return true;
+    }
+
+    // Calculate previous cycle ID
+    uint32_t prevCycleId = nHeight - GetDomcCycleLength();
+
+    if (prevCycleId < V6_activation) {
         // First cycle after activation → no previous cycle to finalize
         LogPrint(BCLog::KHU, "FinalizeDomcCycle: First cycle, no previous cycle to finalize\n");
         return true;
@@ -216,18 +313,29 @@ bool FinalizeDomcCycle(
     LogPrint(BCLog::KHU, "FinalizeDomcCycle: Finalizing cycle %u at height %u\n",
              prevCycleId, nHeight);
 
-    // Calculate new R_annual from median of previous cycle
+    // ACTIVATION: R_next → R_annual
+    // R_next was set at REVEAL instant (block 152640 of previous cycle)
     uint16_t old_R = state.R_annual;
-    uint16_t new_R = CalculateDomcMedian(prevCycleId, old_R, state.R_MAX_dynamic);
+    uint16_t new_R = state.R_next;
+
+    // Fallback: if R_next is 0 (no REVEAL processed), keep current R_annual
+    if (new_R == 0) {
+        LogPrint(BCLog::KHU, "FinalizeDomcCycle: R_next is 0 (no REVEAL), keeping R_annual=%u (%.2f%%)\n",
+                 old_R, old_R / 100.0);
+        new_R = old_R;
+    }
 
     if (new_R != old_R) {
-        LogPrint(BCLog::KHU, "FinalizeDomcCycle: R_annual updated: %u → %u (%.2f%% → %.2f%%)\n",
+        LogPrint(BCLog::KHU, "FinalizeDomcCycle: R_annual ACTIVATED: %u → %u (%.2f%% → %.2f%%)\n",
                  old_R, new_R, old_R / 100.0, new_R / 100.0);
         state.R_annual = new_R;
     } else {
         LogPrint(BCLog::KHU, "FinalizeDomcCycle: R_annual unchanged: %u (%.2f%%)\n",
                  old_R, old_R / 100.0);
     }
+
+    // Reset R_next for the new cycle
+    state.R_next = 0;
 
     return true;
 }
@@ -239,7 +347,7 @@ bool UndoFinalizeDomcCycle(
 )
 {
     // Calculate previous cycle ID (the cycle that was finalized at nHeight)
-    uint32_t prevCycleId = nHeight - DOMC_CYCLE_LENGTH;
+    uint32_t prevCycleId = nHeight - GetDomcCycleLength();
 
     uint32_t V6_activation = consensusParams.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight;
 
@@ -253,10 +361,10 @@ bool UndoFinalizeDomcCycle(
 
     // To undo FinalizeDomcCycle, we need to restore ALL DOMC state fields to what they
     // were BEFORE FinalizeDomcCycle was called. The correct way to do this is to read
-    // the state from the previous cycle boundary (nHeight - DOMC_CYCLE_LENGTH).
+    // the state from the previous cycle boundary (nHeight - cycleLength).
 
     // Calculate the height of the previous cycle boundary
-    uint32_t prevCycleBoundary = nHeight - DOMC_CYCLE_LENGTH;
+    uint32_t prevCycleBoundary = nHeight - GetDomcCycleLength();
 
     // Read state from previous cycle boundary
     CKHUStateDB* db = GetKHUStateDB();
@@ -290,6 +398,15 @@ bool UndoFinalizeDomcCycle(
         state.R_annual = restored_R;
     }
 
+    // Restore R_next (was reset to 0 in FinalizeDomcCycle)
+    uint16_t old_R_next = state.R_next;
+    uint16_t restored_R_next = prevState.R_next;
+    if (restored_R_next != old_R_next) {
+        LogPrint(BCLog::KHU, "UndoFinalizeDomcCycle: Restoring R_next: %u → %u (%.2f%% → %.2f%%)\n",
+                 old_R_next, restored_R_next, old_R_next / 100.0, restored_R_next / 100.0);
+        state.R_next = restored_R_next;
+    }
+
     // Restore R_MAX_dynamic
     if (restored_R_MAX != old_R_MAX) {
         LogPrint(BCLog::KHU, "UndoFinalizeDomcCycle: Restoring R_MAX_dynamic: %u → %u (%.2f%% → %.2f%%)\n",
@@ -308,7 +425,7 @@ bool UndoFinalizeDomcCycle(
              state.domc_cycle_start, state.domc_commit_phase_start, state.domc_reveal_deadline);
 
     // Clean up commits and reveals from the cycle being undone
-    // The cycle being undone is the one that started at nHeight - DOMC_CYCLE_LENGTH
+    // The cycle being undone is the one that started at nHeight - cycleLength
     CKHUDomcDB* domcDB = GetKHUDomcDB();
     if (domcDB) {
         // Clear all commits/reveals for this cycle from DB
@@ -342,12 +459,12 @@ uint16_t CalculateRMaxDynamic(uint32_t nHeight, uint32_t nActivationHeight)
     // Calculate year since activation
     // year = (nHeight - activation) / BLOCKS_PER_YEAR
     uint32_t blocks_since_activation = nHeight - nActivationHeight;
-    uint32_t year = blocks_since_activation / 525600; // BLOCKS_PER_YEAR
+    uint32_t year = blocks_since_activation / Consensus::Params::BLOCKS_PER_YEAR;
 
-    // FORMULA CONSENSUS: R_MAX_dynamic = max(400, 3700 - year × 100)
+    // FORMULA CONSENSUS: R_MAX_dynamic = max(700, 4000 - year × 100)
     int32_t calculated = R_MAX_DYNAMIC_INITIAL - (year * R_MAX_DYNAMIC_DECAY);
 
-    // Clamp to minimum (floor at 4%)
+    // Clamp to minimum (floor at 7%)
     if (calculated < R_MAX_DYNAMIC_MIN) {
         return R_MAX_DYNAMIC_MIN;
     }

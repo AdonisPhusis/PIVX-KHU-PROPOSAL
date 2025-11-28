@@ -8,12 +8,14 @@
 // Canonical specification: docs/blueprints/phase6/06-DAO-TREASURY.md
 // Implementation: DAO Treasury as internal pool T in KhuGlobalState
 //
-// FORMULA CONSENSUS (2% annual, daily trigger):
-//   T_daily = (U + Ur) / 182500
+// NEW FORMULA CONSENSUS (2025-11-27):
+//   T_daily = (U × R_annual) / 10000 / T_DIVISOR / 365
+//   Where T_DIVISOR = 8 (from khu_domc.h)
+//   At R=40%: T_annual ≈ 5% of U (scales with R% over 33 years)
 //   Trigger: Every 1440 blocks (daily, unified with yield)
 //
 // Tests verify:
-// - Budget calculation: (U + Ur) / 182500 every 1440 blocks
+// - Budget calculation: (U × R) / 10000 / 8 / 365 every 1440 blocks
 // - Accumulation at daily boundaries
 // - Undo support for reorgs
 // - Overflow protection (int128_t arithmetic)
@@ -26,6 +28,7 @@
 #include "consensus/params.h"
 #include "consensus/upgrades.h"
 #include "khu/khu_dao.h"
+#include "khu/khu_domc.h"
 #include "khu/khu_state.h"
 
 #include <boost/multiprecision/cpp_int.hpp>
@@ -35,14 +38,14 @@
 BOOST_FIXTURE_TEST_SUITE(khu_phase6_dao_tests, BasicTestingSetup)
 
 // ============================================================================
-// HELPER: Calculate expected budget using the canonical formula
+// HELPER: Calculate expected budget using the NEW canonical formula
 // ============================================================================
-static CAmount ExpectedDaoBudget(CAmount U, CAmount Ur)
+static CAmount ExpectedDaoBudget(CAmount U, uint16_t R_annual)
 {
-    // Formula: T_daily = (U + Ur) / 182500
-    boost::multiprecision::int128_t total = static_cast<boost::multiprecision::int128_t>(U) +
-                                            static_cast<boost::multiprecision::int128_t>(Ur);
-    boost::multiprecision::int128_t budget = total / khu_dao::T_DAILY_DIVISOR;
+    // NEW Formula (2025-11-27): T_daily = (U × R_annual) / 10000 / T_DIVISOR / 365
+    // Where T_DIVISOR = 8 from khu_domc.h
+    boost::multiprecision::int128_t base = static_cast<boost::multiprecision::int128_t>(U);
+    boost::multiprecision::int128_t budget = (base * R_annual) / 10000 / khu_domc::T_DIVISOR / 365;
     return static_cast<CAmount>(budget);
 }
 
@@ -72,7 +75,7 @@ BOOST_AUTO_TEST_CASE(dao_cycle_boundary_detection)
 }
 
 // ============================================================================
-// TEST 2: CalculateDAOBudget - Formula validation (2% annual daily)
+// TEST 2: CalculateDAOBudget - NEW Formula validation (T_DIVISOR=8)
 // ============================================================================
 
 BOOST_AUTO_TEST_CASE(dao_budget_calculation_basic)
@@ -82,29 +85,29 @@ BOOST_AUTO_TEST_CASE(dao_budget_calculation_basic)
 
     // Zero state → zero budget
     state.U = 0;
-    state.Ur = 0;
+    state.R_annual = 4000;  // 40%
     BOOST_CHECK_EQUAL(khu_dao::CalculateDAOBudget(state), 0);
 
-    // U = 1,000,000 PIV, Ur = 0
-    // Budget = 1,000,000 × COIN / 182500 = 547,945,205,479 satoshis ≈ 5479.45 COIN
+    // U = 1,000,000 PIV, R = 40% (4000 bp)
+    // Budget = 1,000,000 × COIN × 4000 / 10000 / 8 / 365
+    // = 1e14 × 4000 / 10000 / 8 / 365 = 1,369,863,013,698 satoshis ≈ 13698.63 KHU/day
     state.U = 1000000 * COIN;
-    state.Ur = 0;
-    CAmount expected = ExpectedDaoBudget(state.U, state.Ur);
+    state.R_annual = 4000;
+    CAmount expected = ExpectedDaoBudget(state.U, state.R_annual);
     BOOST_CHECK_EQUAL(khu_dao::CalculateDAOBudget(state), expected);
     BOOST_CHECK(expected > 0);  // Verify non-zero
 
-    // U = 1,000,000 PIV, Ur = 500,000 PIV
-    // Budget = 1,500,000 × COIN / 182500
-    state.U = 1000000 * COIN;
-    state.Ur = 500000 * COIN;
-    expected = ExpectedDaoBudget(state.U, state.Ur);
-    BOOST_CHECK_EQUAL(khu_dao::CalculateDAOBudget(state), expected);
+    // Same U with lower R% (2000 bp = 20%)
+    // Budget should be halved
+    state.R_annual = 2000;
+    CAmount expected_lower = ExpectedDaoBudget(state.U, state.R_annual);
+    BOOST_CHECK_EQUAL(khu_dao::CalculateDAOBudget(state), expected_lower);
+    BOOST_CHECK(expected_lower < expected);  // Lower R% = lower budget
 
-    // U = 10,000,000 PIV, Ur = 5,000,000 PIV
-    // Budget = 15,000,000 × COIN / 182500
+    // U = 10,000,000 PIV, R = 40%
     state.U = 10000000 * COIN;
-    state.Ur = 5000000 * COIN;
-    expected = ExpectedDaoBudget(state.U, state.Ur);
+    state.R_annual = 4000;
+    expected = ExpectedDaoBudget(state.U, state.R_annual);
     BOOST_CHECK_EQUAL(khu_dao::CalculateDAOBudget(state), expected);
 }
 
@@ -112,22 +115,19 @@ BOOST_AUTO_TEST_CASE(dao_budget_calculation_precision)
 {
     KhuGlobalState state;
     state.SetNull();
+    state.R_annual = 4000;  // 40%
 
     // Test small values (should round down due to integer division)
-    // U = 100 PIV, Ur = 0
-    // Budget = 100 × COIN / 182500 = 54,794 satoshis
+    // U = 100 PIV
     state.U = 100 * COIN;
-    state.Ur = 0;
     CAmount budget = khu_dao::CalculateDAOBudget(state);
-    CAmount expected = ExpectedDaoBudget(state.U, state.Ur);
+    CAmount expected = ExpectedDaoBudget(state.U, state.R_annual);
     BOOST_CHECK_EQUAL(budget, expected);
 
-    // U = 199 PIV, Ur = 0
-    // Budget = 199 × COIN / 182500
+    // U = 199 PIV
     state.U = 199 * COIN;
-    state.Ur = 0;
     budget = khu_dao::CalculateDAOBudget(state);
-    expected = ExpectedDaoBudget(state.U, state.Ur);
+    expected = ExpectedDaoBudget(state.U, state.R_annual);
     BOOST_CHECK_EQUAL(budget, expected);
 }
 
@@ -135,19 +135,18 @@ BOOST_AUTO_TEST_CASE(dao_budget_overflow_protection)
 {
     KhuGlobalState state;
     state.SetNull();
+    state.R_annual = 4000;  // 40%
 
     // Large but valid values (should not overflow with int128_t)
-    // U = 50 million PIV, Ur = 50 million PIV
-    state.U = 50000000LL * COIN;
-    state.Ur = 50000000LL * COIN;
+    // U = 100 million PIV
+    state.U = 100000000LL * COIN;
     CAmount budget = khu_dao::CalculateDAOBudget(state);
-    CAmount expected = ExpectedDaoBudget(state.U, state.Ur);
+    CAmount expected = ExpectedDaoBudget(state.U, state.R_annual);
     BOOST_CHECK_EQUAL(budget, expected);
     BOOST_CHECK(budget > 0);
 
     // Near CAmount max (should handle gracefully)
     state.U = std::numeric_limits<CAmount>::max() / 2;
-    state.Ur = std::numeric_limits<CAmount>::max() / 2;
     budget = khu_dao::CalculateDAOBudget(state);
     // Budget should be valid (int128_t prevents overflow)
     BOOST_CHECK(budget > 0);
@@ -165,10 +164,10 @@ BOOST_AUTO_TEST_CASE(dao_accumulation_at_boundary)
     KhuGlobalState state;
     state.SetNull();
     state.U = 1000000 * COIN;
-    state.Ur = 500000 * COIN;
+    state.R_annual = 4000;  // 40%
     state.T = 0;
 
-    CAmount expected_budget = ExpectedDaoBudget(state.U, state.Ur);
+    CAmount expected_budget = ExpectedDaoBudget(state.U, state.R_annual);
 
     // Not at boundary → no accumulation
     uint32_t nHeight = 1001000;  // Between boundaries
@@ -194,7 +193,7 @@ BOOST_AUTO_TEST_CASE(dao_accumulation_before_activation)
     KhuGlobalState state;
     state.SetNull();
     state.U = 1000000 * COIN;
-    state.Ur = 0;
+    state.R_annual = 4000;
     state.T = 0;
 
     // Before activation height → no accumulation
@@ -216,7 +215,7 @@ BOOST_AUTO_TEST_CASE(dao_accumulation_zero_budget)
     KhuGlobalState state;
     state.SetNull();
     state.U = 0;
-    state.Ur = 0;
+    state.R_annual = 4000;
     state.T = 100 * COIN; // Existing treasury
 
     // At cycle boundary but zero budget → T unchanged
@@ -237,9 +236,9 @@ BOOST_AUTO_TEST_CASE(dao_undo_at_boundary)
     KhuGlobalState state;
     state.SetNull();
     state.U = 1000000 * COIN;
-    state.Ur = 500000 * COIN;
+    state.R_annual = 4000;
 
-    CAmount budget = ExpectedDaoBudget(state.U, state.Ur);
+    CAmount budget = ExpectedDaoBudget(state.U, state.R_annual);
     state.T = budget; // Treasury after one cycle
 
     // Undo at cycle boundary
@@ -257,7 +256,7 @@ BOOST_AUTO_TEST_CASE(dao_undo_not_at_boundary)
     KhuGlobalState state;
     state.SetNull();
     state.U = 1000000 * COIN;
-    state.Ur = 0;
+    state.R_annual = 4000;
     state.T = 5000 * COIN;
 
     // Not at boundary → no undo
@@ -274,10 +273,10 @@ BOOST_AUTO_TEST_CASE(dao_undo_underflow_protection)
     KhuGlobalState state;
     state.SetNull();
     state.U = 1000000 * COIN;
-    state.Ur = 0;
+    state.R_annual = 4000;
     state.T = 1000 * COIN; // Less than budget
 
-    CAmount budget = ExpectedDaoBudget(state.U, state.Ur);
+    CAmount budget = ExpectedDaoBudget(state.U, state.R_annual);
 
     // Undo at cycle boundary would cause underflow if T < budget
     uint32_t nHeight = 1001440;
@@ -306,7 +305,7 @@ BOOST_AUTO_TEST_CASE(dao_roundtrip_single_cycle)
     KhuGlobalState state;
     state.SetNull();
     state.U = 2000000 * COIN;
-    state.Ur = 1000000 * COIN;
+    state.R_annual = 4000;
     state.T = 10000 * COIN;
 
     CAmount initial_T = state.T;
@@ -330,7 +329,7 @@ BOOST_AUTO_TEST_CASE(dao_roundtrip_multiple_cycles)
     KhuGlobalState state;
     state.SetNull();
     state.U = 5000000 * COIN;
-    state.Ur = 2500000 * COIN;
+    state.R_annual = 4000;
     state.T = 0;
 
     // Daily cycle 1
@@ -373,6 +372,7 @@ BOOST_AUTO_TEST_CASE(dao_genesis_state)
 
     KhuGlobalState state;
     state.SetNull();
+    state.R_annual = 4000;
 
     // Genesis block → no accumulation
     BOOST_CHECK(khu_dao::AccumulateDaoTreasuryIfNeeded(state, 0, params));
@@ -381,7 +381,7 @@ BOOST_AUTO_TEST_CASE(dao_genesis_state)
     // First daily boundary from genesis (0 + 1440 = 1440)
     uint32_t nHeight = 1440;
     BOOST_CHECK(khu_dao::AccumulateDaoTreasuryIfNeeded(state, nHeight, params));
-    BOOST_CHECK_EQUAL(state.T, 0); // Budget is 0 since U=Ur=0
+    BOOST_CHECK_EQUAL(state.T, 0); // Budget is 0 since U=0
 }
 
 BOOST_AUTO_TEST_CASE(dao_very_large_state)
@@ -391,17 +391,16 @@ BOOST_AUTO_TEST_CASE(dao_very_large_state)
 
     KhuGlobalState state;
     state.SetNull();
-    // Large but realistic values (100M PIV each)
-    state.U = 100000000LL * COIN;
-    state.Ur = 100000000LL * COIN;
+    // Large but realistic values (200M PIV)
+    state.U = 200000000LL * COIN;
+    state.R_annual = 4000;
     state.T = 0;
 
     uint32_t nHeight = 1001440;
     BOOST_CHECK(khu_dao::AccumulateDaoTreasuryIfNeeded(state, nHeight, params));
 
-    // Expected: (100M + 100M) × COIN / 182500
-    CAmount expected_budget = ExpectedDaoBudget(state.U, state.Ur);
-    // Note: T accumulates ONCE (we only called once), not twice
+    // Expected: (200M × COIN × 4000) / 10000 / 20 / 365
+    CAmount expected_budget = ExpectedDaoBudget(state.U, state.R_annual);
     BOOST_CHECK_EQUAL(state.T, expected_budget);
     BOOST_CHECK(state.T > 0);
 
@@ -421,6 +420,7 @@ BOOST_AUTO_TEST_CASE(dao_invariants_preservation)
     state.U = 1000000 * COIN;
     state.Cr = 500000 * COIN;
     state.Ur = 500000 * COIN;
+    state.R_annual = 4000;
     state.T = 0;
 
     // Verify invariants before
@@ -440,10 +440,10 @@ BOOST_AUTO_TEST_CASE(dao_invariants_preservation)
 }
 
 // ============================================================================
-// TEST 7: 2% Annual Validation (365 days accumulation)
+// TEST 7: ~5% Annual Validation at R=40% (365 days accumulation)
 // ============================================================================
 
-BOOST_AUTO_TEST_CASE(dao_two_percent_annual_validation)
+BOOST_AUTO_TEST_CASE(dao_five_percent_annual_validation)
 {
     Consensus::Params params;
     params.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight = 0;
@@ -451,7 +451,7 @@ BOOST_AUTO_TEST_CASE(dao_two_percent_annual_validation)
     KhuGlobalState state;
     state.SetNull();
     state.U = 1000000 * COIN;  // 1 million KHU
-    state.Ur = 0;
+    state.R_annual = 4000;     // 40%
     state.T = 0;
 
     // Simulate 365 daily accumulations
@@ -461,13 +461,13 @@ BOOST_AUTO_TEST_CASE(dao_two_percent_annual_validation)
     }
 
     // After 365 days, T should equal 365 × daily_budget
-    // Formula: T_daily = (U + Ur) / 182500
+    // NEW Formula: T_daily = (U × R) / 10000 / T_DIVISOR / 365
     //
-    // Verification:
+    // At R=40% (4000 bp), T_DIVISOR=8:
     // - U = 1,000,000 COIN = 1e14 satoshis
-    // - Daily budget = 1e14 / 182500 ≈ 547,945,205,479 satoshis
-    // - Yearly = 365 × daily_budget
-    CAmount daily_budget = ExpectedDaoBudget(state.U, state.Ur);
+    // - Daily budget = 1e14 × 4000 / 10000 / 8 / 365 ≈ 1,369,863,013 satoshis
+    // - Yearly = 365 × daily_budget ≈ 5% of U
+    CAmount daily_budget = ExpectedDaoBudget(state.U, state.R_annual);
     CAmount expected_yearly = daily_budget * 365;
 
     // Verify T matches 365 × daily_budget (exact match expected)
@@ -476,9 +476,53 @@ BOOST_AUTO_TEST_CASE(dao_two_percent_annual_validation)
     // Verify T is positive and reasonable
     BOOST_CHECK(state.T > 0);
 
-    // Verify the formula: 365/182500 ≈ 0.002 = 0.2%
-    // So T ≈ 0.2% × U per year (not 2% - that's the total over 10 years)
-    // The 2% annual is achieved when U+Ur accumulates yield too
+    // Verify approximately 5% at R=40%
+    // T_annual = U × R / 10000 / T_DIVISOR = U × 4000 / 10000 / 8 = U × 0.05 = 5%
+    // Allow small rounding error
+    CAmount expected_five_percent = state.U / 20;  // 5% = U/20
+    BOOST_CHECK(state.T > expected_five_percent * 99 / 100);  // At least 99% of 5%
+    BOOST_CHECK(state.T < expected_five_percent * 101 / 100); // At most 101% of 5%
+}
+
+// ============================================================================
+// TEST 8: R% scaling - T% decreases as R% decreases
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(dao_r_percent_scaling)
+{
+    Consensus::Params params;
+    params.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight = 0;
+
+    KhuGlobalState state;
+    state.SetNull();
+    state.U = 1000000 * COIN;  // 1 million KHU
+    state.T = 0;
+
+    // At R=40%, T ≈ 2%
+    state.R_annual = 4000;
+    uint32_t nHeight = 1440;
+    BOOST_CHECK(khu_dao::AccumulateDaoTreasuryIfNeeded(state, nHeight, params));
+    CAmount budget_at_40 = state.T;
+
+    // At R=20%, T ≈ 1% (half of 2%)
+    state.T = 0;
+    state.R_annual = 2000;
+    BOOST_CHECK(khu_dao::AccumulateDaoTreasuryIfNeeded(state, nHeight, params));
+    CAmount budget_at_20 = state.T;
+
+    // At R=7% (floor), T ≈ 0.35%
+    state.T = 0;
+    state.R_annual = 700;
+    BOOST_CHECK(khu_dao::AccumulateDaoTreasuryIfNeeded(state, nHeight, params));
+    CAmount budget_at_7 = state.T;
+
+    // Verify scaling: budget_at_40 > budget_at_20 > budget_at_7
+    BOOST_CHECK(budget_at_40 > budget_at_20);
+    BOOST_CHECK(budget_at_20 > budget_at_7);
+
+    // Verify proportions (with some tolerance for integer division)
+    BOOST_CHECK(budget_at_20 * 2 >= budget_at_40 * 95 / 100);  // 20% should be ~half of 40%
+    BOOST_CHECK(budget_at_20 * 2 <= budget_at_40 * 105 / 100);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

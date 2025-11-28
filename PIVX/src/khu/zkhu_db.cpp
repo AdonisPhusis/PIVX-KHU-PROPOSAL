@@ -84,3 +84,41 @@ bool CZKHUTreeDB::EraseNullifierMapping(const uint256& nullifier)
 {
     return Erase(std::make_pair(DB_ZKHU_NAMESPACE, std::make_pair(DB_ZKHU_LOOKUP, nullifier)));
 }
+
+// ========== Note Iteration Operations ==========
+
+std::vector<std::pair<uint256, ZKHUNoteData>> CZKHUTreeDB::GetAllNotes()
+{
+    std::vector<std::pair<uint256, ZKHUNoteData>> result;
+
+    // Create iterator using CDBWrapper's NewIterator
+    std::unique_ptr<CDBIterator> pcursor(NewIterator());
+
+    // Seek to start of note namespace: 'K' + 'T' + zero-hash
+    pcursor->Seek(std::make_pair(DB_ZKHU_NAMESPACE, std::make_pair(DB_ZKHU_NOTE, uint256())));
+
+    while (pcursor->Valid()) {
+        // Read key
+        std::pair<char, std::pair<char, uint256>> key;
+        if (!pcursor->GetKey(key)) {
+            break;
+        }
+
+        // Check if still in ZKHU note namespace ('K' + 'T')
+        if (key.first != DB_ZKHU_NAMESPACE || key.second.first != DB_ZKHU_NOTE) {
+            break; // End of notes
+        }
+
+        const uint256& noteId = key.second.second;
+
+        // Read note data
+        ZKHUNoteData noteData;
+        if (pcursor->GetValue(noteData)) {
+            result.emplace_back(noteId, noteData);
+        }
+
+        pcursor->Next();
+    }
+
+    return result;
+}

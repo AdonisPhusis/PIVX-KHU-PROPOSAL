@@ -25,9 +25,12 @@ namespace Consensus { struct Params; }
  */
 
 /**
- * ZKHU_MATURITY_BLOCKS - Mandatory maturity period
+ * GetZKHUMaturityBlocks - Mandatory maturity period (network-aware)
+ *
+ * Returns MATURITY_BLOCKS_REGTEST (1260) for regtest, MATURITY_BLOCKS (4320) otherwise.
+ * Note: Uses khu_yield::GetMaturityBlocks() internally for consistency.
  */
-static constexpr uint32_t ZKHU_MATURITY_BLOCKS = 4320;  // 3 days (90s per block)
+uint32_t GetZKHUMaturityBlocks();
 
 /**
  * CUnstakeKHUPayload - Payload for KHU_UNSTAKE transactions

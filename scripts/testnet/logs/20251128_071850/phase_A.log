@@ -1,0 +1,63 @@
+═══════════════════════════════════════════════════════════════
+  KHU V6 PRIVATE TESTNET SETUP
+═══════════════════════════════════════════════════════════════
+Data directory: /tmp/khu_fulltest
+
+[1/6] Creating data directory...
+[2/6] Creating configuration...
+Config written to /tmp/khu_fulltest/pivx.conf
+[3/6] Starting pivxd...
+PIVX server starting
+Waiting for daemon to start...
+Daemon started successfully!
+
+[4/6] Generating blocks for V6 activation...
+V6 activation height: 200
+Generating 210 blocks...
+Current block: 210
+
+[5/6] Setting up test wallet...
+Test address: y4KGRC3NNcKtmCqKrQDB754xp6vzEvdUtX
+Generated 101 blocks to address
+Wallet balance: 34500.00000000 PIV
+
+[6/6] Verifying KHU state...
+KHU State:
+{
+  "height": 311,
+  "blockhash": "f28194313cfc57497d9b6e1fa703a1e4332fbc5f697797f036ef54c2c3fc62ef",
+  "C": 0.00000000,
+  "U": 0.00000000,
+  "Z": 0.00000000,
+  "Cr": 0.00000000,
+  "Ur": 0.00000000,
+  "T": 0.00000000,
+  "R_annual": 4000,
+  "R_annual_pct": 40,
+  "R_next": 0,
+  "R_next_pct": 0,
+  "R_MAX_dynamic": 4000,
+  "last_yield_update_height": 200,
+  "domc_cycle_start": 200,
+  "domc_cycle_length": 172800,
+  "domc_commit_phase_start": 132680,
+  "domc_reveal_deadline": 152840,
+  "invariants_ok": true,
+
+═══════════════════════════════════════════════════════════════
+  SETUP COMPLETE
+═══════════════════════════════════════════════════════════════
+
+Testnet is ready for KHU V6 testing!
+
+Useful commands:
+  CLI alias:  CLI="/home/ubuntu/PIVX-V6-KHU/PIVX/src/pivx-cli -regtest -datadir=/tmp/khu_fulltest"
+  Stop:       $CLI stop
+  Balance:    $CLI getbalance
+  KHU State:  $CLI getkhustate
+  MINT:       $CLI khumint <amount>
+  REDEEM:     $CLI khuredeem <amount>
+
+Log file: /tmp/khu_fulltest/regtest/debug.log
+
+Source this for easy CLI access: source /tmp/khu_fulltest/cli_alias.sh

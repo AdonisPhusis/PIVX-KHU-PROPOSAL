@@ -37,13 +37,20 @@ struct KhuGlobalState
     CAmount Ur;  // Unstake rights (total accumulated yield across all stakers)
 
     // DAO Treasury (Phase 6.3)
-    // T accumulates 2% annual, daily: T_daily = (U + Ur) / 182500
-    // Year 1+: DAO proposals can spend from T
-    // Year 6+: T becomes sole DAO funding source (emission = 0)
-    CAmount T;   // DAO Treasury internal pool
+    // T accumulates based on U and R%: T_daily = (U × R_annual) / 10000 / T_DIVISOR / 365
+    // With T_DIVISOR = 8 (from khu_domc.h), at R% = 40%: T ≈ 5% annual
+    // As R% decreases over 33 years (40%→7%), T% decreases proportionally
+    //
+    // IMPORTANT: T is in PIV satoshis, NOT KHU satoshis!
+    // - T accumulates as a virtual counter indexed on KHU economic activity
+    // - When DAO pays from T, the recipient receives PIV (not KHU)
+    // - This PIV is created ex-nihilo (controlled DAO inflation)
+    // - NO IMPACT on C/U/Z invariants (T is separate from KHU system)
+    CAmount T;   // DAO Treasury pool (PIV satoshis - separate from KHU)
 
     // Governance parameters
-    uint32_t R_annual;        // Annual yield rate (basis points: 3000 = 30.00% at V6 activation)
+    uint32_t R_annual;        // Annual yield rate (basis points: 4000 = 40.00% at V6 activation)
+    uint32_t R_next;          // Next R% after REVEAL (visible during ADAPTATION phase, 0 if not set)
     uint32_t R_MAX_dynamic;   // Maximum allowed R% voted by DOMC (basis points)
     uint32_t last_yield_update_height;  // Last block where daily yield was applied
     CAmount last_yield_amount;          // Last yield amount applied (for exact undo)
@@ -76,6 +83,7 @@ struct KhuGlobalState
         Ur = 0;
         T = 0;
         R_annual = 0;
+        R_next = 0;
         R_MAX_dynamic = 0;
         last_yield_update_height = 0;
         last_yield_amount = 0;
@@ -143,6 +151,7 @@ struct KhuGlobalState
         READWRITE(obj.Ur);
         READWRITE(obj.T);
         READWRITE(obj.R_annual);
+        READWRITE(obj.R_next);
         READWRITE(obj.R_MAX_dynamic);
         READWRITE(obj.last_yield_update_height);
         READWRITE(obj.last_yield_amount);

@@ -145,8 +145,16 @@ struct ZKHUMemo
 };
 
 /**
- * Constants
+ * Maturity Constants
+ *
+ * Note: Use GetZKHUMaturityBlocks() from khu_unstake.h for runtime maturity checks.
+ * These constants are provided for reference:
+ * - MAINNET/TESTNET: 4320 blocks (~3 days)
+ * - REGTEST: 1260 blocks (~21 hours for fast testing)
  */
-static constexpr uint32_t ZKHU_MATURITY_BLOCKS = 4320;  // 3 days (90s per block)
+static constexpr uint32_t ZKHU_MATURITY_BLOCKS_DEFAULT = 4320;  // 3 days (60s per block)
+static constexpr uint32_t ZKHU_MATURITY_BLOCKS_REGTEST = 1260;  // ~21 hours for regtest
+
+// Note: MIN_STAKE_AMOUNT is defined in khu_stake.h
 
 #endif // PIVX_KHU_NOTES_H

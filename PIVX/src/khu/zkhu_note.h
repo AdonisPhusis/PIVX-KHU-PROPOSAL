@@ -29,9 +29,10 @@ struct ZKHUNoteData
     CAmount  Ur_accumulated;      // Phase 4: always 0, Phase 5: per-note yield
     uint256  nullifier;           // Nullifier of the note
     uint256  cm;                  // Commitment (cmu)
+    bool     bSpent;              // BUG #6 FIX: True if note was spent via UNSTAKE
 
     ZKHUNoteData()
-        : amount(0), nStakeStartHeight(0), Ur_accumulated(0)
+        : amount(0), nStakeStartHeight(0), Ur_accumulated(0), bSpent(false)
     {}
 
     ZKHUNoteData(CAmount amountIn, uint32_t heightIn, CAmount urIn, const uint256& nullifierIn, const uint256& cmIn)
@@ -39,13 +40,14 @@ struct ZKHUNoteData
           nStakeStartHeight(heightIn),
           Ur_accumulated(urIn),
           nullifier(nullifierIn),
-          cm(cmIn)
+          cm(cmIn),
+          bSpent(false)
     {}
 
     SERIALIZE_METHODS(ZKHUNoteData, obj)
     {
         READWRITE(obj.amount, obj.nStakeStartHeight, obj.Ur_accumulated);
-        READWRITE(obj.nullifier, obj.cm);
+        READWRITE(obj.nullifier, obj.cm, obj.bSpent);
     }
 };
 

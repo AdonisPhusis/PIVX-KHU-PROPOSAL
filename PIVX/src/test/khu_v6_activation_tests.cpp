@@ -8,8 +8,8 @@
 // This test suite validates the complete V6.0 upgrade activation including:
 // - Pre-activation: Legacy PIVX behavior
 // - Post-activation: KHU system (MINT/REDEEM/Finality)
-// - Emission: 6→0 reward schedule
-// - Invariants: C==U, Cr==Ur preservation
+// - Block Reward: 0 PIV IMMEDIATELY at V6 activation
+// - Invariants: C==U+Z, Cr==Ur preservation
 // - Migration: V5→V6 compatibility
 // - Fork protection: No unintended chain splits
 //
@@ -39,19 +39,13 @@ struct V6ActivationTestingSetup : public TestingSetup
 
     V6ActivationTestingSetup() : V6_TestActivation(1000)
     {
-        // Switch to REGTEST
         SelectParams(CBaseChainParams::REGTEST);
-
-        // Save default V6.0 activation
         V6_DefaultActivation = Params().GetConsensus().vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight;
-
-        // Set V6.0 to inactive by default
         UpdateNetworkUpgradeParameters(Consensus::UPGRADE_V6_0, Consensus::NetworkUpgrade::NO_ACTIVATION_HEIGHT);
     }
 
     ~V6ActivationTestingSetup()
     {
-        // Restore default
         UpdateNetworkUpgradeParameters(Consensus::UPGRADE_V6_0, V6_DefaultActivation);
         SelectParams(CBaseChainParams::MAIN);
     }
@@ -75,32 +69,19 @@ BOOST_FIXTURE_TEST_SUITE(khu_v6_activation_tests, V6ActivationTestingSetup)
  * Validates:
  * - Emission: 10 PIV (legacy)
  * - KHU: Not active
- * - MINT/REDEEM: Not processed
- * - Finality: Not active
  */
 BOOST_AUTO_TEST_CASE(test_pre_activation_legacy_behavior)
 {
-    // V6.0 NOT activated
-    // Use height > 576 (after V5.5) to get predictable legacy emission
-    const int testHeight = 600;  // After V5.5, before V6.0
+    const int testHeight = 600;
     const Consensus::Params& consensus = Params().GetConsensus();
 
-    // 1. Verify V6.0 is NOT active
     BOOST_CHECK(!NetworkUpgradeActive(testHeight, consensus, Consensus::UPGRADE_V6_0));
 
-    // 2. Verify LEGACY emission (10 PIV post-V5.5)
     CAmount blockValue = GetBlockValue(testHeight);
     CAmount mnPayment = GetMasternodePayment(testHeight);
 
-    BOOST_CHECK_EQUAL(blockValue, 10 * COIN);  // Legacy: 10 PIV (post-V5.5)
-    BOOST_CHECK_EQUAL(mnPayment, 6 * COIN);    // Legacy: 6 PIV MN (post-V5.5)
-
-    // 3. Verify KHU state does NOT exist
-    KhuGlobalState state;
-    // Note: GetCurrentKHUState requires chain active, we just verify no crash
-    // In a real chain, state would not exist before V6.0
-
-    LogPrint(BCLog::NET, "TEST: Pre-activation validated - Legacy PIVX at height %d\n", testHeight);
+    BOOST_CHECK_EQUAL(blockValue, 10 * COIN);
+    BOOST_CHECK_EQUAL(mnPayment, 6 * COIN);
 }
 
 //==============================================================================
@@ -108,11 +89,11 @@ BOOST_AUTO_TEST_CASE(test_pre_activation_legacy_behavior)
 //==============================================================================
 
 /**
- * CRITICAL TEST: At exactly V6.0 activation height, everything switches
+ * CRITICAL TEST: At exactly V6.0 activation height, block reward = 0 IMMEDIATELY
  *
  * Validates:
  * - Block X-1: Legacy (10 PIV)
- * - Block X: V6.0 (6 PIV year 0)
+ * - Block X: V6.0 (0 PIV) <- IMMEDIATE, NO TRANSITION
  * - KHU state genesis
  */
 BOOST_AUTO_TEST_CASE(test_activation_boundary_transition)
@@ -131,7 +112,7 @@ BOOST_AUTO_TEST_CASE(test_activation_boundary_transition)
         BOOST_CHECK_EQUAL(blockValue, 10 * COIN);  // Still legacy
     }
 
-    // Test block AT activation
+    // Test block AT activation - ZERO IMMEDIATE
     {
         const int testHeight = activationHeight;
         BOOST_CHECK(NetworkUpgradeActive(testHeight, consensus, Consensus::UPGRADE_V6_0));
@@ -139,9 +120,9 @@ BOOST_AUTO_TEST_CASE(test_activation_boundary_transition)
         CAmount blockValue = GetBlockValue(testHeight);
         CAmount mnPayment = GetMasternodePayment(testHeight);
 
-        // Year 0: reward_year = 6
-        BOOST_CHECK_EQUAL(blockValue, 6 * COIN);
-        BOOST_CHECK_EQUAL(mnPayment, 6 * COIN);
+        // V6: ZERO IMMEDIATELY
+        BOOST_CHECK_EQUAL(blockValue, 0);
+        BOOST_CHECK_EQUAL(mnPayment, 0);
     }
 
     // Test block AFTER activation
@@ -150,79 +131,51 @@ BOOST_AUTO_TEST_CASE(test_activation_boundary_transition)
         BOOST_CHECK(NetworkUpgradeActive(testHeight, consensus, Consensus::UPGRADE_V6_0));
 
         CAmount blockValue = GetBlockValue(testHeight);
-        BOOST_CHECK_EQUAL(blockValue, 6 * COIN);  // Still year 0
+        BOOST_CHECK_EQUAL(blockValue, 0);  // Still zero
     }
-
-    LogPrint(BCLog::NET, "TEST: Activation boundary validated - Clean transition at height %d\n", activationHeight);
 }
 
 //==============================================================================
-// TEST 3: EMISSION SCHEDULE - 6→0 per year
+// TEST 3: V6 BLOCK REWARD - Always 0 post-activation
 //==============================================================================
 
 /**
- * CRITICAL TEST: Emission decreases correctly over 6 years
+ * CRITICAL TEST: Block reward = 0 PIV at all times post-V6
  *
- * Validates:
- * - Year 0: 6 PIV
- * - Year 1: 5 PIV
- * - Year 2: 4 PIV
- * - Year 3: 3 PIV
- * - Year 4: 2 PIV
- * - Year 5: 1 PIV
- * - Year 6+: 0 PIV (terminal)
+ * Economy is governed by:
+ * - R% yield for ZKHU stakers (40%→7% over 33 years)
+ * - T (DAO Treasury) from U × R% / 8 / 365
  */
-BOOST_AUTO_TEST_CASE(test_emission_schedule_6_to_0)
+BOOST_AUTO_TEST_CASE(test_v6_block_reward_always_zero)
 {
     const int activationHeight = 1000;
     ActivateV6At(activationHeight);
 
-    struct YearTest {
-        int year;
-        CAmount expectedReward;
-    };
+    // Test various years - all should have 0 block reward
+    const int testYears[] = {0, 1, 5, 10, 20, 33, 50, 100};
 
-    const YearTest tests[] = {
-        {0, 6 * COIN},
-        {1, 5 * COIN},
-        {2, 4 * COIN},
-        {3, 3 * COIN},
-        {4, 2 * COIN},
-        {5, 1 * COIN},
-        {6, 0},
-        {10, 0},  // Terminal emission maintained
-        {100, 0},
-    };
-
-    for (const auto& test : tests) {
-        const int testHeight = activationHeight + (test.year * Consensus::Params::BLOCKS_PER_YEAR);
+    for (int year : testYears) {
+        const int testHeight = activationHeight + (year * Consensus::Params::BLOCKS_PER_YEAR);
 
         CAmount blockValue = GetBlockValue(testHeight);
         CAmount mnPayment = GetMasternodePayment(testHeight);
 
-        BOOST_CHECK_EQUAL(blockValue, test.expectedReward);
-        BOOST_CHECK_EQUAL(mnPayment, test.expectedReward);
-
-        // Total emission = staker + MN + DAO = 3 * reward_year
-        CAmount totalEmission = test.expectedReward * 3;
-
-        LogPrint(BCLog::NET, "TEST: Year %d - Reward: %d PIV, Total: %d PIV\n",
-                 test.year, test.expectedReward / COIN, totalEmission / COIN);
+        // Block reward is ALWAYS 0 post-V6
+        BOOST_CHECK_EQUAL(blockValue, 0);
+        BOOST_CHECK_EQUAL(mnPayment, 0);
     }
-
-    LogPrint(BCLog::NET, "TEST: Emission schedule validated - 6→0 correct\n");
 }
 
 //==============================================================================
-// TEST 4: STATE INVARIANTS - C==U, Cr==Ur preservation
+// TEST 4: STATE INVARIANTS - C==U+Z, Cr==Ur preservation
 //==============================================================================
 
 /**
  * CRITICAL TEST: KHU invariants MUST hold at all times
  *
  * Validates:
- * - Genesis state: C=0, U=0, Cr=0, Ur=0
- * - After operations: C==U, Cr==Ur
+ * - Genesis state: C=0, U=0, Z=0, Cr=0, Ur=0
+ * - After operations: C==U+Z, Cr==Ur
  * - Invariants never violated
  */
 BOOST_AUTO_TEST_CASE(test_state_invariants_preservation)
@@ -233,21 +186,29 @@ BOOST_AUTO_TEST_CASE(test_state_invariants_preservation)
 
     BOOST_CHECK_EQUAL(genesisState.C, 0);
     BOOST_CHECK_EQUAL(genesisState.U, 0);
+    BOOST_CHECK_EQUAL(genesisState.Z, 0);
     BOOST_CHECK_EQUAL(genesisState.Cr, 0);
     BOOST_CHECK_EQUAL(genesisState.Ur, 0);
     BOOST_CHECK(genesisState.CheckInvariants());
 
-    // Test state with values
+    // Test state with values (transparent only)
     KhuGlobalState state;
     state.C = 1000 * COIN;
     state.U = 1000 * COIN;
+    state.Z = 0;
     state.Cr = 100 * COIN;
     state.Ur = 100 * COIN;
     state.nHeight = 5000;
 
     BOOST_CHECK(state.CheckInvariants());
 
-    // Test violated invariants (C != U)
+    // Test state with shielded values
+    state.C = 1000 * COIN;
+    state.U = 700 * COIN;
+    state.Z = 300 * COIN;  // C == U + Z
+    BOOST_CHECK(state.CheckInvariants());
+
+    // Test violated invariants (C != U + Z)
     state.C = 1001 * COIN;  // Break invariant
     BOOST_CHECK(!state.CheckInvariants());
 
@@ -258,8 +219,6 @@ BOOST_AUTO_TEST_CASE(test_state_invariants_preservation)
     // Test violated invariants (Cr != Ur)
     state.Cr = 101 * COIN;  // Break invariant
     BOOST_CHECK(!state.CheckInvariants());
-
-    LogPrint(BCLog::NET, "TEST: State invariants validated - C==U, Cr==Ur enforced\n");
 }
 
 //==============================================================================
@@ -268,56 +227,40 @@ BOOST_AUTO_TEST_CASE(test_state_invariants_preservation)
 
 /**
  * CRITICAL TEST: Finality system activates with V6.0
- *
- * Validates:
- * - Commitment DB operational
- * - State hash computation
- * - Quorum threshold enforcement
- * - Reorg protection active
  */
 BOOST_AUTO_TEST_CASE(test_finality_activation)
 {
     const int activationHeight = 1000;
     ActivateV6At(activationHeight);
 
-    // Create temporary commitment DB
     CKHUCommitmentDB db(1 << 20, true, false);
 
-    // Create state at activation
     KhuGlobalState state;
     state.C = 0;
     state.U = 0;
+    state.Z = 0;
     state.Cr = 0;
     state.Ur = 0;
     state.nHeight = activationHeight;
 
-    // Compute state hash
     uint256 hashState = ComputeKHUStateHash(state);
     BOOST_CHECK(!hashState.IsNull());
 
-    // Create commitment
     uint256 quorumHash = uint256S("01");
     KhuStateCommitment commitment = CreateKHUStateCommitment(state, quorumHash);
 
     BOOST_CHECK_EQUAL(commitment.nHeight, activationHeight);
     BOOST_CHECK(commitment.hashState == hashState);
 
-    // Add quorum signatures (simulate)
     commitment.signers.resize(50, false);
     for (int i = 0; i < 35; i++) {
         commitment.signers[i] = true;  // 70% quorum
     }
 
     BOOST_CHECK(commitment.HasQuorum());
-
-    // Write to DB
     BOOST_CHECK(db.WriteCommitment(activationHeight, commitment));
     BOOST_CHECK_EQUAL(db.GetLatestFinalizedHeight(), activationHeight);
-
-    // Verify finalized
     BOOST_CHECK(db.IsFinalizedAt(activationHeight));
-
-    LogPrint(BCLog::NET, "TEST: Finality activation validated - Commitment DB operational\n");
 }
 
 //==============================================================================
@@ -326,11 +269,6 @@ BOOST_AUTO_TEST_CASE(test_finality_activation)
 
 /**
  * CRITICAL TEST: Reorg protection prevents deep reorgs
- *
- * Validates:
- * - Depth limit: 12 blocks
- * - Finality: Cannot reorg finalized blocks
- * - Protection active only after V6.0
  */
 BOOST_AUTO_TEST_CASE(test_reorg_protection_depth_and_finality)
 {
@@ -339,10 +277,10 @@ BOOST_AUTO_TEST_CASE(test_reorg_protection_depth_and_finality)
 
     CKHUCommitmentDB db(1 << 20, true, false);
 
-    // Create and finalize a block
     KhuGlobalState state;
     state.C = 100 * COIN;
     state.U = 100 * COIN;
+    state.Z = 0;
     state.Cr = 0;
     state.Ur = 0;
     state.nHeight = activationHeight + 50;
@@ -367,8 +305,6 @@ BOOST_AUTO_TEST_CASE(test_reorg_protection_depth_and_finality)
     nonFinal.signers.clear();  // No quorum
     BOOST_CHECK(db.WriteCommitment(state.nHeight + 1, nonFinal));
     BOOST_CHECK(db.EraseCommitment(state.nHeight + 1));
-
-    LogPrint(BCLog::NET, "TEST: Reorg protection validated - Finality + depth limit\n");
 }
 
 //==============================================================================
@@ -380,7 +316,7 @@ BOOST_AUTO_TEST_CASE(test_reorg_protection_depth_and_finality)
  *
  * Validates:
  * - V5 emission works before activation
- * - Clean transition at boundary
+ * - Clean transition at boundary (to ZERO)
  * - No consensus split
  */
 BOOST_AUTO_TEST_CASE(test_v5_to_v6_migration)
@@ -403,7 +339,7 @@ BOOST_AUTO_TEST_CASE(test_v5_to_v6_migration)
     // Now activate V6
     ActivateV6At(activationHeight);
 
-    // V6 behavior: Post-activation uses new emission
+    // V6 behavior: Post-activation = ZERO
     for (int h = 900; h < activationHeight; h++) {
         BOOST_CHECK(!NetworkUpgradeActive(h, consensus, Consensus::UPGRADE_V6_0));
         BOOST_CHECK_EQUAL(GetBlockValue(h), 10 * COIN);
@@ -411,10 +347,8 @@ BOOST_AUTO_TEST_CASE(test_v5_to_v6_migration)
 
     for (int h = activationHeight; h < 1100; h++) {
         BOOST_CHECK(NetworkUpgradeActive(h, consensus, Consensus::UPGRADE_V6_0));
-        BOOST_CHECK_EQUAL(GetBlockValue(h), 6 * COIN);  // Year 0
+        BOOST_CHECK_EQUAL(GetBlockValue(h), 0);  // V6: ZERO
     }
-
-    LogPrint(BCLog::NET, "TEST: V5→V6 migration validated - Backward compatible\n");
 }
 
 //==============================================================================
@@ -423,19 +357,12 @@ BOOST_AUTO_TEST_CASE(test_v5_to_v6_migration)
 
 /**
  * CRITICAL TEST: Network cannot split unintentionally
- *
- * Validates:
- * - All nodes agree on activation height
- * - Emission deterministic
- * - State hash deterministic
- * - No divergence possible
  */
 BOOST_AUTO_TEST_CASE(test_fork_protection_no_split)
 {
     const int activationHeight = 1000;
     ActivateV6At(activationHeight);
 
-    // Simulate 10 independent nodes computing same block
     const int testHeight = activationHeight + 100;
 
     CAmount blockValues[10];
@@ -446,16 +373,19 @@ BOOST_AUTO_TEST_CASE(test_fork_protection_no_split)
         mnPayments[i] = GetMasternodePayment(testHeight);
     }
 
-    // All nodes MUST agree
+    // All nodes MUST agree (all 0)
     for (int i = 1; i < 10; i++) {
         BOOST_CHECK_EQUAL(blockValues[i], blockValues[0]);
         BOOST_CHECK_EQUAL(mnPayments[i], mnPayments[0]);
+        BOOST_CHECK_EQUAL(blockValues[i], 0);
+        BOOST_CHECK_EQUAL(mnPayments[i], 0);
     }
 
     // Test state hash determinism
     KhuGlobalState state;
     state.C = 500 * COIN;
     state.U = 500 * COIN;
+    state.Z = 0;
     state.Cr = 50 * COIN;
     state.Ur = 50 * COIN;
     state.nHeight = testHeight;
@@ -465,56 +395,13 @@ BOOST_AUTO_TEST_CASE(test_fork_protection_no_split)
         hashes[i] = ComputeKHUStateHash(state);
     }
 
-    // All nodes MUST compute same hash
     for (int i = 1; i < 10; i++) {
         BOOST_CHECK(hashes[i] == hashes[0]);
     }
-
-    LogPrint(BCLog::NET, "TEST: Fork protection validated - Deterministic consensus\n");
 }
 
 //==============================================================================
-// TEST 9: YEAR BOUNDARY - Emission transitions
-//==============================================================================
-
-/**
- * CRITICAL TEST: Year boundaries transition correctly
- *
- * Validates:
- * - Last block year 0: 6 PIV
- * - First block year 1: 5 PIV
- * - Exact 525,600 block intervals
- */
-BOOST_AUTO_TEST_CASE(test_year_boundary_transitions)
-{
-    const int activationHeight = 1000;
-    ActivateV6At(activationHeight);
-
-    // Test each year boundary
-    for (int year = 0; year < 6; year++) {
-        // Last block of year
-        int lastBlock = activationHeight + (year * Consensus::Params::BLOCKS_PER_YEAR) + Consensus::Params::BLOCKS_PER_YEAR - 1;
-        // First block of next year
-        int firstBlock = activationHeight + ((year + 1) * Consensus::Params::BLOCKS_PER_YEAR);
-
-        CAmount lastReward = GetBlockValue(lastBlock);
-        CAmount firstReward = GetBlockValue(firstBlock);
-
-        CAmount expectedLast = (6 - year) * COIN;
-        CAmount expectedFirst = (6 - (year + 1)) * COIN;
-
-        BOOST_CHECK_EQUAL(lastReward, expectedLast);
-        BOOST_CHECK_EQUAL(firstReward, expectedFirst);
-
-        LogPrint(BCLog::NET, "TEST: Year %d→%d boundary - %d PIV → %d PIV\n",
-                 year, year + 1, expectedLast / COIN, expectedFirst / COIN);
-    }
-
-    LogPrint(BCLog::NET, "TEST: Year boundaries validated - Clean transitions\n");
-}
-
-//==============================================================================
-// TEST 10: COMPREHENSIVE INTEGRATION - Everything together
+// TEST 9: COMPREHENSIVE INTEGRATION - Everything together
 //==============================================================================
 
 /**
@@ -522,8 +409,8 @@ BOOST_AUTO_TEST_CASE(test_year_boundary_transitions)
  *
  * Validates:
  * - Full lifecycle from V5 to V6
+ * - Block reward = 0 at all times post-V6
  * - All features working together
- * - No edge cases fail
  */
 BOOST_AUTO_TEST_CASE(test_comprehensive_v6_activation)
 {
@@ -535,22 +422,20 @@ BOOST_AUTO_TEST_CASE(test_comprehensive_v6_activation)
     // Phase 1: Pre-activation (blocks 600-999, after V5.5)
     for (int h = 600; h < activationHeight; h += 100) {
         BOOST_CHECK(!NetworkUpgradeActive(h, consensus, Consensus::UPGRADE_V6_0));
-        BOOST_CHECK_EQUAL(GetBlockValue(h), 10 * COIN);  // Post-V5.5 legacy
+        BOOST_CHECK_EQUAL(GetBlockValue(h), 10 * COIN);  // Legacy
     }
 
-    // Phase 2: Activation (block 1000)
+    // Phase 2: Activation (block 1000) - ZERO IMMEDIATE
     {
         int h = activationHeight;
         BOOST_CHECK(NetworkUpgradeActive(h, consensus, Consensus::UPGRADE_V6_0));
-        BOOST_CHECK_EQUAL(GetBlockValue(h), 6 * COIN);
+        BOOST_CHECK_EQUAL(GetBlockValue(h), 0);  // V6: ZERO
 
-        // State initialized
         KhuGlobalState state;
         state.SetNull();
         state.nHeight = h;
         BOOST_CHECK(state.CheckInvariants());
 
-        // State hash computable
         uint256 hash = ComputeKHUStateHash(state);
         BOOST_CHECK(!hash.IsNull());
     }
@@ -558,23 +443,23 @@ BOOST_AUTO_TEST_CASE(test_comprehensive_v6_activation)
     // Phase 3: Post-activation (blocks 1001+)
     CKHUCommitmentDB db(1 << 20, true, false);
 
-    for (int yearOffset = 0; yearOffset < 7; yearOffset++) {
+    // Test years 0 through 33 - all have 0 block reward
+    for (int yearOffset = 0; yearOffset <= 33; yearOffset += 5) {
         int h = activationHeight + (yearOffset * Consensus::Params::BLOCKS_PER_YEAR);
 
-        CAmount expectedReward = std::max(6 - yearOffset, 0) * COIN;
-        BOOST_CHECK_EQUAL(GetBlockValue(h), expectedReward);
+        // Block reward is ALWAYS 0 post-V6
+        BOOST_CHECK_EQUAL(GetBlockValue(h), 0);
 
-        // Create state for this height
         KhuGlobalState state;
         state.C = (yearOffset * 100) * COIN;
         state.U = (yearOffset * 100) * COIN;
+        state.Z = 0;
         state.Cr = (yearOffset * 10) * COIN;
         state.Ur = (yearOffset * 10) * COIN;
         state.nHeight = h;
 
         BOOST_CHECK(state.CheckInvariants());
 
-        // Create commitment
         KhuStateCommitment commitment = CreateKHUStateCommitment(state, uint256S("ff"));
         commitment.signers.resize(50, false);
         for (int i = 0; i < 35; i++) {
@@ -585,11 +470,7 @@ BOOST_AUTO_TEST_CASE(test_comprehensive_v6_activation)
         BOOST_CHECK(db.WriteCommitment(h, commitment));
     }
 
-    // Verify finality chain
     BOOST_CHECK(db.GetLatestFinalizedHeight() > 0);
-
-    LogPrint(BCLog::NET, "TEST: COMPREHENSIVE INTEGRATION PASSED ✅\n");
-    LogPrint(BCLog::NET, "TEST: V6.0 activation fully validated!\n");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

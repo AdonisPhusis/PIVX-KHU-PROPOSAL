@@ -17,6 +17,7 @@
 #include "key_io.h"
 #include "khu/khu_mint.h"
 #include "khu/khu_redeem.h"
+#include "khu/khu_stake.h"   // For MIN_STAKE_AMOUNT
 #include "khu/khu_state.h"
 #include "khu/khu_unstake.h"
 #include "khu/khu_validation.h"
@@ -552,7 +553,9 @@ static UniValue khuredeem(const JSONRPCRequest& request)
     CAmount bestExcess = std::numeric_limits<CAmount>::max();
 
     for (const COutput& coin : vPIVCoins) {
-        if (coin.tx->tx->IsShieldedTx()) continue;
+        // Skip KHU coins (check if this specific outpoint is a KHU coin, not the whole tx)
+        COutPoint coinOutpoint(coin.tx->GetHash(), coin.i);
+        if (pwallet->khuData.mapKHUCoins.count(coinOutpoint)) continue;
         CAmount value = coin.Value();
         if (value >= nFee) {
             CAmount excess = value - nFee;
@@ -1105,6 +1108,7 @@ static UniValue khustake(const JSONRPCRequest& request)
             "  \"sapling_address\": \"addr\" (string) ZKHU destination address\n"
             "}\n"
             "\nNotes:\n"
+            "- Minimum stake amount: 1 PIV (anti-spam protection)\n"
             "- Minimum maturity: 4320 blocks (3 days) before unstaking\n"
             "- Yield accumulates based on R_annual (currently governed by DOMC)\n"
             "- STAKE is a form conversion only - C, U, Cr, Ur unchanged\n"
@@ -1125,6 +1129,14 @@ static UniValue khustake(const JSONRPCRequest& request)
     CAmount nAmount = AmountFromValue(request.params[0]);
     if (nAmount <= 0) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Amount must be positive");
+    }
+
+    // Anti-spam: Minimum stake amount check (per khu_notes.h)
+    if (nAmount < MIN_STAKE_AMOUNT) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+            strprintf("Stake amount %s is below minimum %s (1 PIV). "
+                     "This protects the network from micro-stake spam.",
+                     FormatMoney(nAmount), FormatMoney(MIN_STAKE_AMOUNT)));
     }
 
     LOCK2(cs_main, pwallet->cs_wallet);
@@ -1208,7 +1220,9 @@ static UniValue khustake(const JSONRPCRequest& request)
     CAmount bestExcess = std::numeric_limits<CAmount>::max();
 
     for (const COutput& coin : vPIVCoins) {
-        if (coin.tx->tx->IsShieldedTx()) continue; // Skip shielded
+        // Skip KHU coins (check if this specific outpoint is a KHU coin, not the whole tx)
+        COutPoint coinOutpoint(coin.tx->GetHash(), coin.i);
+        if (pwallet->khuData.mapKHUCoins.count(coinOutpoint)) continue;
         CAmount value = coin.Value();
         if (value >= nFee) {
             CAmount excess = value - nFee;
@@ -1248,7 +1262,7 @@ static UniValue khustake(const JSONRPCRequest& request)
 
     // Create ZKHUMemo with stake metadata
     uint32_t nStakeHeight = nCurrentHeight + 1; // Note will be in next block
-    const uint32_t ZKHU_MATURITY_BLOCKS = 4320; // 3 days
+    const uint32_t maturityBlocks = GetZKHUMaturityBlocks(); // Network-aware
 
     ZKHUMemo memo;
     memcpy(memo.magic, "ZKHU", 4);
@@ -1344,7 +1358,7 @@ static UniValue khustake(const JSONRPCRequest& request)
     result.pushKV("txid", txRef->GetHash().GetHex());
     result.pushKV("amount", ValueFromAmount(nAmount));
     result.pushKV("stake_height", (int64_t)nStakeHeight);
-    result.pushKV("maturity_height", (int64_t)(nStakeHeight + ZKHU_MATURITY_BLOCKS));
+    result.pushKV("maturity_height", (int64_t)(nStakeHeight + maturityBlocks));
     result.pushKV("note_commitment", noteCommitment);
     result.pushKV("sapling_address", KeyIO::EncodePaymentAddress(saplingAddr));
 

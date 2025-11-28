@@ -4,6 +4,7 @@
 
 #include "khu/khu_yield.h"
 
+#include "chainparams.h"
 #include "khu/khu_state.h"
 #include "khu/khu_validation.h"
 #include "khu/zkhu_db.h"
@@ -13,6 +14,15 @@
 #include <boost/multiprecision/cpp_int.hpp>
 
 namespace khu_yield {
+
+// ============================================================================
+// Network-aware parameter getters
+// ============================================================================
+
+uint32_t GetMaturityBlocks()
+{
+    return Params().IsRegTestNet() ? MATURITY_BLOCKS_REGTEST : MATURITY_BLOCKS;
+}
 
 // ============================================================================
 // Internal Functions
@@ -25,6 +35,10 @@ namespace khu_yield {
  * - LevelDB cursors provide deterministic lexicographic order
  * - All nodes will process notes in the same order
  * - No in-memory sorting required
+ *
+ * BUG #8 FIX: Use CZKHUTreeDB::GetAllNotes() which uses the correct key format.
+ * The previous implementation used ad-hoc iteration that didn't match the
+ * key serialization used by WriteNote().
  *
  * @param func Functor to apply to each note: bool(uint256 noteId, ZKHUNoteData& data)
  * @return true if iteration completed successfully
@@ -40,71 +54,77 @@ static bool IterateStakedNotes(Func func)
         return true;
     }
 
-    // Create LevelDB cursor starting at ZKHU note prefix
-    // Key format: 'K' + 'T' + note_id
-    std::unique_ptr<CDBIterator> pcursor(const_cast<CDBWrapper*>(static_cast<const CDBWrapper*>(zkhuDB))->NewIterator());
+    LogPrint(BCLog::KHU, "IterateStakedNotes: DB initialized, using GetAllNotes()...\n");
 
-    // Seek to first note entry
-    // Using namespace 'K' (ZKHU) and prefix 'T' (notes)
-    pcursor->Seek(std::make_pair('K', std::make_pair('T', uint256())));
+    // BUG #8 FIX: Use the encapsulated GetAllNotes() method which uses the correct
+    // key format matching WriteNote(). This ensures iteration finds all notes.
+    std::vector<std::pair<uint256, ZKHUNoteData>> allNotes = zkhuDB->GetAllNotes();
 
-    // Iterate all notes in deterministic order
-    while (pcursor->Valid()) {
-        // Read key
-        std::pair<char, std::pair<char, uint256>> key;
-        if (!pcursor->GetKey(key)) {
-            break;
-        }
+    LogPrint(BCLog::KHU, "IterateStakedNotes: GetAllNotes returned %zu notes\n", allNotes.size());
 
-        // Check if still in ZKHU note namespace
-        if (key.first != 'K' || key.second.first != 'T') {
-            break; // End of notes
-        }
+    for (const auto& notePair : allNotes) {
+        const uint256& noteId = notePair.first;
+        ZKHUNoteData noteData = notePair.second;  // Copy for functor to modify
 
-        const uint256& noteId = key.second.second;
-
-        // Read note data
-        ZKHUNoteData noteData;
-        if (!pcursor->GetValue(noteData)) {
-            LogPrintf("ERROR: IterateStakedNotes: Failed to read note data for %s\n",
-                      noteId.GetHex());
-            return false;
-        }
+        LogPrint(BCLog::KHU, "IterateStakedNotes: processing note %s amount=%lld stakeHeight=%u\n",
+                 noteId.GetHex().substr(0, 16).c_str(), (long long)noteData.amount, noteData.nStakeStartHeight);
 
         // Apply functor
         if (!func(noteId, noteData)) {
             return false;
         }
-
-        // Move to next note
-        pcursor->Next();
     }
+
+    LogPrint(BCLog::KHU, "IterateStakedNotes: iteration complete, processed %zu notes\n", allNotes.size());
 
     return true;
 }
 
 /**
- * CalculateTotalYield - Calculate total yield for all mature staked notes
+ * CalculateAndAccumulateYield - Calculate yield for all mature notes AND update their Ur_accumulated
  *
  * ALGORITHME CONSENSUS-CRITICAL:
  * 1. Iterate all ZKHU notes via LevelDB cursor (deterministic order)
- * 2. For each mature note: add daily yield to total
- * 3. Protect against overflow using int128_t
+ * 2. For each mature note: calculate daily yield, update Ur_accumulated, write to DB
+ * 3. Accumulate total yield for global state update
+ * 4. Protect against overflow using int128_t
+ *
+ * BUG #6 FIX: This function now updates each note's Ur_accumulated in the ZKHU database.
+ * Previously, only global Cr/Ur were updated but individual notes' Ur_accumulated
+ * remained at 0, causing UNSTAKE to return 0 yield.
  *
  * @param nHeight Current block height
  * @param R_annual Annual yield rate (basis points)
  * @param totalYield Output: total yield calculated (satoshis)
  * @return true on success, false on overflow or error
  */
-static bool CalculateTotalYield(uint32_t nHeight, uint16_t R_annual, CAmount& totalYield)
+static bool CalculateAndAccumulateYield(uint32_t nHeight, uint16_t R_annual, CAmount& totalYield)
 {
     totalYield = 0;
+
+    CZKHUTreeDB* zkhuDB = GetZKHUDB();
+    if (!zkhuDB) {
+        // DB not initialized - no notes to process
+        LogPrint(BCLog::KHU, "CalculateAndAccumulateYield: ZKHU DB not initialized\n");
+        return true;
+    }
 
     // Use int128_t for overflow-safe accumulation
     using int128_t = boost::multiprecision::int128_t;
     int128_t totalYield128 = 0;
 
+    // Collect notes to update (we can't modify during iteration)
+    std::vector<std::pair<uint256, ZKHUNoteData>> notesToUpdate;
+
     bool success = IterateStakedNotes([&](const uint256& noteId, const ZKHUNoteData& note) {
+        // BUG #6 FIX: Skip notes that have been spent (UNSTAKE'd)
+        // Notes are kept in DB for undo support, but bSpent flag is set
+        if (note.bSpent) {
+            LogPrint(BCLog::KHU, "CalculateAndAccumulateYield: Skipping spent note %s (bSpent=true)\n",
+                     noteId.GetHex().substr(0, 16).c_str());
+            return true; // Skip spent note, continue iteration
+        }
+
         // Check note maturity
         if (!IsNoteMature(note.nStakeStartHeight, nHeight)) {
             return true; // Skip immature note, continue iteration
@@ -118,13 +138,19 @@ static bool CalculateTotalYield(uint32_t nHeight, uint16_t R_annual, CAmount& to
 
         // Check for overflow (should never happen with realistic values)
         if (totalYield128 > std::numeric_limits<CAmount>::max()) {
-            LogPrintf("ERROR: CalculateTotalYield: Overflow detected at note %s\n",
+            LogPrintf("ERROR: CalculateAndAccumulateYield: Overflow detected at note %s\n",
                       noteId.GetHex());
             return false; // Stop iteration
         }
 
-        LogPrint(BCLog::KHU, "CalculateTotalYield: Note %s amount=%d dailyYield=%d\n",
-                 noteId.GetHex().substr(0, 16), note.amount, dailyYield);
+        // BUG #6 FIX: Store note for Ur_accumulated update
+        ZKHUNoteData updatedNote = note;
+        updatedNote.Ur_accumulated += dailyYield;
+        notesToUpdate.emplace_back(noteId, updatedNote);
+
+        LogPrint(BCLog::KHU, "CalculateAndAccumulateYield: Note %s amount=%lld dailyYield=%lld newUr=%lld\n",
+                 noteId.GetHex().substr(0, 16).c_str(), (long long)note.amount,
+                 (long long)dailyYield, (long long)updatedNote.Ur_accumulated);
 
         return true; // Continue iteration
     });
@@ -132,6 +158,18 @@ static bool CalculateTotalYield(uint32_t nHeight, uint16_t R_annual, CAmount& to
     if (!success) {
         return false;
     }
+
+    // BUG #6 FIX: Write updated notes back to DB
+    for (const auto& notePair : notesToUpdate) {
+        if (!zkhuDB->WriteNote(notePair.first, notePair.second)) {
+            LogPrintf("ERROR: CalculateAndAccumulateYield: Failed to write note %s\n",
+                      notePair.first.GetHex());
+            return false;
+        }
+    }
+
+    LogPrint(BCLog::KHU, "CalculateAndAccumulateYield: Updated %zu notes with yield\n",
+             notesToUpdate.size());
 
     // Safe cast to CAmount (overflow already checked)
     totalYield = static_cast<CAmount>(totalYield128);
@@ -172,10 +210,10 @@ bool ApplyDailyYield(KhuGlobalState& state, uint32_t nHeight, uint32_t nV6Activa
         return false;
     }
 
-    // Calculate total yield from all mature staked notes
+    // BUG #6 FIX: Calculate total yield AND update each note's Ur_accumulated
     CAmount totalYield = 0;
-    if (!CalculateTotalYield(nHeight, state.R_annual, totalYield)) {
-        LogPrintf("ERROR: ApplyDailyYield: Failed to calculate total yield at height %u\n", nHeight);
+    if (!CalculateAndAccumulateYield(nHeight, state.R_annual, totalYield)) {
+        LogPrintf("ERROR: ApplyDailyYield: Failed to calculate/accumulate yield at height %u\n", nHeight);
         return false;
     }
 
@@ -208,6 +246,55 @@ bool UndoDailyYield(KhuGlobalState& state, uint32_t nHeight, uint32_t nV6Activat
     if (totalYield < 0) {
         LogPrintf("ERROR: UndoDailyYield: Invalid stored yield %d at height %u\n", totalYield, nHeight);
         return false;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BUG #6 FIX: Undo per-note Ur_accumulated updates
+    // ═══════════════════════════════════════════════════════════
+    CZKHUTreeDB* zkhuDB = GetZKHUDB();
+    if (zkhuDB && totalYield > 0) {
+        // Collect notes to update
+        std::vector<std::pair<uint256, ZKHUNoteData>> notesToUpdate;
+
+        IterateStakedNotes([&](const uint256& noteId, const ZKHUNoteData& note) {
+            // BUG #6 FIX: Skip notes that were spent (same as in CalculateAndAccumulateYield)
+            // During reorg, spent notes should not have yield undone (was never added)
+            if (note.bSpent) {
+                return true; // Skip spent note
+            }
+
+            // Only process notes that were mature at this height
+            if (!IsNoteMature(note.nStakeStartHeight, nHeight)) {
+                return true; // Skip immature note
+            }
+
+            // Calculate the yield that was added for this note
+            CAmount dailyYield = CalculateDailyYieldForNote(note.amount, state.R_annual);
+
+            // Prepare updated note with yield subtracted
+            ZKHUNoteData updatedNote = note;
+            if (updatedNote.Ur_accumulated >= dailyYield) {
+                updatedNote.Ur_accumulated -= dailyYield;
+            } else {
+                // Edge case: yield was already claimed via UNSTAKE, skip
+                LogPrint(BCLog::KHU, "UndoDailyYield: Note %s has Ur_accumulated=%lld < dailyYield=%lld, skipping\n",
+                         noteId.GetHex().substr(0, 16).c_str(),
+                         (long long)updatedNote.Ur_accumulated, (long long)dailyYield);
+            }
+            notesToUpdate.emplace_back(noteId, updatedNote);
+
+            return true;
+        });
+
+        // Write updated notes back to DB
+        for (const auto& notePair : notesToUpdate) {
+            if (!zkhuDB->WriteNote(notePair.first, notePair.second)) {
+                LogPrintf("ERROR: UndoDailyYield: Failed to write note %s\n", notePair.first.GetHex());
+                return false;
+            }
+        }
+
+        LogPrint(BCLog::KHU, "UndoDailyYield: Reverted yield on %zu notes\n", notesToUpdate.size());
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -275,12 +362,14 @@ CAmount CalculateDailyYieldForNote(CAmount amount, uint16_t R_annual)
 
 bool IsNoteMature(uint32_t noteHeight, uint32_t currentHeight)
 {
-    // RÈGLE CONSENSUS: Note must be staked for at least MATURITY_BLOCKS (4320 blocks = 3 days)
+    // RÈGLE CONSENSUS: Note must be staked for at least maturity period
+    // MAINNET/TESTNET: 4320 blocks (~3 days)
+    // REGTEST: 1260 blocks (~21 hours for fast testing)
     if (currentHeight < noteHeight) {
         return false; // Invalid state
     }
 
-    return (currentHeight - noteHeight) >= MATURITY_BLOCKS;
+    return (currentHeight - noteHeight) >= GetMaturityBlocks();
 }
 
 } // namespace khu_yield

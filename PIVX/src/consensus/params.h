@@ -186,12 +186,14 @@ struct Params {
     CAmount nMNBlockReward;
     CAmount nNewMNBlockReward;
 
-    // KHU V6 emission: 6→0 per year (Phase 1-Emission)
+    // KHU V6: Block reward = 0 immediately at V6 activation
+    // Economy is governed by R% yield (40%→7% over 33 years) and T (treasury)
+    // BLOCKS_PER_YEAR is used for R_MAX_dynamic calculation: max(700, 4000 - year*100)
     static constexpr int BLOCKS_PER_YEAR = 525600;  // 365 days * 1440 blocks/day
-    static constexpr CAmount MAX_REWARD_YEAR = 6 * COIN;  // Year 0 max reward per compartment
 
     // KHU DAO Treasury (Phase 6 - Automatic budget)
-    // Budget = (U + Ur) / 182500 every 1440 blocks (daily) = 2% annual
+    // Budget = (U × R_annual) / 10000 / T_DIVISOR / 365 every 1440 blocks (daily)
+    // With T_DIVISOR=8 and R=40%: ~5% annual (scales with R% over 33 years)
     // Runs in PARALLEL with block reward DAO (years 0-6)
     // CONTINUES after block reward ends (year 6+)
     std::string strDaoTreasuryAddress;

@@ -7,6 +7,7 @@
 
 #include "amount.h"
 #include "khu/khu_coins.h"
+#include "khu/khu_unstake.h" // For GetZKHUMaturityBlocks()
 #include "khu/zkhu_memo.h"
 #include "primitives/transaction.h"
 #include "serialize.h"
@@ -110,10 +111,11 @@ struct ZKHUNoteEntry {
           Ur_accumulated(0), nullifier(nullifierIn), fSpent(false),
           nConfirmedHeight(heightIn), nTimeReceived(GetTime()) {}
 
-    //! Check if note is mature for unstaking (>= 4320 blocks)
+    //! Check if note is mature for unstaking (network-aware maturity)
+    //! MAINNET/TESTNET: 4320 blocks (~3 days)
+    //! REGTEST: 1260 blocks (~21 hours for fast testing)
     bool IsMature(int currentHeight) const {
-        const uint32_t ZKHU_MATURITY_BLOCKS = 4320; // 3 days
-        return !fSpent && (uint32_t)(currentHeight - nConfirmedHeight) >= ZKHU_MATURITY_BLOCKS;
+        return !fSpent && (uint32_t)(currentHeight - nConfirmedHeight) >= GetZKHUMaturityBlocks();
     }
 
     //! Get blocks staked

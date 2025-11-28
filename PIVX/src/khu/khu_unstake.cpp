@@ -9,6 +9,7 @@
 #include "consensus/validation.h"
 #include "khu/khu_utxo.h"
 #include "khu/khu_validation.h"
+#include "khu/khu_yield.h"
 #include "khu/zkhu_db.h"
 #include "khu/zkhu_memo.h"
 #include "khu/zkhu_note.h"
@@ -23,6 +24,16 @@
 
 // External lock (defined in khu_validation.cpp)
 extern RecursiveMutex cs_khu;
+
+// ============================================================================
+// Network-aware parameter getter
+// ============================================================================
+
+uint32_t GetZKHUMaturityBlocks()
+{
+    // Delegate to khu_yield for consistency
+    return khu_yield::GetMaturityBlocks();
+}
 
 std::string CUnstakeKHUPayload::ToString() const
 {
@@ -107,10 +118,13 @@ bool CheckKHUUnstake(
                         REJECT_INVALID, "bad-unstake-note-missing");
     }
 
-    // 8. ⚠️ MATURITY: nHeight - noteData.nStakeStartHeight >= 4320 (sinon reject)
-    if (nHeight - noteData.nStakeStartHeight < (int)ZKHU_MATURITY_BLOCKS) {
+    // 8. ⚠️ MATURITY: nHeight - noteData.nStakeStartHeight >= maturity blocks (sinon reject)
+    //    MAINNET/TESTNET: 4320 blocks (~3 days)
+    //    REGTEST: 1260 blocks (~21 hours for fast testing)
+    uint32_t maturityBlocks = GetZKHUMaturityBlocks();
+    if (nHeight - noteData.nStakeStartHeight < (int)maturityBlocks) {
         return state.DoS(100, error("%s: maturity not reached (height=%d, start=%d, required=%d)",
-                                   __func__, nHeight, noteData.nStakeStartHeight, ZKHU_MATURITY_BLOCKS),
+                                   __func__, nHeight, noteData.nStakeStartHeight, maturityBlocks),
                         REJECT_INVALID, "bad-unstake-maturity");
     }
 
@@ -248,13 +262,14 @@ bool ApplyKHUUnstake(
     // The nullifier spent flag prevents double-spend
     // TODO Phase 6: Consider using undo data instead
 
-    // 10. Keep note in database for undo (Phase 5)
-    // Note: In Phase 5, we keep the note so UndoKHUUnstake can read bonus
-    // The nullifier spent flag prevents double-spend
-    // TODO Phase 6: Use proper undo data instead of keeping notes
-    // if (!zkhuDB->EraseNote(cm)) {
-    //     return error("%s: failed to erase spent note", __func__);
-    // }
+    // 10. BUG #6 FIX: Mark note as spent (keep for undo support)
+    // This prevents yield from being calculated for spent notes
+    noteData.bSpent = true;
+    if (!zkhuDB->WriteNote(cm, noteData)) {
+        return error("%s: failed to mark note as spent", __func__);
+    }
+    LogPrint(BCLog::KHU, "ApplyKHUUnstake: Marked note %s as spent in ZKHU database\n",
+             cm.GetHex().substr(0, 16).c_str());
 
     // 11. Create output KHU_T UTXO (P + Y)
     if (tx.vout.empty()) {
@@ -372,9 +387,13 @@ bool UndoKHUUnstake(
     state.Cr += Y;          // (4) Reverse: Yield restauré au pool
     state.Ur += Y;          // (5) Reverse: Yield restauré aux droits
 
-    // 7. Note is already in DB (we didn't erase it in Apply)
-    // We just need to unmark the nullifier as spent
-    // The note already has the correct Ur_accumulated and all other fields
+    // 7. BUG #6 FIX: Unmark note as spent (restore for yield calculation)
+    noteData.bSpent = false;
+    if (!zkhuDB->WriteNote(cm, noteData)) {
+        return error("%s: failed to unmark note as spent", __func__);
+    }
+    LogPrint(BCLog::KHU, "%s: Restored note %s (unspent) in ZKHU database\n",
+             __func__, cm.GetHex().substr(0, 16).c_str());
 
     // 8. Nullifier mapping is already in DB (kept by Apply)
     // No need to restore it

@@ -47,7 +47,7 @@ KHU est un **colored coin collatéralisé 1:1** par PIV.
 
 ## 2. ÉTAT GLOBAL — KhuGlobalState
 
-### 2.1 Structure canonique (17 champs)
+### 2.1 Structure canonique (18 champs)
 
 ```cpp
 struct KhuGlobalState {
@@ -60,8 +60,9 @@ struct KhuGlobalState {
     int64_t  T;                  // DAO Treasury Pool (satoshis)
 
     // === DOMC ===
-    uint16_t R_annual;           // Yield rate (basis points 0-4000)
-    uint16_t R_MAX_dynamic;      // Plafond R% dynamique (max(700, 4000 - year×100))
+    uint32_t R_annual;           // Current yield rate (basis points 0-4000)
+    uint32_t R_next;             // Next R% after REVEAL (visible during ADAPTATION, 0 if not set)
+    uint32_t R_MAX_dynamic;      // Plafond R% dynamique (max(700, 4000 - year×100))
 
     // === YIELD SCHEDULER ===
     uint32_t last_yield_update_height;
@@ -87,14 +88,14 @@ struct KhuGlobalState {
 };
 ```
 
-> ⚠️ **Ces 17 champs sont IMMUABLES.** Toute modification = hard fork.
+> ⚠️ **Ces 18 champs sont IMMUABLES.** Toute modification = hard fork.
 
 ### 2.2 Ordre de sérialisation (consensus)
 
 L'ordre de sérialisation pour `GetHash()` est **SACRÉ**:
 
 ```
-C → U → Z → Cr → Ur → T → R_annual → R_MAX_dynamic →
+C → U → Z → Cr → Ur → T → R_annual → R_next → R_MAX_dynamic →
 last_yield_update_height → last_yield_amount →
 domc_cycle_start → domc_cycle_length → domc_commit_phase_start →
 domc_reveal_deadline → nHeight → hashBlock → hashPrevState
@@ -261,43 +262,42 @@ Schedule:
 
 ---
 
-## 7. ÉMISSION PIVX
+## 7. ÉMISSION PIVX — TRANSITION V6
 
-### 7.1 Formule sacrée
+### 7.1 Avant V6 (PIVX V5.6 actuel)
+
+```
+Staker:     6 PIV/bloc
+Masternode: 4 PIV/bloc
+DAO:       10 PIV/bloc
+─────────────────────────
+Total:     20 PIV/bloc
+```
+
+### 7.2 À l'activation V6 — ZÉRO IMMÉDIAT
 
 ```cpp
-year = (nHeight - ACTIVATION_HEIGHT) / BLOCKS_PER_YEAR;
-reward_year = max(6 - year, 0) × COIN;
+// À V6_ACTIVATION_HEIGHT:
+staker_reward = 0 PIV
+mn_reward     = 0 PIV
+dao_reward    = 0 PIV
+
+Total = 0 PIV/bloc  // IMMÉDIATEMENT, pas de transition progressive
 ```
 
-**Cette formule est IMMUABLE. Pas d'interpolation, pas de table.**
+**RÈGLE ABSOLUE:** Dès le bloc V6, l'émission PIVX passe à **ZÉRO**.
+Pas de schedule 6→5→4→...→0. C'est **0 immédiatement**.
 
-### 7.2 Distribution par bloc
+### 7.3 Nouvelle économie post-V6
 
-```
-staker_reward = reward_year
-mn_reward     = reward_year
-dao_reward    = reward_year
-
-Total = 3 × reward_year
-```
-
-### 7.3 Schedule
-
-| Année | reward_year | Par bloc | Par an |
-|-------|-------------|----------|--------|
-| 0 | 6 PIV | 18 PIV | 9,460,800 PIV |
-| 1 | 5 PIV | 15 PIV | 7,884,000 PIV |
-| 2 | 4 PIV | 12 PIV | 6,307,200 PIV |
-| 3 | 3 PIV | 9 PIV | 4,730,400 PIV |
-| 4 | 2 PIV | 6 PIV | 3,153,600 PIV |
-| 5 | 1 PIV | 3 PIV | 1,576,800 PIV |
-| 6+ | 0 PIV | 0 PIV | 0 PIV |
+L'économie est entièrement gouvernée par:
+- **R%** = Yield pour stakers ZKHU (voté par MN, 40%→7% sur 33 ans)
+- **T** = DAO Treasury (accumule ~5%/an de U à R=40%)
 
 ### 7.4 Fees
 
 ```
-Tous les fees: payés en PIV, BURN (pas au producteur de bloc)
+Tous les fees: payés en PIV (pas de burn, va aux mineurs/stakers)
 ```
 
 ---
@@ -312,12 +312,12 @@ T_daily = (U × R_annual) / 10000 / 8 / 365    // ~5% annuel avec T_DIVISOR=8
 Trigger: tous les 1440 blocs (même timing que yield)
 ```
 
-### 8.2 Timeline transition
+### 8.2 Post-V6
 
 ```
-Année 0:   DAO = 6 PIV/bloc + T accumule
-Année 1+:  DAO = emission + T disponible pour proposals
-Année 6+:  DAO = 0 PIV/bloc → T seule source
+Dès V6: Block reward = 0 PIV
+        T = seule source de financement DAO
+        T accumule selon U × R% / 8 / 365
 ```
 
 ---
