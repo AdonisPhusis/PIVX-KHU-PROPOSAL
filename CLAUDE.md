@@ -33,6 +33,14 @@ https://github.com/AdonisPhusis/PIVX-V6-KHU
 - Remote: `origin`
 - Branche: `testnet-ready-v1`
 
+### Dépôt HU Chain (Active Development)
+```
+https://github.com/AdonisPhusis/HEDGE-HUNIT
+```
+- Remote: `hedge`
+- Branche: `main`
+- **Cible pour HU Chain cleanup et développement**
+
 ### Tags Importants
 | Tag | Description |
 |-----|-------------|
@@ -44,6 +52,7 @@ https://github.com/AdonisPhusis/PIVX-V6-KHU
 ```bash
 git push                              # → official/main (PIVX-KHU-PROPOSAL)
 git push origin testnet-ready-v1      # → origin (PIVX-V6-KHU dev)
+git push hedge HEAD:main              # → hedge/main (HEDGE-HUNIT)
 ```
 
 ---
@@ -93,6 +102,63 @@ pkill -f pivxd
 - **Toutes les options doivent être en ligne de commande** (le fichier pivx.conf n'est pas lu correctement en regtest)
 - V6 activé automatiquement après 201 blocs
 - R% = 40% initial
+
+---
+
+## 0.3 HU CHAIN (Prochaine Étape)
+
+**HU = Hedge Unit** — Fork propre de PIVX avec code KHU.
+
+### Vision HU Chain v1
+```
+HU (coin natif)
+ ├── HU SHIELD ─── Transfers privés (Sapling)
+ └── KHU (colored 1:1)
+      └── ZKHU ─── Staking privé + Yield R%
+
+Consensus: PoS HU (reward=0) + Masternodes finalité
+Gouvernance: DOMC (vote R%) + Proposals (Treasury T)
+Finalité: LLMQ Chainlocks (reorg > 12 impossible)
+Émission: ZÉRO bloc (tout via yield R%)
+DAO: Proposals tapent directement dans T
+```
+
+### Décisions Clés v1
+| Décision | Choix |
+|----------|-------|
+| Production blocs | PoS HU classique (GARDER moteur) |
+| Block reward | `GetBlockValue() = 0` |
+| Finalité | Masternodes LLMQ, 12 blocs |
+| KHU/ZKHU | Aucune modification |
+| DAO | Proposals → T direct (supprimer budget legacy) |
+| Dev reward | 120k HU hors KHU invariants |
+| ZKHU-PoS | Reporté à v2 |
+
+### Genesis HU
+```
+Dev Reward:    120,000 HU   (adresse normale, HORS KHU)
+MN Collateral: 120,000 HU   (12 × 10,000)
+Swap Reserve:  28,000,000 HU (HTLC, HORS KHU)
+KhuGlobalState: C=0, U=0, Z=0, Cr=0, Ur=0, T=0
+```
+
+### Code à Supprimer (~10,000 lignes)
+```
+❌ src/libzerocoin/     (~2,400 lignes)
+❌ src/zpiv/            (~500 lignes)
+❌ src/legacy/zerocoin* (~3,100 lignes)
+❌ Cold staking refs    (~300 refs)
+❌ Budget legacy        (~3,700 lignes) → remplacer par DAO T-direct
+❌ 7 Sporks deprecated
+
+⚠️ GARDER stakeinput.*, kernel.* (moteur PoS)
+⚠️ JUSTE mettre GetBlockValue() = 0
+```
+
+### Documents HU Chain
+- `docs/HU_CHAIN_DECISIONS.md` — Décisions finales
+- `docs/HU_CHAIN_ROADMAP.md` — Roadmap 7 phases
+- `docs/blueprints/V2-01-HU-CHAIN-CLEANUP.md` — Plan technique suppression
 
 ---
 
