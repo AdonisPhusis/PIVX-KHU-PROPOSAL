@@ -1,8 +1,9 @@
 # HU CHAIN - Roadmap
 
-**Version:** 1.0
+**Version:** 2.0
 **Date:** 2025-11-29
-**Status:** PLANNING
+**Status:** APPROVED
+**Ref:** HU_CHAIN_DECISIONS.md
 
 ---
 
@@ -12,7 +13,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        HU CHAIN                                 │
+│                        HU CHAIN v1                              │
 │                                                                 │
 │   HU (coin natif)                                              │
 │    │                                                           │
@@ -23,9 +24,11 @@
 │         └── ZKHU ──── Staking privé + Yield R%                │
 │                       (PAS de transfers entre notes)           │
 │                                                                 │
+│   Consensus: PoS HU (reward=0) + Masternodes finalité         │
 │   Gouvernance: DOMC (vote R%) + Proposals (Treasury T)         │
-│   Finalité: LLMQ Chainlocks (pas de reorg)                     │
-│   Émission: ZÉRO (tout via R%)                                 │
+│   Finalité: LLMQ Chainlocks (reorg > 12 impossible)           │
+│   Émission: ZÉRO bloc (tout via yield R%)                     │
+│   DAO: Proposals tapent directement dans T                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -33,12 +36,39 @@
 
 ## Origine
 
-Fork de PIVX avec code KHU existant (commit `80370e9`), nettoyé et optimisé.
+Fork de PIVX avec code KHU existant, nettoyé et optimisé.
 
-**Backup disponible:**
-- `github.com/AdonisPhusis/PIVX-KHU-PROPOSAL` (frozen)
-- `github.com/AdonisPhusis/PIVX-V6-KHU` (dev)
-- `github.com/AdonisPhusis/HEDGE-HUNIT` (HU Chain)
+**Repositories:**
+- `github.com/AdonisPhusis/PIVX-KHU-PROPOSAL` (frozen backup)
+- `github.com/AdonisPhusis/PIVX-V6-KHU` (dev backup)
+- `github.com/AdonisPhusis/HEDGE-HUNIT` (HU Chain active)
+
+---
+
+## Consensus v1
+
+### Décision Finale
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  PRODUCTION BLOCS                                               │
+│  ✅ PoS HU classique (comme PIVX)                              │
+│  ✅ Block reward = 0 (GetBlockValue() = 0)                     │
+│  ✅ Staking HU = sécurité réseau uniquement                    │
+│                                                                 │
+│  FINALITÉ                                                       │
+│  ✅ Masternodes LLMQ/BLS                                       │
+│  ✅ Chainlocks                                                  │
+│  ✅ Reorg > 12 blocs = IMPOSSIBLE                              │
+│                                                                 │
+│  v2 FUTURE                                                      │
+│  ☐ ZKHU-PoS (production blocs avec notes Sapling)              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Pourquoi ce choix?
+- Code testnet KHU déjà fonctionnel
+- Stabilité > innovation pour genesis
+- ZKHU-PoS = upgrade v2 future
 
 ---
 
@@ -46,30 +76,39 @@ Fork de PIVX avec code KHU existant (commit `80370e9`), nettoyé et optimisé.
 
 ### Ce qu'on GARDE
 
-| Composant | Usage |
-|-----------|-------|
-| Sapling crypto | HU SHIELD + ZKHU |
-| Masternodes DMN/BLS | Quorum LLMQ |
-| LLMQ/Chainlocks | Finalité rapide |
-| HTLC opcodes | Swap PIV → HU |
-| P2P network | Communication |
-| Wallet HD | Gestion clés |
-| RPC server | Interface |
-| Code KHU | MINT/REDEEM/STAKE/UNSTAKE |
-| DOMC | Gouvernance R% |
+| Composant | Usage | Status |
+|-----------|-------|--------|
+| **PoS moteur** | Production blocs (reward=0) | ✅ GARDER |
+| Sapling crypto | HU SHIELD + ZKHU | ✅ |
+| Masternodes DMN/BLS | Quorum LLMQ + finalité | ✅ |
+| LLMQ/Chainlocks | Finalité 12 blocs | ✅ |
+| HTLC opcodes | Swap PIV → HU | ✅ |
+| P2P network | Communication | ✅ |
+| Wallet HD | Gestion clés | ✅ |
+| Qt GUI | Interface minimale | ✅ |
+| RPC server | Interface | ✅ |
+| Code KHU | MINT/REDEEM/STAKE/UNSTAKE | ✅ |
+| DOMC | Gouvernance R% | ✅ |
 
 ### Ce qu'on SUPPRIME
 
 | Composant | Lignes | Raison |
 |-----------|--------|--------|
-| `src/zerocoin/` | ~15,000 | Legacy mort |
-| `src/libzerocoin/` | ~8,000 | Dépendance zerocoin |
-| `src/legacy/` | ~3,000 | Code obsolète |
-| PoS staking | ~5,000 | Block reward = 0 |
-| Cold staking | ~2,000 | Plus utile |
-| Budget system legacy | ~4,000 | Remplacé par T |
-| MN payments old | ~2,000 | Plus de rewards |
-| **TOTAL** | **~42,000** | **-17% code** |
+| `src/libzerocoin/` | ~2,400 | Legacy mort |
+| `src/zpiv/` | ~500 | zPIV PoS mort |
+| `src/legacy/zerocoin*` | ~3,100 | Legacy mort |
+| Cold staking refs | ~300 | Plus utile |
+| Budget system legacy | ~3,700 | Remplacé par T direct |
+| 7 Sporks deprecated | ~50 | Obsolètes |
+| **TOTAL** | **~10,000** | |
+
+### ⚠️ CE QU'ON NE SUPPRIME PAS
+
+```
+❌ NE PAS supprimer le moteur PoS (CheckProofOfStake, etc.)
+❌ NE PAS supprimer stakeinput.*, kernel.*
+✅ JUSTE mettre GetBlockValue() = 0
+```
 
 ---
 
@@ -80,23 +119,76 @@ PREMINE TOTAL: 28,240,000 HU
 
 ┌────────────────────────────────────────────────────────────┐
 │                                                            │
-│  [1] MN Collateral    120,000 HU    (12 × 10,000)         │
-│      → 12 masternodes contrôlés                           │
-│      → LLMQ opérationnel immédiatement                    │
+│  [1] Dev Reward       120,000 HU                          │
+│      → Adresse HU normale (P2PKH)                         │
+│      → HORS système KHU                                   │
+│      → Ne touche PAS C/U/Z/Cr/Ur/T                        │
 │                                                            │
-│  [2] Pool R%          120,000 HU                          │
-│      → Pour payer les yields ZKHU                         │
-│      → Alimente Cr/Ur                                     │
+│  [2] MN Collateral    120,000 HU    (12 × 10,000)         │
+│      → 12 masternodes contrôlés                           │
+│      → LLMQ opérationnel dès genesis                      │
 │                                                            │
 │  [3] Swap Reserve     28,000,000 HU                       │
 │      → 50% du supply PIV (~56M)                           │
-│      → Verrouillé dans contrat HTLC                       │
-│      → Appartient à PERSONNE jusqu'au swap               │
+│      → Verrouillé dans script HTLC                        │
+│      → HORS système KHU                                   │
+│      → Libéré 1:1 contre PIV burned                       │
 │                                                            │
-│  [4] Treasury T       0 HU                                │
-│      → Monte automatiquement via U×R%/8/365              │
+│  [4] KhuGlobalState initial                               │
+│      C = 0, U = 0, Z = 0                                  │
+│      Cr = 0, Ur = 0                                       │
+│      T = 0                                                 │
+│      R_annual = 4000 (40%)                                │
 │                                                            │
 └────────────────────────────────────────────────────────────┘
+```
+
+### Points CRITIQUES
+```
+✅ Dev reward = HU normal, HORS invariants KHU
+✅ Swap reserve = HU verrouillé HTLC, HORS KHU
+✅ KhuGlobalState démarre à ZÉRO
+✅ Invariants préservés dès genesis
+```
+
+---
+
+## DAO / Proposals (T direct)
+
+### Système DAO v1
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  DAO MINIMALISTE - Proposals tapent dans T                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. T accumule automatiquement                                 │
+│     T_daily = (U × R_annual) / 10000 / 8 / 365                 │
+│                                                                 │
+│  2. Proposal créée (RPC: dao_create)                           │
+│     {id, address, amount, payout_height, votes}                │
+│                                                                 │
+│  3. Vote MN (RPC: dao_vote)                                    │
+│     Approuvé si majorité MN                                    │
+│                                                                 │
+│  4. Exécution (ConnectBlock)                                   │
+│     Si approved && height == payout_height && T >= amount:     │
+│     - state.T -= amount                                        │
+│     - TX DAO_PAYOUT créée → address                            │
+│                                                                 │
+│  5. Invariants checkés                                         │
+│     T >= 0 toujours                                            │
+│     C/U/Z/Cr/Ur NON touchés                                    │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Ce qu'on SUPPRIME
+```
+❌ Budget PIVX (block reward based)
+❌ Superblocks
+❌ Cycles d'élection complexes
+❌ Payouts prédéfinis coinbase
 ```
 
 ---
@@ -132,18 +224,25 @@ PIV locked forever                   HU libéré de reserve
 ```
 ÉMISSION = 0 HU/bloc (toujours)
 
-YIELD = ZKHU × R% / 365 par jour
-        → Payé depuis Pool R% (Cr)
+YIELD = note.amount × R% / 365 par jour
+        → Stakers ZKHU reçoivent le yield
+        → Mécanisme Cr/Ur intact
 
 TREASURY = U × R% / 8 / 365 par jour
            → ~5% de l'activité économique
-           → Finance les proposals
+           → Finance les proposals DAO
+           → Dépensé via TX DAO_PAYOUT
 
 R% GOUVERNANCE:
 ├── Initial: 40%
 ├── Plancher: 7%
 ├── Décroissance: -1%/an
 └── Atteint plancher: 33 ans
+
+INVARIANTS:
+├── C == U + Z (toujours)
+├── Cr == Ur (toujours)
+└── T >= 0 (toujours)
 ```
 
 ---
@@ -154,12 +253,14 @@ R% GOUVERNANCE:
 
 | Tâche | Status |
 |-------|--------|
-| Fork PIVX dans nouveau repo | ☐ |
-| Supprimer `src/zerocoin/` | ☐ |
+| Fork dans HEDGE-HUNIT repo | ☐ |
 | Supprimer `src/libzerocoin/` | ☐ |
-| Supprimer legacy staking code | ☐ |
-| Supprimer cold staking | ☐ |
-| Supprimer budget system legacy | ☐ |
+| Supprimer `src/zpiv/` | ☐ |
+| Supprimer `legacy/zerocoin*` | ☐ |
+| Nettoyer cold staking refs | ☐ |
+| Supprimer budget legacy | ☐ |
+| Supprimer 7 sporks deprecated | ☐ |
+| ⚠️ GARDER moteur PoS | ☐ |
 | Fix compilation errors | ☐ |
 | Build test | ☐ |
 
@@ -180,23 +281,35 @@ R% GOUVERNANCE:
 |-------|--------|
 | Nouveau `chainparams.cpp` | ☐ |
 | Genesis block avec premine | ☐ |
+| Dev reward 120k HU (adresse normale) | ☐ |
+| MN collateral 120k HU | ☐ |
+| Swap reserve 28M HU (HTLC script) | ☐ |
 | Configuration LLMQ 12 MN | ☐ |
-| Activation KHU bloc 0 | ☐ |
 | Block reward = 0 | ☐ |
-| Désactiver upgrades inutiles | ☐ |
+| KhuGlobalState = zéro | ☐ |
 | Calculer genesis hash | ☐ |
 
-### Phase 4: Intégration KHU [2-3 jours]
+### Phase 4: DAO T-direct [2-3 jours]
+
+| Tâche | Status |
+|-------|--------|
+| Implémenter dao_create RPC | ☐ |
+| Implémenter dao_vote RPC | ☐ |
+| TX type DAO_PAYOUT (12) | ☐ |
+| Logic ConnectBlock T -= amount | ☐ |
+| Tests proposals | ☐ |
+
+### Phase 5: Intégration KHU [2-3 jours]
 
 | Tâche | Status |
 |-------|--------|
 | Adapter code KHU existant | ☐ |
 | HU SHIELD = Sapling standard | ☐ |
 | ZKHU = staking uniquement | ☐ |
-| Tests unitaires | ☐ |
+| Tests unitaires KHU | ☐ |
 | DOMC gouvernance | ☐ |
 
-### Phase 5: Testnet [1-2 semaines]
+### Phase 6: Testnet [1-2 semaines]
 
 | Tâche | Status |
 |-------|--------|
@@ -204,11 +317,12 @@ R% GOUVERNANCE:
 | Tester LLMQ/Chainlocks | ☐ |
 | Tester KHU pipeline complet | ☐ |
 | Tester DOMC vote R% | ☐ |
+| Tester DAO proposals | ☐ |
 | Tester HTLC swap | ☐ |
 | Stress test | ☐ |
 | Bug fixes | ☐ |
 
-### Phase 6: Mainnet [1 semaine]
+### Phase 7: Mainnet [1 semaine]
 
 | Tâche | Status |
 |-------|--------|
@@ -225,11 +339,12 @@ R% GOUVERNANCE:
 
 ```
 Semaine 1-2:  Phase 1 + 2 (Nettoyage + Renommage)
-Semaine 2-3:  Phase 3 + 4 (Genesis + KHU)
-Semaine 3-5:  Phase 5 (Testnet)
-Semaine 5-6:  Phase 6 (Mainnet)
+Semaine 2-3:  Phase 3 + 4 (Genesis + DAO)
+Semaine 3-4:  Phase 5 (Intégration KHU)
+Semaine 4-6:  Phase 6 (Testnet)
+Semaine 6-7:  Phase 7 (Mainnet)
 
-TOTAL: 4-6 semaines
+TOTAL: 5-7 semaines
 ```
 
 ---
@@ -237,21 +352,33 @@ TOTAL: 4-6 semaines
 ## Fichiers Clés à Modifier
 
 ```
+# Genesis & Params
 src/chainparams.cpp        → Genesis HU + params
 src/chainparamsbase.cpp    → Network names
-src/init.cpp               → Initialisation
-src/validation.cpp         → Block reward = 0
 src/consensus/params.h     → Consensus params
 src/llmq/params.h          → LLMQ 12 MN config
 src/amount.h               → HU denomination
-src/util/system.cpp        → Branding
+
+# Consensus
+src/validation.cpp         → Block reward = 0 + DAO_PAYOUT
+src/init.cpp               → Initialisation
+
+# Branding
+src/util/system.cpp        → Branding HU
 src/clientversion.h        → Version HU
 
-# Supprimer entièrement:
-src/zerocoin/*
+# DAO
+src/budget/                → Simplifier pour T-direct
+
+# À SUPPRIMER
 src/libzerocoin/*
-src/stakeinput.*
-src/kernel.*
+src/zpiv/*
+src/legacy/zerocoin*
+src/sporkid.h              → Retirer 7 sporks deprecated
+
+# ⚠️ NE PAS SUPPRIMER
+src/stakeinput.*           → GARDER (PoS)
+src/kernel.*               → GARDER (PoS)
 ```
 
 ---
@@ -263,6 +390,7 @@ src/kernel.*
 consensus.nMasternodeCollateral = 10000 * COIN;  // 10k HU
 consensus.nLLMQMinSize = 12;                     // 12 MN minimum
 consensus.nBlockReward = 0;                      // Toujours 0
+consensus.nFinalityDepth = 12;                   // Reorg > 12 interdit
 
 // KHU Parameters (hérités)
 consensus.nKHUMaturityBlocks = 4320;   // 3 jours
@@ -280,19 +408,41 @@ consensus.nT_divisor = 8;              // Treasury divider
 | Risque | Mitigation |
 |--------|------------|
 | 12 MN = centralisation | Ouvrir progressivement à d'autres |
-| Swap reserve grosse | Contrat HTLC vérifié |
+| Personne ne stake HU | Dev stake partie premine pour liveness |
+| Swap reserve grosse | Script HTLC vérifié |
 | Bugs nouveau code | Testnet extensif |
 | Communauté PIV hostile | Communication claire sur migration |
+
+---
+
+## Évolutions Futures (v2)
+
+| Feature | Description |
+|---------|-------------|
+| ZKHU-PoS | Production blocs avec notes Sapling |
+| Qt avancé | Panel KHU/ZKHU intégré |
+| DAO v2 | Gouvernance avancée |
+| Bridges | Cross-chain swaps |
 
 ---
 
 ## Contact
 
 - **Repo:** github.com/AdonisPhusis/HEDGE-HUNIT
-- **Backup KHU/PIVX:** commit `80370e9`
+- **Backup:** github.com/AdonisPhusis/PIVX-V6-KHU
+
+---
+
+## Documents Associés
+
+- `docs/HU_CHAIN_DECISIONS.md` - Décisions finales
+- `docs/blueprints/V2-01-HU-CHAIN-CLEANUP.md` - Plan technique suppression
+- `docs/SPEC.md` - Spécification KHU
+- `docs/ARCHITECTURE.md` - Architecture technique
 
 ---
 
 ## Changelog
 
+- **v2.0** (2025-11-29): Mise à jour avec décisions finales (consensus PoS, DAO T-direct)
 - **v1.0** (2025-11-29): Vision initiale HU Chain
