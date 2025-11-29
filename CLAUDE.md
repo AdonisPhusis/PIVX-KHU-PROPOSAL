@@ -1,6 +1,6 @@
 # CLAUDE.md — PIVX-V6-KHU Development Context
 
-**Last Sync:** 2025-11-28
+**Last Sync:** 2025-11-29
 **Documents Synchronized:** SPEC.md, ARCHITECTURE.md, ROADMAP.md, IMPLEMENTATION.md, blueprints/*
 
 ---
@@ -45,6 +45,54 @@ https://github.com/AdonisPhusis/PIVX-V6-KHU
 git push                              # → official/main (PIVX-KHU-PROPOSAL)
 git push origin testnet-ready-v1      # → origin (PIVX-V6-KHU dev)
 ```
+
+---
+
+## 0.2 TESTNET LOCAL (REGTEST)
+
+### Script de Lancement
+```bash
+# Lancer le testnet local (3 nodes)
+bash /home/ubuntu/PIVX-V6-KHU/scripts/start_local_testnet.sh
+
+# Le script:
+# - Nettoie les anciennes instances
+# - Lance 3 nodes (ports RPC 18441, 18442, 18443)
+# - Génère 201 blocs (activation V6)
+# - Distribue PIV aux nodes 2 et 3
+# - Crée un helper CLI
+```
+
+### Configuration
+```
+Node1 (Mining):  RPC=18441, P2P=18444, ~10500 PIV
+Node2 (Staker):  RPC=18442, P2P=18445, 10000 PIV
+Node3 (Client):  RPC=18443, P2P=18446, 5000 PIV
+
+Datadir: /tmp/khu_testnet/
+```
+
+### Utilisation CLI
+```bash
+# Helper script (après lancement)
+/tmp/khu_testnet/cli.sh <node> <commande>
+
+# Exemples
+/tmp/khu_testnet/cli.sh 1 getblockcount
+/tmp/khu_testnet/cli.sh 2 khumint 1000
+/tmp/khu_testnet/cli.sh 1 generate 1
+/tmp/khu_testnet/cli.sh 2 khustake 500
+/tmp/khu_testnet/cli.sh 2 khubalance
+/tmp/khu_testnet/cli.sh 1 getkhustate
+
+# Arrêter le testnet
+pkill -f pivxd
+```
+
+### Notes Importantes
+- **Toutes les options doivent être en ligne de commande** (le fichier pivx.conf n'est pas lu correctement en regtest)
+- V6 activé automatiquement après 201 blocs
+- R% = 40% initial
 
 ---
 

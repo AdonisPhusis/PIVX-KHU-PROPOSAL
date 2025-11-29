@@ -456,13 +456,13 @@ public:
         consensus.vUpgrades[Consensus::UPGRADE_ZC_PUBLIC].nActivationHeight     = 201;
         consensus.vUpgrades[Consensus::UPGRADE_V3_4].nActivationHeight          = 201;
         consensus.vUpgrades[Consensus::UPGRADE_V4_0].nActivationHeight          = 201;
+        // KHU Testnet: All upgrades active from block 201 (after PoS activation)
         consensus.vUpgrades[Consensus::UPGRADE_V5_0].nActivationHeight          = 201;
-        consensus.vUpgrades[Consensus::UPGRADE_V5_2].nActivationHeight          = 262525;
-        consensus.vUpgrades[Consensus::UPGRADE_V5_3].nActivationHeight          = 332300;
-        consensus.vUpgrades[Consensus::UPGRADE_V5_5].nActivationHeight          = 925056;
-        consensus.vUpgrades[Consensus::UPGRADE_V5_6].nActivationHeight          = 1624280; // Estimate Feb 23 Midnight UTC
-        consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight =
-                Consensus::NetworkUpgrade::NO_ACTIVATION_HEIGHT;
+        consensus.vUpgrades[Consensus::UPGRADE_V5_2].nActivationHeight          = 201;
+        consensus.vUpgrades[Consensus::UPGRADE_V5_3].nActivationHeight          = 201;
+        consensus.vUpgrades[Consensus::UPGRADE_V5_5].nActivationHeight          = 201;
+        consensus.vUpgrades[Consensus::UPGRADE_V5_6].nActivationHeight          = 201;
+        consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight          = 201; // KHU V6 + DMN active
 
         /**
          * The message start string is designed to be unlikely to occur in normal data.
@@ -505,14 +505,15 @@ public:
         bech32HRPs[BLS_SECRET_KEY]               = "bls-sk-test";
         bech32HRPs[BLS_PUBLIC_KEY]               = "bls-pk-test";
 
-        // long living quorum params
+        // KHU Testnet: LLMQ params - include small quorum for testing with 3 MNs
+        consensus.llmqs[Consensus::LLMQ_TEST] = llmq_test;     // Small quorum (3 MNs)
         consensus.llmqs[Consensus::LLMQ_50_60] = llmq50_60;
         consensus.llmqs[Consensus::LLMQ_400_60] = llmq400_60;
         consensus.llmqs[Consensus::LLMQ_400_85] = llmq400_85;
 
         nLLMQConnectionRetryTimeout = 60;
 
-        consensus.llmqTypeChainLocks = Consensus::LLMQ_400_60;
+        consensus.llmqTypeChainLocks = Consensus::LLMQ_TEST;   // Use small quorum for KHU testnet
 
         // Tier two
         nFulfilledRequestExpireTime = 60 * 60; // fulfilled requests expire in 1 hour

@@ -142,11 +142,17 @@ bool CheckKHUUnstake(
                         REJECT_INVALID, "bad-unstake-insufficient-pool");
     }
 
-    // 11. vout[0].nValue == amount + bonus
+    // 11. Sum of first 2 KHU_T outputs == amount + bonus (privacy split always creates 2 outputs)
+    // Any additional outputs beyond the first 2 are PIV change (for transaction fees)
     CAmount expectedOutput = noteData.amount + bonus;
-    if (tx.vout.empty() || tx.vout[0].nValue != expectedOutput) {
-        return state.DoS(100, error("%s: output amount mismatch (expected=%d, got=%d)",
-                                   __func__, expectedOutput, tx.vout.empty() ? 0 : tx.vout[0].nValue),
+    CAmount totalKHUOutput = 0;
+    size_t nKHUOutputs = std::min(tx.vout.size(), (size_t)2);  // Privacy split = 2 KHU outputs
+    for (size_t i = 0; i < nKHUOutputs; ++i) {
+        totalKHUOutput += tx.vout[i].nValue;
+    }
+    if (tx.vout.empty() || totalKHUOutput != expectedOutput) {
+        return state.DoS(100, error("%s: output amount mismatch (expected=%d, got=%d, nKHUOutputs=%d, totalOutputs=%d)",
+                                   __func__, expectedOutput, totalKHUOutput, nKHUOutputs, tx.vout.size()),
                         REJECT_INVALID, "bad-unstake-output-amount");
     }
 
@@ -271,35 +277,44 @@ bool ApplyKHUUnstake(
     LogPrint(BCLog::KHU, "ApplyKHUUnstake: Marked note %s as spent in ZKHU database\n",
              cm.GetHex().substr(0, 16).c_str());
 
-    // 11. Create output KHU_T UTXO (P + Y)
+    // 11. Create output KHU_T UTXOs (P + Y total, supports privacy split with 2 outputs)
     if (tx.vout.empty()) {
         return error("%s: UNSTAKE tx has no outputs", __func__);
     }
 
-    // Verify the output amount matches expected value
+    // Verify the sum of first 2 outputs matches expected value (privacy split = 2 KHU outputs)
+    // Any additional outputs beyond the first 2 are PIV change (for transaction fees)
     CAmount expectedOutput = P + Y;
-    if (tx.vout[0].nValue != expectedOutput) {
-        return error("%s: output amount mismatch (expected=%d, got=%d)",
-                    __func__, expectedOutput, tx.vout[0].nValue);
+    CAmount totalOutput = 0;
+    size_t nKHUOutputs = std::min(tx.vout.size(), (size_t)2);  // Privacy split = 2 KHU outputs
+    for (size_t i = 0; i < nKHUOutputs; ++i) {
+        totalOutput += tx.vout[i].nValue;
+    }
+    if (totalOutput != expectedOutput) {
+        return error("%s: output amount mismatch (expected=%d, got=%d, nKHUOutputs=%d, totalOutputs=%d)",
+                    __func__, expectedOutput, totalOutput, nKHUOutputs, tx.vout.size());
     }
 
-    // 11b. ✅ CRITICAL: Add output KHU_T to mapKHUUTXOs for consensus tracking
+    // 11b. ✅ CRITICAL: Add only the first 2 KHU_T outputs to mapKHUUTXOs for consensus tracking
     // NOTE: Standard AddCoins() only adds to CCoinsViewCache (PIV view).
     // For KHU_T coins, we MUST also add to mapKHUUTXOs so that REDEEM can find them.
     // This is symmetric with ApplyKHUMint which also calls AddKHUCoin().
-    CKHUUTXO newCoin(expectedOutput, tx.vout[0].scriptPubKey, nHeight);
-    newCoin.fIsKHU = true;
-    newCoin.fStaked = false;
-    newCoin.nStakeStartHeight = 0;
+    // With privacy split, we have 2 KHU outputs (outputs beyond 2 are PIV change)
+    for (size_t i = 0; i < nKHUOutputs; ++i) {
+        CKHUUTXO newCoin(tx.vout[i].nValue, tx.vout[i].scriptPubKey, nHeight);
+        newCoin.fIsKHU = true;
+        newCoin.fStaked = false;
+        newCoin.nStakeStartHeight = 0;
 
-    COutPoint khuOutpoint(tx.GetHash(), 0);  // Output index 0 = KHU_T from UNSTAKE
-    if (!AddKHUCoin(view, khuOutpoint, newCoin)) {
-        return error("%s: failed to add KHU_T coin to tracking", __func__);
+        COutPoint khuOutpoint(tx.GetHash(), i);
+        if (!AddKHUCoin(view, khuOutpoint, newCoin)) {
+            return error("%s: failed to add KHU_T coin to tracking (output %d)", __func__, i);
+        }
+
+        LogPrint(BCLog::KHU, "%s: created KHU_T %s:%d value=%s\n",
+                 __func__, khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n,
+                 FormatMoney(tx.vout[i].nValue));
     }
-
-    LogPrint(BCLog::KHU, "%s: created KHU_T %s:%d value=%s\n",
-             __func__, khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n,
-             FormatMoney(expectedOutput));
 
     // 12. ✅ CRITICAL: Verify invariants AFTER mutations
     if (!state.CheckInvariants()) {
@@ -403,15 +418,19 @@ bool UndoKHUUnstake(
         return error("%s: failed to unspend Sapling nullifier", __func__);
     }
 
-    // 9b. ✅ CRITICAL: Remove the KHU_T coin from mapKHUUTXOs
+    // 9b. ✅ CRITICAL: Remove only first 2 KHU_T coins from mapKHUUTXOs
     // This is symmetric with the AddKHUCoin() in ApplyKHUUnstake.
-    COutPoint khuOutpoint(tx.GetHash(), 0);  // Output index 0 = KHU_T from UNSTAKE
-    if (!SpendKHUCoin(view, khuOutpoint)) {
-        return error("%s: failed to remove KHU_T coin from tracking", __func__);
-    }
+    // With privacy split, we have 2 KHU outputs (outputs beyond 2 are PIV change)
+    size_t nKHUOutputs = std::min(tx.vout.size(), (size_t)2);  // Privacy split = 2 KHU outputs
+    for (size_t i = 0; i < nKHUOutputs; ++i) {
+        COutPoint khuOutpoint(tx.GetHash(), i);
+        if (!SpendKHUCoin(view, khuOutpoint)) {
+            return error("%s: failed to remove KHU_T coin from tracking (output %d)", __func__, i);
+        }
 
-    LogPrint(BCLog::KHU, "%s: removed KHU_T %s:%d\n",
-             __func__, khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n);
+        LogPrint(BCLog::KHU, "%s: removed KHU_T %s:%d\n",
+                 __func__, khuOutpoint.hash.ToString().substr(0,16).c_str(), khuOutpoint.n);
+    }
 
     // 10. ✅ CRITICAL: Verify invariants AFTER undo
     if (!state.CheckInvariants()) {

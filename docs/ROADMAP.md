@@ -1,7 +1,7 @@
 # 05 — PIVX-V6-KHU ROADMAP (FINAL)
 
-**Dernière mise à jour:** 2025-11-27
-**Status Global:** Phases 1-8 COMPLÈTES - PRÊT POUR TESTNET
+**Dernière mise à jour:** 2025-11-29
+**Status Global:** Phases 1-8 COMPLÈTES - TESTNET LOCAL MN/LLMQ OPÉRATIONNEL
 
 Roadmap claire, simple, technique, sans dates, uniquement en PHASES NUMÉROTÉES et DURÉES EN BLOCS.
 Aucune notion inutile. Aucun audit. Juste : SI TESTNET OK → MAINNET OK.
@@ -332,8 +332,49 @@ Ur -= Y             // yield consommé des droits
 
 ## 9. PHASE 9 — TESTNET LONG
 
-**STATUT : 🎯 READY TO START**
+**STATUT : 🟢 LOCAL TESTNET OPÉRATIONNEL**
 *Prérequis : Phases 1-8 complètes ✅*
+*Local MN Testnet : 3 Masternodes ENABLED, KHU pipeline validé*
+
+### Testnet Local MN/LLMQ (2025-11-29) ✅
+
+**Configuration opérationnelle:**
+```
+Network:     regtest (V6 active from block 201)
+Nodes:       1 Controller + 3 Masternodes DMN/BLS
+LLMQ:        LLMQ_TEST (3 members, 66% threshold)
+Data dir:    /tmp/khu_mn_llmq
+```
+
+**Ports:**
+| Node | P2P Port | RPC Port |
+|------|----------|----------|
+| ctrl | 19100    | 19101    |
+| mn1  | 19110    | 19111    |
+| mn2  | 19120    | 19121    |
+| mn3  | 19130    | 19131    |
+
+**Résultats validation:**
+```
+✅ 3 Masternodes ENABLED (stable: 3)
+✅ MINT 1000 KHU → C=1000, U=1000
+✅ STAKE 500 KHU → C=1000, U=500, Z=500
+✅ invariants_ok = true (C == U + Z)
+✅ R_annual = 40% (4000 basis points)
+```
+
+**Script de lancement:**
+```bash
+bash /home/ubuntu/PIVX-V6-KHU/scripts/start_mn_llmq_testnet.sh
+```
+
+**CLI helper:**
+```bash
+/tmp/khu_mn_llmq/cli.sh ctrl khumint 1000
+/tmp/khu_mn_llmq/cli.sh ctrl khustake 500
+/tmp/khu_mn_llmq/cli.sh ctrl getkhustate
+/tmp/khu_mn_llmq/cli.sh mn1 getmasternodestatus
+```
 
 ### Objectifs
 Tester en conditions réelles:
@@ -383,7 +424,7 @@ Activation du système complet :
 
 ## RÉCAPITULATIF: CE QUI RESTE POUR LE TESTNET
 
-### État Actuel (2025-11-27)
+### État Actuel (2025-11-29)
 ```
 ✅ COMPLÉTÉ:
    - Phase 1-8: Toutes les phases de développement complètes
@@ -391,6 +432,12 @@ Activation du système complet :
    - Audit sécurité: 9.2/10
    - 0 vulnérabilités critiques
    - Build fonctionnel (pivxd, pivx-cli, test_pivx)
+
+🟢 TESTNET LOCAL MN/LLMQ OPÉRATIONNEL (2025-11-29):
+   - 3 Masternodes DMN/BLS ENABLED
+   - KHU pipeline validé (MINT, STAKE)
+   - Invariants OK (C == U + Z)
+   - Script: scripts/start_mn_llmq_testnet.sh
 
 ✅ RPC COMPLETS:
 
@@ -522,7 +569,21 @@ VALIDATION REGTEST (✅ COMPLETED 2025-11-27)
 [x] Edge cases: REDEEM avec change, multiple STAKE
 [x] Persistance après restart
 
-À FAIRE (INFRASTRUCTURE)
+TESTNET LOCAL MN/LLMQ (✅ COMPLETED 2025-11-29)
+[x] 3 Masternodes DMN/BLS enregistrés et ENABLED
+[x] protx_register_fund fonctionnel (adresses séparées)
+[x] MINT 1000 KHU validé (C=1000, U=1000)
+[x] STAKE 500 KHU validé (C=1000, U=500, Z=500)
+[x] Invariants OK (C == U + Z)
+[x] Script start_mn_llmq_testnet.sh opérationnel
+
+À FAIRE (TESTS LOCAUX)
+[ ] Test UNSTAKE avec yield
+[ ] Test REDEEM cycle complet
+[ ] Test LLMQ formation (génération lente)
+[ ] Test persistance après restart MN
+
+À FAIRE (INFRASTRUCTURE PUBLIC)
 [ ] Seed nodes testnet
 [ ] Faucet web
 [ ] Guide utilisateur
@@ -532,22 +593,26 @@ VALIDATION REGTEST (✅ COMPLETED 2025-11-27)
 ### Timeline Estimée
 
 ```
-                              🎯
-                           VOUS ÊTES ICI
-                                │
-                                ▼
-  PHASE 8 ───> REGTEST ───> INFRA ───> TESTNET ───> MAINNET
-     ✅         READY       READY      1 CYCLE
-  COMPLETED                            DOMC OK
+                                        🎯
+                                     VOUS ÊTES ICI
+                                          │
+                                          ▼
+  PHASE 8 ───> REGTEST ───> LOCAL MN ───> PUBLIC ───> MAINNET
+     ✅          ✅           ✅          READY       1 CYCLE
+  COMPLETED   VALIDATED   3 MN ENABLED               DOMC OK
 ```
 
-**Prochaine étape critique:**
-- Validation regtest: Tester cycle complet MINT/STAKE/UNSTAKE/REDEEM
+**Étape actuelle:**
+- ✅ Testnet local MN/LLMQ opérationnel (3 MN ENABLED)
+- ✅ Pipeline KHU validé (MINT, STAKE)
+
+**Prochaine étape:**
+- Tests complets UNSTAKE + REDEEM + yield
+- Passage en testnet public
 
 **Durée estimée:**
-- Validation regtest: 1-2 semaines
-- Infrastructure testnet: 2-4 semaines
-- Testnet (1 cycle DOMC): 4 mois minimum
+- Tests locaux complets: 1-2 semaines
+- Testnet public (1 cycle DOMC): 4 mois minimum
 
 ---------------------------------------
 

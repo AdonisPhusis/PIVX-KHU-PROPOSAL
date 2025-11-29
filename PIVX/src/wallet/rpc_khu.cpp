@@ -171,7 +171,10 @@ static UniValue khubalance(const JSONRPCRequest& request)
     CAmount nPendingYield = GetKHUPendingYieldEstimate(pwallet, R_annual);
 
     // PIV balances (for fees)
-    CAmount nPIVAvailable = pwallet->GetAvailableBalance();
+    // Note: GetAvailableBalance() includes KHU UTXOs (colored coins)
+    // Real PIV available = total - KHU transparent balance
+    CAmount nPIVTotal = pwallet->GetAvailableBalance();
+    CAmount nPIVAvailable = nPIVTotal - nTransparent;  // Exclude KHU collateral
     CAmount nPIVImmature = pwallet->GetImmatureBalance();
     CAmount nPIVLocked = pwallet->GetLockedCoins();
 
@@ -375,6 +378,24 @@ static UniValue khumint(const JSONRPCRequest& request)
 
     for (const COutput& out : vAvailableCoins) {
         if (nValueIn >= nTotalRequired) break;
+
+        // BUG FIX: Skip KHU coins - MINT should ONLY use PIV inputs, never KHU outputs
+        // This prevents chained MINTs from accidentally spending previous MINT's KHU output
+        COutPoint outpoint(out.tx->GetHash(), out.i);
+        if (pwallet->khuData.mapKHUCoins.count(outpoint)) {
+            LogPrint(BCLog::KHU, "khumint: Skipping confirmed KHU coin %s:%d\n",
+                     out.tx->GetHash().GetHex().substr(0, 16).c_str(), out.i);
+            continue;
+        }
+
+        // BUG FIX #2: Also skip unconfirmed KHU outputs from pending MINT transactions
+        // When a KHU_MINT is in mempool but not yet confirmed, its vout[1] is a KHU output
+        // that should NOT be used as input for another MINT
+        if (out.tx->tx->nType == CTransaction::TxType::KHU_MINT && out.i == 1) {
+            LogPrint(BCLog::KHU, "khumint: Skipping unconfirmed KHU output from MINT tx %s:%d\n",
+                     out.tx->GetHash().GetHex().substr(0, 16).c_str(), out.i);
+            continue;
+        }
 
         mtx.vin.push_back(CTxIn(out.tx->GetHash(), out.i));
         nValueIn += out.tx->tx->vout[out.i].nValue;
@@ -1660,12 +1681,29 @@ static UniValue khuunstake(const JSONRPCRequest& request)
     // Add PIV transparent input for fee (CLAUDE.md §2.1)
     builder.AddTransparentInput(pivFeeInput, pivFeeScript, nPIVInputValue);
 
-    // Add transparent KHU_T output (principal + yield - NO fee deduction)
-    CPubKey newKey;
-    if (!pwallet->GetKeyFromPool(newKey, false)) {
-        throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for KHU output");
+    // ═══════════════════════════════════════════════════════════════════════
+    // PRIVACY ENHANCEMENT: Split output into 2 parts with random ratio (20-80%)
+    // This makes it harder to link STAKE input to UNSTAKE output
+    // ═══════════════════════════════════════════════════════════════════════
+    int splitPercent = 20 + GetRandInt(61);  // Random 20% to 80%
+    CAmount part1 = (totalKHUOutput * splitPercent) / 100;
+    CAmount part2 = totalKHUOutput - part1;  // Remainder to ensure exact sum
+
+    // Get 2 fresh addresses for privacy
+    CPubKey newKey1, newKey2;
+    if (!pwallet->GetKeyFromPool(newKey1, false)) {
+        throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for KHU output 1");
     }
-    builder.AddTransparentOutput(newKey.GetID(), totalKHUOutput);
+    if (!pwallet->GetKeyFromPool(newKey2, false)) {
+        throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out for KHU output 2");
+    }
+
+    // Add both outputs (total = principal + yield, split randomly)
+    builder.AddTransparentOutput(newKey1.GetID(), part1);
+    builder.AddTransparentOutput(newKey2.GetID(), part2);
+
+    LogPrint(BCLog::KHU, "khuunstake: Privacy split %d%% - part1=%s, part2=%s (total=%s)\n",
+             splitPercent, FormatMoney(part1), FormatMoney(part2), FormatMoney(totalKHUOutput));
 
     // Set transparent change address for PIV change (let builder handle it)
     // The builder will calculate: change = valueBalance - fee + tIns - tOuts
@@ -1717,6 +1755,13 @@ static UniValue khuunstake(const JSONRPCRequest& request)
     result.pushKV("fee", ValueFromAmount(nFee));
     result.pushKV("stake_duration_blocks", blocksStaked);
     result.pushKV("stake_duration_days", (double)daysStaked);
+
+    // Privacy split info
+    UniValue splitInfo(UniValue::VOBJ);
+    splitInfo.pushKV("split_percent", splitPercent);
+    splitInfo.pushKV("output1", ValueFromAmount(part1));
+    splitInfo.pushKV("output2", ValueFromAmount(part2));
+    result.pushKV("privacy_split", splitInfo);
 
     return result;
 }

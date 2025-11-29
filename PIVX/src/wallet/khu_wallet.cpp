@@ -211,33 +211,48 @@ void ProcessKHUTransactionForWallet(CWallet* pwallet, const CTransactionRef& tx,
     // STEP 2: Process KHU-specific transaction types for output creation
     if (tx->nType == CTransaction::TxType::KHU_MINT) {
         // MINT creates KHU_T output at vout[1]
+        LogPrintf("ProcessKHUTransactionForWallet: KHU_MINT tx=%s vout.size=%zu height=%d\n",
+                  txhash.GetHex().substr(0, 16).c_str(), tx->vout.size(), nHeight);
+
         if (tx->vout.size() >= 2) {
             const CTxOut& out = tx->vout[1];
-            if (::IsMine(*pwallet, out.scriptPubKey) != ISMINE_NO) {
+            isminetype mine = ::IsMine(*pwallet, out.scriptPubKey);
+            LogPrintf("ProcessKHUTransactionForWallet: MINT vout[1] amount=%s IsMine=%d\n",
+                      FormatMoney(out.nValue).c_str(), (int)mine);
+
+            if (mine != ISMINE_NO) {
                 CKHUUTXO coin(out.nValue, out.scriptPubKey, nHeight);
-                AddKHUCoinToWallet(pwallet, COutPoint(txhash, 1), coin, nHeight);
+                bool added = AddKHUCoinToWallet(pwallet, COutPoint(txhash, 1), coin, nHeight);
+                LogPrintf("ProcessKHUTransactionForWallet: MINT AddKHUCoinToWallet returned %d, mapKHUCoins.size=%zu\n",
+                          added, pwallet->khuData.mapKHUCoins.size());
             }
+        } else {
+            LogPrintf("ProcessKHUTransactionForWallet: MINT ERROR - vout.size < 2!\n");
         }
     }
     else if (tx->nType == CTransaction::TxType::KHU_UNSTAKE) {
         LogPrintf("%s: KHU_UNSTAKE detected, txid=%s, vout.size=%zu\n",
                   __func__, txhash.ToString().substr(0, 16).c_str(), tx->vout.size());
 
-        // UNSTAKE creates:
-        // - vout[0] = KHU_T output (the unstaked principal + yield)
-        // - vout[1] = PIV change (fee change) - NOT KHU, do not track
+        // UNSTAKE creates (with privacy split):
+        // - vout[0] = KHU_T output 1 (first split)
+        // - vout[1] = KHU_T output 2 (second split) - ONLY when vout.size >= 3
+        // - vout[2] = PIV change (fee change) - NOT KHU
         //
-        // Only track vout[0] as KHU coin
-        if (tx->vout.size() > 0) {
-            const CTxOut& out = tx->vout[0];
+        // Privacy split: when vout.size >= 3, track both vout[0] and vout[1] as KHU
+        // No privacy split: when vout.size == 2, track only vout[0] as KHU
+        size_t nKHUOutputs = (tx->vout.size() >= 3) ? 2 : 1;  // Privacy split = 2 KHU outputs
+
+        for (size_t i = 0; i < nKHUOutputs && i < tx->vout.size(); ++i) {
+            const CTxOut& out = tx->vout[i];
             if (::IsMine(*pwallet, out.scriptPubKey) != ISMINE_NO) {
                 CKHUUTXO coin(out.nValue, out.scriptPubKey, nHeight);
-                AddKHUCoinToWallet(pwallet, COutPoint(txhash, 0), coin, nHeight);
-                LogPrint(BCLog::KHU, "%s: added KHU output %s:0 = %s\n",
-                         __func__, txhash.GetHex().substr(0, 16).c_str(), FormatMoney(out.nValue));
+                AddKHUCoinToWallet(pwallet, COutPoint(txhash, i), coin, nHeight);
+                LogPrint(BCLog::KHU, "%s: added KHU output %s:%zu = %s\n",
+                         __func__, txhash.GetHex().substr(0, 16).c_str(), i, FormatMoney(out.nValue));
             }
         }
-        // vout[1] if present is PIV fee change - NOT tracked as KHU
+        // Remaining outputs (if any) are PIV fee change - NOT tracked as KHU
 
         // BUG 5 FIX: Mark the ZKHU note as spent
         // Since we know the UNSTAKE transaction amount, find and mark the matching note

@@ -857,16 +857,33 @@ std::string CBudgetManager::GetRequiredPaymentsString(int nBlockHeight)
 
 CAmount CBudgetManager::GetTotalBudget(int nHeight)
 {
+    const Consensus::Params& consensus = Params().GetConsensus();
+
+    // KHU V6.0: Budget comes from DAO Treasury (T) instead of block rewards
+    // After V6, block reward = 0, so budget must use accumulated T
+    if (consensus.NetworkUpgradeActive(nHeight, Consensus::UPGRADE_V6_0)) {
+        // Get current T from KHU state
+        // Budget available = current T value (PIV accumulated in treasury)
+        // The actual T is managed by KHU state and decremented when proposals are paid
+        extern CAmount GetKhuTreasuryBalance();
+        CAmount treasuryBalance = GetKhuTreasuryBalance();
+
+        // Return current treasury balance as available budget
+        // Proposals can request up to this amount
+        return treasuryBalance;
+    }
+
+    // LEGACY: Pre-V6 budget from block rewards
     // 100% of block reward after V5.5 upgrade
     CAmount nSubsidy = GetBlockValue(nHeight);
 
     // 20% of block reward prior to V5.5 upgrade
-    if (nHeight <= Params().GetConsensus().vUpgrades[Consensus::UPGRADE_V5_5].nActivationHeight) {
+    if (nHeight <= consensus.vUpgrades[Consensus::UPGRADE_V5_5].nActivationHeight) {
         nSubsidy /= 5;
     }
 
     // multiplied by the number of blocks in a cycle (144 on testnet, 30*1440 on mainnet)
-    return nSubsidy * Params().GetConsensus().nBudgetCycleBlocks;
+    return nSubsidy * consensus.nBudgetCycleBlocks;
 }
 
 void CBudgetManager::AddSeenProposalVote(const CBudgetVote& vote)
