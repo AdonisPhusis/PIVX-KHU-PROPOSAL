@@ -33,13 +33,13 @@ https://github.com/AdonisPhusis/PIVX-V6-KHU
 - Remote: `origin`
 - Branche: `testnet-ready-v1`
 
-### Dépôt HU Chain (Active Development)
+### Dépôt PIVHU Chain (Active Development)
 ```
 https://github.com/AdonisPhusis/HEDGE-HUNIT
 ```
 - Remote: `hedge`
 - Branche: `main`
-- **Cible pour HU Chain cleanup et développement**
+- **Cible pour PIVHU Chain cleanup et développement**
 
 ### Tags Importants
 | Tag | Description |
@@ -105,18 +105,18 @@ pkill -f pivxd
 
 ---
 
-## 0.3 HU CHAIN (Prochaine Étape)
+## 0.3 PIVHU CHAIN (Prochaine Étape)
 
-**HU = Hedge Unit** — Fork propre de PIVX avec code KHU.
+**PIVHU = PIV Hedge Unit** — Fork propre de PIVX avec code KHU.
 
-### Vision HU Chain v1
+### Vision PIVHU Chain v1
 ```
-HU (coin natif)
- ├── HU SHIELD ─── Transfers privés (Sapling)
+PIVHU (coin natif)
+ ├── PIVHU SHIELD ─── Transfers privés (Sapling)
  └── KHU (colored 1:1)
       └── ZKHU ─── Staking privé + Yield R%
 
-Consensus: PoS HU (reward=0) + Masternodes finalité
+Consensus: PoS PIVHU (reward=0) + Masternodes finalité
 Gouvernance: DOMC (vote R%) + Proposals (Treasury T)
 Finalité: LLMQ Chainlocks (reorg > 12 impossible)
 Émission: ZÉRO bloc (tout via yield R%)
@@ -126,19 +126,19 @@ DAO: Proposals tapent directement dans T
 ### Décisions Clés v1
 | Décision | Choix |
 |----------|-------|
-| Production blocs | PoS HU classique (GARDER moteur) |
+| Production blocs | PoS PIVHU classique (GARDER moteur) |
 | Block reward | `GetBlockValue() = 0` |
 | Finalité | Masternodes LLMQ, 12 blocs |
 | KHU/ZKHU | Aucune modification |
 | DAO | Proposals → T direct (supprimer budget legacy) |
-| Dev reward | 120k HU hors KHU invariants |
+| Dev reward | 120k PIVHU hors KHU invariants |
 | ZKHU-PoS | Reporté à v2 |
 
-### Genesis HU
+### Genesis PIVHU
 ```
-Dev Reward:    120,000 HU   (adresse normale, HORS KHU)
-MN Collateral: 120,000 HU   (12 × 10,000)
-Swap Reserve:  28,000,000 HU (HTLC, HORS KHU)
+Dev Reward:    120,000 PIVHU   (adresse normale, HORS KHU)
+MN Collateral: 120,000 PIVHU   (12 × 10,000)
+Swap Reserve:  28,000,000 PIVHU (HTLC, HORS KHU)
 KhuGlobalState: C=0, U=0, Z=0, Cr=0, Ur=0, T=0
 ```
 
@@ -155,9 +155,9 @@ KhuGlobalState: C=0, U=0, Z=0, Cr=0, Ur=0, T=0
 ⚠️ JUSTE mettre GetBlockValue() = 0
 ```
 
-### Documents HU Chain
-- `docs/HU_CHAIN_DECISIONS.md` — Décisions finales
-- `docs/HU_CHAIN_ROADMAP.md` — Roadmap 7 phases
+### Documents PIVHU Chain
+- `docs/PIVHU_CHAIN_DECISIONS.md` — Décisions finales
+- `docs/PIVHU_CHAIN_ROADMAP.md` — Roadmap 7 phases
 - `docs/blueprints/V2-01-HU-CHAIN-CLEANUP.md` — Plan technique suppression
 
 ---

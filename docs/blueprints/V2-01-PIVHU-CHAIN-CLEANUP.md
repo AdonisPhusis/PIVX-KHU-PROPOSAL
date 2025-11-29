@@ -1,4 +1,4 @@
-# Blueprint V2-01: HU Chain Cleanup Plan
+# Blueprint V2-01: PIVHU Chain Cleanup Plan
 
 **Version:** 1.0
 **Date:** 2025-11-29
@@ -9,11 +9,11 @@
 
 ## 1. OBJECTIF
 
-Nettoyer le code PIVX pour créer **HU Chain** - une blockchain légère avec:
+Nettoyer le code PIVX pour créer **PIVHU Chain** - une blockchain légère avec:
 - HU comme coin natif (remplace PIV)
 - KHU colored coin 1:1
 - ZKHU staking privé (sans Z→Z)
-- HU SHIELD transfers privés (garde Z→Z)
+- PIVHU SHIELD transfers privés (garde Z→Z)
 - LLMQ/Chainlocks dès genesis
 - Block reward = 0 (économie R%)
 
@@ -81,7 +81,7 @@ src/wallet/wallet.cpp    → retirer wallet zerocoin
 ```cpp
 // src/validation.cpp
 CAmount GetBlockValue(int nHeight) {
-    return 0;  // HU Chain: émission = 0
+    return 0;  // PIVHU Chain: émission = 0
 }
 ```
 
@@ -176,7 +176,7 @@ SPORK_9_MASTERNODE_BUDGET_ENFORCEMENT    // Budget/DAO
 SPORK_13_ENABLE_SUPERBLOCKS              // Superblocks
 SPORK_14_NEW_PROTOCOL_ENFORCEMENT        // Protocol
 SPORK_15_NEW_PROTOCOL_ENFORCEMENT_2      // Protocol
-SPORK_20_SAPLING_MAINTENANCE             // HU SHIELD
+SPORK_20_SAPLING_MAINTENANCE             // PIVHU SHIELD
 SPORK_21_LEGACY_MNS_MAX_HEIGHT           // DMN transition
 SPORK_22_LLMQ_DKG_MAINTENANCE            // LLMQ
 SPORK_23_CHAINLOCKS_ENFORCEMENT          // Chainlocks
@@ -190,7 +190,7 @@ SPORK_23_CHAINLOCKS_ENFORCEMENT          // Chainlocks
 
 | Composant | Lignes | Usage |
 |-----------|--------|-------|
-| `src/sapling/` | ~7,133 | HU SHIELD + ZKHU |
+| `src/sapling/` | ~7,133 | PIVHU SHIELD + ZKHU |
 | `src/llmq/` | ~8,540 | Chainlocks, Finality |
 | `src/evo/` | ~3,178 | DMN/ProTx |
 | `src/tiertwo/` | ~1,356 | Masternodes |
@@ -203,7 +203,7 @@ SPORK_23_CHAINLOCKS_ENFORCEMENT          // Chainlocks
 | Composant | Action |
 |-----------|--------|
 | `src/chainparams.cpp` | Nouveau genesis HU |
-| `src/consensus/params.h` | Params HU Chain |
+| `src/consensus/params.h` | Params PIVHU Chain |
 | `src/amount.h` | HU denomination |
 | `src/validation.cpp` | Block reward = 0 |
 | `src/spork*` | Nettoyer deprecated |
@@ -297,7 +297,7 @@ make -j$(nproc)
 
 # 3. Test basique
 ./src/hud -regtest -daemon
-./src/hu-cli -regtest getblockcount
+./src/pivhu-cli -regtest getblockcount
 ```
 
 ### Phase 5: Renommage (Jour 4-5)
@@ -313,9 +313,9 @@ find src/ -type f \( -name "*.cpp" -o -name "*.h" \) -exec sed -i 's/PIVX/HU/g' 
 mv src/pivxd.cpp src/hud.cpp
 sed -i 's/pivxd/hud/g' src/*.cpp src/*.h
 
-# 4. pivx-cli → hu-cli
-mv src/pivx-cli.cpp src/hu-cli.cpp
-sed -i 's/pivx-cli/hu-cli/g' src/*.cpp src/*.h
+# 4. pivx-cli → pivhu-cli
+mv src/pivx-cli.cpp src/pivhu-cli.cpp
+sed -i 's/pivx-cli/pivhu-cli/g' src/*.cpp src/*.h
 
 # 5. Makefile.am updates
 ```
@@ -331,7 +331,7 @@ sed -i 's/pivx-cli/hu-cli/g' src/*.cpp src/*.h
 - [ ] Aucune référence `coldstaking` dans le code
 - [ ] Sporks deprecated supprimés
 - [ ] `hud -regtest` démarre
-- [ ] `hu-cli -regtest getblockcount` fonctionne
+- [ ] `pivhu-cli -regtest getblockcount` fonctionne
 - [ ] Tests KHU passent
 - [ ] LLMQ fonctionne
 
@@ -415,13 +415,13 @@ chore: clean zerocoin references from wallet
 chore: remove cold staking code
 chore: remove deprecated sporks (2,3,5,16,17,18,19)
 refactor: rename PIV to HU globally
-refactor: rename pivxd to hud, pivx-cli to hu-cli
-feat(genesis): create HU Chain genesis block
-test: verify KHU pipeline on HU Chain
+refactor: rename pivxd to hud, pivx-cli to pivhu-cli
+feat(genesis): create PIVHU Chain genesis block
+test: verify KHU pipeline on PIVHU Chain
 ```
 
 ---
 
 ## CHANGELOG
 
-- **v1.0** (2025-11-29): Initial cleanup plan for HU Chain
+- **v1.0** (2025-11-29): Initial cleanup plan for PIVHU Chain

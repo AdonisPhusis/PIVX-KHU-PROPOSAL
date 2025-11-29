@@ -17,14 +17,14 @@
 │                                                                 │
 │   HU (coin natif)                                              │
 │    │                                                           │
-│    ├── HU SHIELD ──── Transfers privés (Sapling)              │
+│    ├── PIVHU SHIELD ──── Transfers privés (Sapling)              │
 │    │                                                           │
 │    └── KHU (colored 1:1)                                       │
 │         │                                                      │
 │         └── ZKHU ──── Staking privé + Yield R%                │
 │                       (PAS de transfers entre notes)           │
 │                                                                 │
-│   Consensus: PoS HU (reward=0) + Masternodes finalité         │
+│   Consensus: PoS PIVHU (reward=0) + Masternodes finalité         │
 │   Gouvernance: DOMC (vote R%) + Proposals (Treasury T)         │
 │   Finalité: LLMQ Chainlocks (reorg > 12 impossible)           │
 │   Émission: ZÉRO bloc (tout via yield R%)                     │
@@ -41,7 +41,7 @@ Fork de PIVX avec code KHU existant, nettoyé et optimisé.
 **Repositories:**
 - `github.com/AdonisPhusis/PIVX-KHU-PROPOSAL` (frozen backup)
 - `github.com/AdonisPhusis/PIVX-V6-KHU` (dev backup)
-- `github.com/AdonisPhusis/HEDGE-HUNIT` (HU Chain active)
+- `github.com/AdonisPhusis/HEDGE-HUNIT` (PIVHU Chain active)
 
 ---
 
@@ -51,9 +51,9 @@ Fork de PIVX avec code KHU existant, nettoyé et optimisé.
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  PRODUCTION BLOCS                                               │
-│  ✅ PoS HU classique (comme PIVX)                              │
+│  ✅ PoS PIVHU classique (comme PIVX)                              │
 │  ✅ Block reward = 0 (GetBlockValue() = 0)                     │
-│  ✅ Staking HU = sécurité réseau uniquement                    │
+│  ✅ Staking PIVHU = sécurité réseau uniquement                    │
 │                                                                 │
 │  FINALITÉ                                                       │
 │  ✅ Masternodes LLMQ/BLS                                       │
@@ -79,7 +79,7 @@ Fork de PIVX avec code KHU existant, nettoyé et optimisé.
 | Composant | Usage | Status |
 |-----------|-------|--------|
 | **PoS moteur** | Production blocs (reward=0) | ✅ GARDER |
-| Sapling crypto | HU SHIELD + ZKHU | ✅ |
+| Sapling crypto | PIVHU SHIELD + ZKHU | ✅ |
 | Masternodes DMN/BLS | Quorum LLMQ + finalité | ✅ |
 | LLMQ/Chainlocks | Finalité 12 blocs | ✅ |
 | HTLC opcodes | Swap PIV → HU | ✅ |
@@ -119,16 +119,16 @@ PREMINE TOTAL: 28,240,000 HU
 
 ┌────────────────────────────────────────────────────────────┐
 │                                                            │
-│  [1] Dev Reward       120,000 HU                          │
+│  [1] Dev Reward       120,000 PIVHU                          │
 │      → Adresse HU normale (P2PKH)                         │
 │      → HORS système KHU                                   │
 │      → Ne touche PAS C/U/Z/Cr/Ur/T                        │
 │                                                            │
-│  [2] MN Collateral    120,000 HU    (12 × 10,000)         │
+│  [2] MN Collateral    120,000 PIVHU    (12 × 10,000)         │
 │      → 12 masternodes contrôlés                           │
 │      → LLMQ opérationnel dès genesis                      │
 │                                                            │
-│  [3] Swap Reserve     28,000,000 HU                       │
+│  [3] Swap Reserve     28,000,000 PIVHU                       │
 │      → 50% du supply PIV (~56M)                           │
 │      → Verrouillé dans script HTLC                        │
 │      → HORS système KHU                                   │
@@ -196,7 +196,7 @@ PREMINE TOTAL: 28,240,000 HU
 ## Mécanisme de SWAP PIV → HU
 
 ```
-PIVX Chain (legacy)                HU Chain (nouvelle)
+PIVX Chain (legacy)                PIVHU Chain (nouvelle)
       │                                   │
       │  1. User lock PIV                │
       │     HTLC(hash, timelock)         │
@@ -270,8 +270,8 @@ INVARIANTS:
 |-------|--------|
 | PIV → HU (grep/sed global) | ☐ |
 | PIVX → HU (branding) | ☐ |
-| pivxd → hud | ☐ |
-| pivx-cli → hu-cli | ☐ |
+| pivxd → pivhud | ☐ |
+| pivx-cli → pivhu-cli | ☐ |
 | Mise à jour messages/strings | ☐ |
 | Mise à jour RPC help | ☐ |
 
@@ -281,9 +281,9 @@ INVARIANTS:
 |-------|--------|
 | Nouveau `chainparams.cpp` | ☐ |
 | Genesis block avec premine | ☐ |
-| Dev reward 120k HU (adresse normale) | ☐ |
-| MN collateral 120k HU | ☐ |
-| Swap reserve 28M HU (HTLC script) | ☐ |
+| Dev reward 120k PIVHU (adresse normale) | ☐ |
+| MN collateral 120k PIVHU | ☐ |
+| Swap reserve 28M PIVHU (HTLC script) | ☐ |
 | Configuration LLMQ 12 MN | ☐ |
 | Block reward = 0 | ☐ |
 | KhuGlobalState = zéro | ☐ |
@@ -304,7 +304,7 @@ INVARIANTS:
 | Tâche | Status |
 |-------|--------|
 | Adapter code KHU existant | ☐ |
-| HU SHIELD = Sapling standard | ☐ |
+| PIVHU SHIELD = Sapling standard | ☐ |
 | ZKHU = staking uniquement | ☐ |
 | Tests unitaires KHU | ☐ |
 | DOMC gouvernance | ☐ |
@@ -353,7 +353,7 @@ TOTAL: 5-7 semaines
 
 ```
 # Genesis & Params
-src/chainparams.cpp        → Genesis HU + params
+src/chainparams.cpp        → Genesis PIVHU + params
 src/chainparamsbase.cpp    → Network names
 src/consensus/params.h     → Consensus params
 src/llmq/params.h          → LLMQ 12 MN config
@@ -386,7 +386,7 @@ src/kernel.*               → GARDER (PoS)
 ## Paramètres Consensus
 
 ```cpp
-// HU Chain Parameters
+// PIVHU Chain Parameters
 consensus.nMasternodeCollateral = 10000 * COIN;  // 10k HU
 consensus.nLLMQMinSize = 12;                     // 12 MN minimum
 consensus.nBlockReward = 0;                      // Toujours 0
@@ -445,4 +445,4 @@ consensus.nT_divisor = 8;              // Treasury divider
 ## Changelog
 
 - **v2.0** (2025-11-29): Mise à jour avec décisions finales (consensus PoS, DAO T-direct)
-- **v1.0** (2025-11-29): Vision initiale HU Chain
+- **v1.0** (2025-11-29): Vision initiale PIVHU Chain

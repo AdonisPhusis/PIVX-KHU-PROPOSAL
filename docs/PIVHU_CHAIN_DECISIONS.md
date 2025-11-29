@@ -11,7 +11,7 @@
 
 ### Décision v1
 ```
-✅ GARDER le PoS HU classique (comme PIVX)
+✅ GARDER le PoS PIVHU classique (comme PIVX)
 ✅ Block reward = 0 HU (GetBlockValue() = 0)
 ✅ Le staking HU sert UNIQUEMENT à produire les blocs
 ```
@@ -40,7 +40,7 @@
 
 ### Séparation des rôles
 ```
-Production blocs  = PoS HU (stakers)
+Production blocs  = PoS PIVHU (stakers)
 Finalité          = Masternodes LLMQ
 Gouvernance R%    = DOMC via MN
 ```
@@ -83,16 +83,16 @@ T_daily = (U × R_annual) / 10000 / T_DIVISOR / 365
 ### Structure Premine
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  [1] Dev Reward       120,000 HU                            │
+│  [1] Dev Reward       120,000 PIVHU                            │
 │      → Adresse HU normale (P2PKH)                          │
 │      → HORS KHU (ne touche pas C/U/Z/Cr/Ur/T)              │
 │      → Cadeau développeur                                   │
 │                                                             │
-│  [2] MN Collateral    120,000 HU (12 × 10,000)             │
+│  [2] MN Collateral    120,000 PIVHU (12 × 10,000)             │
 │      → 12 masternodes contrôlés                            │
 │      → LLMQ opérationnel dès genesis                       │
 │                                                             │
-│  [3] Swap Reserve     28,000,000 HU                        │
+│  [3] Swap Reserve     28,000,000 PIVHU                        │
 │      → Verrouillé dans script HTLC                         │
 │      → HORS KHU (ne touche pas C/U/Z/Cr/Ur/T)              │
 │      → Libéré 1:1 contre PIV burned                        │
@@ -178,7 +178,7 @@ TxType::DAO_PAYOUT = 12  // Après KHU types (6-11)
 khumint, khuredeem, khusend
 khubalance, khulistunspent
 khustake, khuunstake, khuliststaked
-getkhustate, khudiagnostics
+getkhustate, kpivhudiagnostics
 ```
 
 ### Qt v2 (futur)
@@ -224,9 +224,9 @@ SPORK_19_COLDSTAKING_MAINTENANCE
 
 ## 8. ROADMAP
 
-### HU v1 (Genesis)
+### PIVHU v1 (Genesis)
 ```
-[x] Consensus = PoS HU classique (reward 0)
+[x] Consensus = PoS PIVHU classique (reward 0)
 [x] Finalité = Masternodes / LLMQ
 [x] KHU & ZKHU = opérationnels
 [x] DOMC = vote R% actif
@@ -235,7 +235,7 @@ SPORK_19_COLDSTAKING_MAINTENANCE
 [x] Wallet Qt basique
 ```
 
-### HU v2 (Upgrade future)
+### PIVHU v2 (Upgrade future)
 ```
 [ ] ZKHU-PoS : production blocs avec notes Sapling
 [ ] Qt amélioré (KHU panel)
@@ -248,7 +248,7 @@ SPORK_19_COLDSTAKING_MAINTENANCE
 ## 9. PARAMÈTRES CONSENSUS HU
 
 ```cpp
-// HU Chain Parameters
+// PIVHU Chain Parameters
 consensus.nMasternodeCollateral = 10000 * COIN;  // 10k HU
 consensus.nLLMQMinSize = 12;                     // 12 MN minimum
 consensus.nBlockReward = 0;                      // Toujours 0
@@ -269,7 +269,7 @@ consensus.nFinalityDepth = 12;         // Reorg > 12 interdit
 
 ## 10. SYNTHÈSE EN UNE PHRASE
 
-> **HU Chain v1 = PIVX-V6-KHU fonctionnel, PoS HU reward=0, MN finalité,
+> **PIVHU Chain v1 = PIVX-V6-KHU fonctionnel, PoS PIVHU reward=0, MN finalité,
 > KHU/ZKHU/DOMC/T inchangés, DAO via T direct, dev-premine externe,
 > swap PIV→HU, Qt minimal. ZKHU-PoS = v2.**
 
